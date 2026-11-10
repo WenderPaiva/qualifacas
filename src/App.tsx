@@ -72,7 +72,7 @@ export const App: React.FC = () => {
     setSelectedCompanyId(tenantDb.companies[0]?.id || null);
     setActiveSection('bento_home');
     setSearchQuery('');
-    showToast(`Bem-vindo(a) ao painel ${newSession.companyName}!`);
+    showToast('Sessão iniciada com sucesso!');
   };
 
   const handleLogout = () => {

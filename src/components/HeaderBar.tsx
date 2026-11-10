@@ -145,7 +145,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           type="button"
           onClick={onLogout}
           className="w-10 h-10 rounded-2xl bg-zinc-800/70 hover:bg-rose-900/80 border border-zinc-700/60 hover:border-rose-600/50 flex items-center justify-center text-zinc-400 hover:text-white transition cursor-pointer"
-          title={`Sair da conta (${tenantName})`}
+          title="Sair da conta"
         >
           <LogOut className="w-4 h-4 stroke-[2]" />
         </button>
@@ -155,7 +155,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
       <header className="sticky top-0 z-30 bg-zinc-950/85 backdrop-blur-xl border-b border-zinc-900">
         <div className="max-w-[1520px] mx-auto lg:pl-24 px-4 sm:px-6 py-3.5 flex flex-col gap-3">
           <div className="flex items-center justify-between gap-4">
-            {/* Brand Title + Active Tenant Pill */}
+            {/* Brand Title (Clean FacasFlow Logo Only) */}
             <div className="flex items-center gap-3">
               <div className="lg:hidden w-9 h-9 rounded-2xl bg-gradient-to-br from-rose-700 to-red-950 border border-rose-500/30 flex items-center justify-center text-slate-50">
                 <Layers className="w-4 h-4" />
@@ -163,10 +163,6 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
               <h1 className="text-xl font-bold tracking-tight text-slate-50">
                 Facas<span className="text-rose-500">Flow</span>
               </h1>
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-zinc-900 border border-zinc-800 text-[11px] font-semibold text-zinc-300">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                {tenantName}
-              </span>
             </div>
 
             {/* Search + Primary Action + Logout Button */}

@@ -752,15 +752,14 @@ const lucide_react_1 = require("lucide-react");
 const storageAdapter_1 = require("../services/storageAdapter");
 const AuthLoginScreen = ({ onAuthenticated, }) => {
     const [mode, setMode] = (0, react_1.useState)('login');
-    const [email, setEmail] = (0, react_1.useState)('contato@qualifacas.com');
-    const [password, setPassword] = (0, react_1.useState)('123456');
+    const [email, setEmail] = (0, react_1.useState)('');
+    const [password, setPassword] = (0, react_1.useState)('');
     // Register fields
     const [companyName, setCompanyName] = (0, react_1.useState)('');
     const [ownerName, setOwnerName] = (0, react_1.useState)('');
     const [regEmail, setRegEmail] = (0, react_1.useState)('');
     const [regPassword, setRegPassword] = (0, react_1.useState)('');
     const [errorMsg, setErrorMsg] = (0, react_1.useState)(null);
-    const [tenants, setTenants] = (0, react_1.useState)(() => (0, storageAdapter_1.getTenantAccounts)());
     const handleLoginSubmit = (e) => {
         e.preventDefault();
         setErrorMsg(null);
@@ -784,118 +783,67 @@ const AuthLoginScreen = ({ onAuthenticated, }) => {
             setErrorMsg(res.error || 'Não foi possível criar a conta.');
             return;
         }
-        setTenants((0, storageAdapter_1.getTenantAccounts)());
         onAuthenticated(res.session);
     };
-    const handleQuickLogin = (account) => {
-        setErrorMsg(null);
-        setMode('login');
-        setEmail(account.email);
-        setPassword(account.password);
-        const res = (0, storageAdapter_1.authenticateTenant)(account.email, account.password);
-        if (res.session) {
-            onAuthenticated(res.session);
-        }
-    };
     return (react_1.default.createElement("div", { className: "min-h-screen bg-zinc-950 text-slate-100 flex flex-col justify-center items-center px-4 py-10 relative overflow-hidden selection:bg-rose-800 selection:text-white" },
-        react_1.default.createElement("div", { className: "pointer-events-none fixed -top-40 left-1/2 -translate-x-1/2 w-[680px] h-[360px] bg-rose-900/20 blur-[130px] rounded-full" }),
-        react_1.default.createElement("div", { className: "pointer-events-none fixed -bottom-40 right-10 w-[420px] h-[300px] bg-red-950/25 blur-[120px] rounded-full" }),
-        react_1.default.createElement("div", { className: "w-full max-w-4xl grid grid-cols-1 lg:grid-cols-12 gap-6 relative z-10" },
-            react_1.default.createElement("div", { className: "lg:col-span-5 rounded-3xl bg-zinc-900/90 border border-zinc-800/90 p-7 flex flex-col justify-between shadow-2xl" },
+        react_1.default.createElement("div", { className: "pointer-events-none fixed -top-40 left-1/2 -translate-x-1/2 w-[580px] h-[320px] bg-rose-900/20 blur-[130px] rounded-full" }),
+        react_1.default.createElement("div", { className: "pointer-events-none fixed -bottom-40 right-10 w-[380px] h-[280px] bg-red-950/25 blur-[120px] rounded-full" }),
+        react_1.default.createElement("div", { className: "w-full max-w-md rounded-3xl bg-zinc-900/90 border border-zinc-800/90 p-7 sm:p-9 shadow-2xl relative z-10" },
+            react_1.default.createElement("div", { className: "flex items-center justify-center gap-3 mb-7" },
+                react_1.default.createElement("div", { className: "w-10 h-10 rounded-2xl bg-gradient-to-br from-rose-700 to-red-950 border border-rose-500/40 flex items-center justify-center text-slate-50 shadow-lg shadow-rose-950/70" },
+                    react_1.default.createElement(lucide_react_1.Layers, { className: "w-5 h-5 stroke-[2.2]" })),
+                react_1.default.createElement("h1", { className: "text-2xl font-bold tracking-tight text-slate-50 leading-none" },
+                    "Facas",
+                    react_1.default.createElement("span", { className: "text-rose-500" }, "Flow"))),
+            react_1.default.createElement("div", { className: "grid grid-cols-2 gap-2 p-1.5 rounded-2xl bg-zinc-950 border border-zinc-800/80 mb-6" },
+                react_1.default.createElement("button", { type: "button", onClick: () => {
+                        setMode('login');
+                        setErrorMsg(null);
+                    }, className: `flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-bold transition cursor-pointer ${mode === 'login'
+                        ? 'bg-gradient-to-r from-rose-800 to-red-900 text-white shadow-md'
+                        : 'text-zinc-400 hover:text-slate-200'}` },
+                    react_1.default.createElement(lucide_react_1.KeyRound, { className: "w-3.5 h-3.5" }),
+                    react_1.default.createElement("span", null, "Entrar")),
+                react_1.default.createElement("button", { type: "button", onClick: () => {
+                        setMode('register');
+                        setErrorMsg(null);
+                    }, className: `flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-bold transition cursor-pointer ${mode === 'register'
+                        ? 'bg-gradient-to-r from-rose-800 to-red-900 text-white shadow-md'
+                        : 'text-zinc-400 hover:text-slate-200'}` },
+                    react_1.default.createElement(lucide_react_1.UserPlus, { className: "w-3.5 h-3.5" }),
+                    react_1.default.createElement("span", null, "Criar Conta"))),
+            errorMsg && (react_1.default.createElement("div", { className: "mb-5 p-3.5 rounded-2xl bg-rose-950/60 border border-rose-700/60 text-rose-200 text-xs flex items-center gap-2.5" },
+                react_1.default.createElement(lucide_react_1.AlertCircle, { className: "w-4 h-4 text-rose-400 shrink-0" }),
+                react_1.default.createElement("span", null, errorMsg))),
+            mode === 'login' ? (react_1.default.createElement("form", { onSubmit: handleLoginSubmit, className: "space-y-4" },
                 react_1.default.createElement("div", null,
-                    react_1.default.createElement("div", { className: "flex items-center gap-3 mb-6" },
-                        react_1.default.createElement("div", { className: "w-11 h-11 rounded-2xl bg-gradient-to-br from-rose-700 to-red-950 border border-rose-500/40 flex items-center justify-center text-slate-50 shadow-lg shadow-rose-950/70" },
-                            react_1.default.createElement(lucide_react_1.Layers, { className: "w-5 h-5 stroke-[2.2]" })),
-                        react_1.default.createElement("div", null,
-                            react_1.default.createElement("h1", { className: "text-2xl font-bold tracking-tight text-slate-50 leading-none" },
-                                "Facas",
-                                react_1.default.createElement("span", { className: "text-rose-500" }, "Flow")),
-                            react_1.default.createElement("span", { className: "text-[11px] font-medium text-zinc-400" }, "SaaS Multi-Empresa \u2022 Corte & Vinco"))),
-                    react_1.default.createElement("h2", { className: "text-lg font-bold text-slate-100 leading-snug mb-2" }, "Gest\u00E3o industrial com isolamento total de dados por facaria."),
-                    react_1.default.createElement("p", { className: "text-xs text-zinc-400 leading-relaxed mb-6" },
-                        "Cada empresa possui seu pr\u00F3prio ambiente isolado (",
-                        react_1.default.createElement("code", { className: "text-rose-400 font-mono" }, "company_id"),
-                        "). Ordens de servi\u00E7o, clientes, esteira f\u00EDsica e financeiro nunca se misturam."),
-                    react_1.default.createElement("div", { className: "space-y-2.5" },
-                        react_1.default.createElement("div", { className: "flex items-center justify-between" },
-                            react_1.default.createElement("span", { className: "text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center gap-1.5" },
-                                react_1.default.createElement(lucide_react_1.Sparkles, { className: "w-3.5 h-3.5 text-rose-500" }),
-                                "Acesso R\u00E1pido (Contas Cadastradas)")),
-                        react_1.default.createElement("div", { className: "space-y-2 max-h-60 overflow-y-auto pr-1" }, tenants.map((acc) => (react_1.default.createElement("button", { key: acc.company_id, type: "button", onClick: () => handleQuickLogin(acc), className: "w-full text-left p-3 rounded-2xl bg-zinc-950/80 hover:bg-zinc-800/80 border border-zinc-800/90 hover:border-rose-700/50 transition-all group cursor-pointer flex items-center justify-between gap-2" },
-                            react_1.default.createElement("div", { className: "min-w-0" },
-                                react_1.default.createElement("div", { className: "flex items-center gap-2" },
-                                    react_1.default.createElement(lucide_react_1.Building2, { className: "w-3.5 h-3.5 text-rose-500 shrink-0" }),
-                                    react_1.default.createElement("span", { className: "text-xs font-bold text-slate-100 truncate" }, acc.companyName)),
-                                react_1.default.createElement("div", { className: "text-[11px] text-zinc-400 truncate mt-0.5" },
-                                    acc.email,
-                                    " \u2022 Senha:",
-                                    ' ',
-                                    react_1.default.createElement("span", { className: "font-mono text-zinc-300" }, acc.password))),
-                            react_1.default.createElement("span", { className: "px-2.5 py-1 rounded-xl bg-rose-950/60 border border-rose-800/50 text-[10px] font-semibold text-rose-300 group-hover:bg-rose-800 group-hover:text-white transition shrink-0" }, "Entrar"))))))),
-                react_1.default.createElement("div", { className: "mt-6 pt-4 border-t border-zinc-800/80 flex items-center gap-2 text-[11px] text-zinc-400" },
-                    react_1.default.createElement(lucide_react_1.ShieldCheck, { className: "w-4 h-4 text-emerald-400 shrink-0" }),
-                    react_1.default.createElement("span", null, "Sess\u00E3o persistente e dados blindados por tenant."))),
-            react_1.default.createElement("div", { className: "lg:col-span-7 rounded-3xl bg-zinc-900/90 border border-zinc-800/90 p-7 sm:p-9 shadow-2xl flex flex-col justify-between" },
+                    react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1.5" }, "E-mail"),
+                    react_1.default.createElement("div", { className: "relative" },
+                        react_1.default.createElement(lucide_react_1.Mail, { className: "w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2" }),
+                        react_1.default.createElement("input", { type: "email", required: true, value: email, onChange: (e) => setEmail(e.target.value), placeholder: "Digite seu e-mail", className: "w-full pl-10 pr-4 py-3 rounded-2xl bg-zinc-950 border border-zinc-800 text-sm text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" }))),
                 react_1.default.createElement("div", null,
-                    react_1.default.createElement("div", { className: "grid grid-cols-2 gap-2 p-1.5 rounded-2xl bg-zinc-950 border border-zinc-800/80 mb-6" },
-                        react_1.default.createElement("button", { type: "button", onClick: () => {
-                                setMode('login');
-                                setErrorMsg(null);
-                            }, className: `flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-bold transition cursor-pointer ${mode === 'login'
-                                ? 'bg-gradient-to-r from-rose-800 to-red-900 text-white shadow-md'
-                                : 'text-zinc-400 hover:text-slate-200'}` },
-                            react_1.default.createElement(lucide_react_1.KeyRound, { className: "w-3.5 h-3.5" }),
-                            react_1.default.createElement("span", null, "Entrar na Facaria")),
-                        react_1.default.createElement("button", { type: "button", onClick: () => {
-                                setMode('register');
-                                setErrorMsg(null);
-                            }, className: `flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-bold transition cursor-pointer ${mode === 'register'
-                                ? 'bg-gradient-to-r from-rose-800 to-red-900 text-white shadow-md'
-                                : 'text-zinc-400 hover:text-slate-200'}` },
-                            react_1.default.createElement(lucide_react_1.UserPlus, { className: "w-3.5 h-3.5" }),
-                            react_1.default.createElement("span", null, "Cadastrar Nova Facaria"))),
-                    errorMsg && (react_1.default.createElement("div", { className: "mb-5 p-3.5 rounded-2xl bg-rose-950/60 border border-rose-700/60 text-rose-200 text-xs flex items-center gap-2.5" },
-                        react_1.default.createElement(lucide_react_1.AlertCircle, { className: "w-4 h-4 text-rose-400 shrink-0" }),
-                        react_1.default.createElement("span", null, errorMsg))),
-                    mode === 'login' ? (react_1.default.createElement("form", { onSubmit: handleLoginSubmit, className: "space-y-4" },
-                        react_1.default.createElement("div", null,
-                            react_1.default.createElement("h3", { className: "text-base font-bold text-slate-50" }, "Acesse o painel da sua empresa"),
-                            react_1.default.createElement("p", { className: "text-xs text-zinc-400 mt-0.5" }, "Entre com seu e-mail corporativo e senha para carregar os dados exclusivos da sua facaria.")),
-                        react_1.default.createElement("div", null,
-                            react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1.5" }, "E-mail da Facaria"),
-                            react_1.default.createElement("div", { className: "relative" },
-                                react_1.default.createElement(lucide_react_1.Mail, { className: "w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2" }),
-                                react_1.default.createElement("input", { type: "email", required: true, value: email, onChange: (e) => setEmail(e.target.value), placeholder: "contato@suafacaria.com", className: "w-full pl-10 pr-4 py-3 rounded-2xl bg-zinc-950 border border-zinc-800 text-sm text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" }))),
-                        react_1.default.createElement("div", null,
-                            react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1.5" }, "Senha de Acesso"),
-                            react_1.default.createElement("div", { className: "relative" },
-                                react_1.default.createElement(lucide_react_1.Lock, { className: "w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2" }),
-                                react_1.default.createElement("input", { type: "password", required: true, value: password, onChange: (e) => setPassword(e.target.value), placeholder: "\u2022\u2022\u2022\u2022\u2022\u2022", className: "w-full pl-10 pr-4 py-3 rounded-2xl bg-zinc-950 border border-zinc-800 text-sm text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" }))),
-                        react_1.default.createElement("button", { type: "submit", className: "w-full py-3.5 px-5 rounded-2xl font-bold text-xs bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 text-white border border-rose-600/40 shadow-xl shadow-rose-950/70 flex items-center justify-center gap-2 transition cursor-pointer mt-2" },
-                            react_1.default.createElement("span", null, "Acessar Painel FacasFlow"),
-                            react_1.default.createElement(lucide_react_1.ArrowRight, { className: "w-4 h-4" })))) : (react_1.default.createElement("form", { onSubmit: handleRegisterSubmit, className: "space-y-3.5" },
-                        react_1.default.createElement("div", null,
-                            react_1.default.createElement("h3", { className: "text-base font-bold text-slate-50" }, "Cadastrar Nova Facaria (Novo Tenant)"),
-                            react_1.default.createElement("p", { className: "text-xs text-zinc-400 mt-0.5" }, "Crie um banco de dados totalmente limpo e isolado para outra empresa.")),
-                        react_1.default.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 gap-3" },
-                            react_1.default.createElement("div", null,
-                                react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1" }, "Nome da Facaria / Empresa *"),
-                                react_1.default.createElement("input", { type: "text", required: true, value: companyName, onChange: (e) => setCompanyName(e.target.value), placeholder: "Ex: Facaria do Francisco", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" })),
-                            react_1.default.createElement("div", null,
-                                react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1" }, "Respons\u00E1vel / Gestor"),
-                                react_1.default.createElement("input", { type: "text", value: ownerName, onChange: (e) => setOwnerName(e.target.value), placeholder: "Ex: Francisco Silva", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" }))),
-                        react_1.default.createElement("div", null,
-                            react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1" }, "E-mail de Login *"),
-                            react_1.default.createElement("input", { type: "email", required: true, value: regEmail, onChange: (e) => setRegEmail(e.target.value), placeholder: "francisco@facaria.com", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" })),
-                        react_1.default.createElement("div", null,
-                            react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1" }, "Senha *"),
-                            react_1.default.createElement("input", { type: "password", required: true, value: regPassword, onChange: (e) => setRegPassword(e.target.value), placeholder: "Crie uma senha segura", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" })),
-                        react_1.default.createElement("button", { type: "submit", className: "w-full py-3.5 px-5 rounded-2xl font-bold text-xs bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 text-white border border-rose-600/40 shadow-xl shadow-rose-950/70 flex items-center justify-center gap-2 transition cursor-pointer mt-2" },
-                            react_1.default.createElement(lucide_react_1.UserPlus, { className: "w-4 h-4" }),
-                            react_1.default.createElement("span", null, "Criar Ambiente Isolado & Entrar"))))),
-                react_1.default.createElement("div", { className: "mt-6 pt-4 border-t border-zinc-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-500" },
-                    react_1.default.createElement("span", null, "FacasFlow SaaS \u2022 Multi-Tenant Engine"),
-                    react_1.default.createElement("span", null, "Qualifacas & Parceiros"))))));
+                    react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1.5" }, "Senha"),
+                    react_1.default.createElement("div", { className: "relative" },
+                        react_1.default.createElement(lucide_react_1.Lock, { className: "w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2" }),
+                        react_1.default.createElement("input", { type: "password", required: true, value: password, onChange: (e) => setPassword(e.target.value), placeholder: "\u2022\u2022\u2022\u2022\u2022\u2022", className: "w-full pl-10 pr-4 py-3 rounded-2xl bg-zinc-950 border border-zinc-800 text-sm text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" }))),
+                react_1.default.createElement("button", { type: "submit", className: "w-full py-3.5 px-5 rounded-2xl font-bold text-xs bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 text-white border border-rose-600/40 shadow-xl shadow-rose-950/70 flex items-center justify-center gap-2 transition cursor-pointer mt-2" },
+                    react_1.default.createElement("span", null, "Entrar no Painel"),
+                    react_1.default.createElement(lucide_react_1.ArrowRight, { className: "w-4 h-4" })))) : (react_1.default.createElement("form", { onSubmit: handleRegisterSubmit, className: "space-y-3.5" },
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1" }, "Nome da Empresa *"),
+                    react_1.default.createElement("input", { type: "text", required: true, value: companyName, onChange: (e) => setCompanyName(e.target.value), placeholder: "Nome da sua facaria", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" })),
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1" }, "Respons\u00E1vel"),
+                    react_1.default.createElement("input", { type: "text", value: ownerName, onChange: (e) => setOwnerName(e.target.value), placeholder: "Seu nome", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" })),
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1" }, "E-mail *"),
+                    react_1.default.createElement("input", { type: "email", required: true, value: regEmail, onChange: (e) => setRegEmail(e.target.value), placeholder: "Digite seu e-mail", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" })),
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1" }, "Senha *"),
+                    react_1.default.createElement("input", { type: "password", required: true, value: regPassword, onChange: (e) => setRegPassword(e.target.value), placeholder: "Crie uma senha", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" })),
+                react_1.default.createElement("button", { type: "submit", className: "w-full py-3.5 px-5 rounded-2xl font-bold text-xs bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 text-white border border-rose-600/40 shadow-xl shadow-rose-950/70 flex items-center justify-center gap-2 transition cursor-pointer mt-2" },
+                    react_1.default.createElement(lucide_react_1.UserPlus, { className: "w-4 h-4" }),
+                    react_1.default.createElement("span", null, "Criar Conta & Entrar")))))));
 };
 exports.AuthLoginScreen = AuthLoginScreen;
 
@@ -981,7 +929,7 @@ const HeaderBar = ({ activeSection, onSelectSection, searchQuery, onSearchChange
                             ? 'bg-rose-500 text-white'
                             : 'bg-zinc-800 text-zinc-200 border border-zinc-700'}` }, badge))));
             })),
-            react_1.default.createElement("button", { type: "button", onClick: onLogout, className: "w-10 h-10 rounded-2xl bg-zinc-800/70 hover:bg-rose-900/80 border border-zinc-700/60 hover:border-rose-600/50 flex items-center justify-center text-zinc-400 hover:text-white transition cursor-pointer", title: `Sair da conta (${tenantName})` },
+            react_1.default.createElement("button", { type: "button", onClick: onLogout, className: "w-10 h-10 rounded-2xl bg-zinc-800/70 hover:bg-rose-900/80 border border-zinc-700/60 hover:border-rose-600/50 flex items-center justify-center text-zinc-400 hover:text-white transition cursor-pointer", title: "Sair da conta" },
                 react_1.default.createElement(lucide_react_1.LogOut, { className: "w-4 h-4 stroke-[2]" }))),
         react_1.default.createElement("header", { className: "sticky top-0 z-30 bg-zinc-950/85 backdrop-blur-xl border-b border-zinc-900" },
             react_1.default.createElement("div", { className: "max-w-[1520px] mx-auto lg:pl-24 px-4 sm:px-6 py-3.5 flex flex-col gap-3" },
@@ -991,10 +939,7 @@ const HeaderBar = ({ activeSection, onSelectSection, searchQuery, onSearchChange
                             react_1.default.createElement(lucide_react_1.Layers, { className: "w-4 h-4" })),
                         react_1.default.createElement("h1", { className: "text-xl font-bold tracking-tight text-slate-50" },
                             "Facas",
-                            react_1.default.createElement("span", { className: "text-rose-500" }, "Flow")),
-                        react_1.default.createElement("span", { className: "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-zinc-900 border border-zinc-800 text-[11px] font-semibold text-zinc-300" },
-                            react_1.default.createElement("span", { className: "w-1.5 h-1.5 rounded-full bg-emerald-400" }),
-                            tenantName)),
+                            react_1.default.createElement("span", { className: "text-rose-500" }, "Flow"))),
                     react_1.default.createElement("div", { className: "flex items-center gap-2.5" },
                         react_1.default.createElement("div", { className: "hidden md:block relative w-64" },
                             react_1.default.createElement(lucide_react_1.Search, { className: "w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" }),
@@ -2392,7 +2337,7 @@ const App = () => {
         setSelectedCompanyId(tenantDb.companies[0]?.id || null);
         setActiveSection('bento_home');
         setSearchQuery('');
-        showToast(`Bem-vindo(a) ao painel ${newSession.companyName}!`);
+        showToast('Sessão iniciada com sucesso!');
     };
     const handleLogout = () => {
         (0, storageAdapter_1.clearActiveSession)();
