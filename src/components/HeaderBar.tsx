@@ -183,8 +183,8 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
             </div>
           </div>
 
-          {/* Section Pills Bar */}
-          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+          {/* Section Pills Bar (Wrapped, No Horizontal Scrollbar) */}
+          <div className="flex flex-wrap items-center gap-2 pt-1">
             {NAV_SECTIONS.map((item) => {
               const Icon = item.icon;
               const isActive = activeSection === item.id;
@@ -193,17 +193,17 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
                 <button
                   key={item.id}
                   onClick={() => onSelectSection(item.id)}
-                  className={`flex items-center gap-2 px-3.5 py-2 rounded-2xl text-xs font-medium whitespace-nowrap transition-all cursor-pointer ${
+                  className={`flex items-center justify-center sm:justify-start gap-2 px-3.5 py-2 rounded-2xl text-xs font-medium transition-all cursor-pointer ${
                     isActive
                       ? 'bg-rose-900/90 text-slate-50 border border-rose-600/50 shadow-sm'
                       : 'bg-zinc-900/60 text-zinc-400 border border-zinc-800/70 hover:text-slate-100 hover:bg-zinc-900'
                   }`}
                 >
-                  <Icon className="w-3.5 h-3.5 stroke-[2]" />
+                  <Icon className="w-3.5 h-3.5 stroke-[2] shrink-0" />
                   <span>{item.label}</span>
                   {badge !== undefined && (
                     <span
-                      className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                      className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold leading-none ${
                         isActive
                           ? 'bg-black/40 text-rose-200'
                           : item.id === 'financeiro'

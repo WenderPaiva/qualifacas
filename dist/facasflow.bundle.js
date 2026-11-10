@@ -602,16 +602,16 @@ const HeaderBar = ({ activeSection, onSelectSection, searchQuery, onSearchChange
                         react_1.default.createElement("button", { onClick: onOpenNewOrder, className: "inline-flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-semibold bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 text-slate-50 border border-rose-600/40 shadow-lg shadow-rose-950/60 transition cursor-pointer" },
                             react_1.default.createElement(lucide_react_1.Plus, { className: "w-4 h-4 stroke-[2.5]" }),
                             react_1.default.createElement("span", null, "Nova OS")))),
-                react_1.default.createElement("div", { className: "flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5" }, exports.NAV_SECTIONS.map((item) => {
+                react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2 pt-1" }, exports.NAV_SECTIONS.map((item) => {
                     const Icon = item.icon;
                     const isActive = activeSection === item.id;
                     const badge = getBadge(item.id);
-                    return (react_1.default.createElement("button", { key: item.id, onClick: () => onSelectSection(item.id), className: `flex items-center gap-2 px-3.5 py-2 rounded-2xl text-xs font-medium whitespace-nowrap transition-all cursor-pointer ${isActive
+                    return (react_1.default.createElement("button", { key: item.id, onClick: () => onSelectSection(item.id), className: `flex items-center justify-center sm:justify-start gap-2 px-3.5 py-2 rounded-2xl text-xs font-medium transition-all cursor-pointer ${isActive
                             ? 'bg-rose-900/90 text-slate-50 border border-rose-600/50 shadow-sm'
                             : 'bg-zinc-900/60 text-zinc-400 border border-zinc-800/70 hover:text-slate-100 hover:bg-zinc-900'}` },
-                        react_1.default.createElement(Icon, { className: "w-3.5 h-3.5 stroke-[2]" }),
+                        react_1.default.createElement(Icon, { className: "w-3.5 h-3.5 stroke-[2] shrink-0" }),
                         react_1.default.createElement("span", null, item.label),
-                        badge !== undefined && (react_1.default.createElement("span", { className: `px-1.5 py-0.2 rounded-full text-[10px] font-bold ${isActive
+                        badge !== undefined && (react_1.default.createElement("span", { className: `px-1.5 py-0.5 rounded-full text-[10px] font-bold leading-none ${isActive
                                 ? 'bg-black/40 text-rose-200'
                                 : item.id === 'financeiro'
                                     ? 'bg-rose-500/20 text-rose-400'
