@@ -4,6 +4,7 @@ import {
   Clock,
   MapPin,
   PackageCheck,
+  Trash2,
   Truck,
   UserCheck,
 } from 'lucide-react';
@@ -15,6 +16,7 @@ interface DeliveriesLogisticsSectionProps {
   deliveries: DeliveryRecord[];
   prefillOrder?: DieOrder | null;
   onAddDelivery: (delivery: Omit<DeliveryRecord, 'id'>) => void;
+  onDeleteDelivery: (deliveryId: string) => void;
 }
 
 export const DeliveriesLogisticsSection: React.FC<DeliveriesLogisticsSectionProps> = ({
@@ -22,6 +24,7 @@ export const DeliveriesLogisticsSection: React.FC<DeliveriesLogisticsSectionProp
   deliveries,
   prefillOrder,
   onAddDelivery,
+  onDeleteDelivery,
 }) => {
   const [selectedOrderId, setSelectedOrderId] = useState(
     prefillOrder?.id || orders[0]?.id || ''
@@ -267,14 +270,24 @@ export const DeliveriesLogisticsSection: React.FC<DeliveriesLogisticsSectionProp
                       </div>
                     </div>
 
-                    <div className="sm:text-right font-mono shrink-0 bg-zinc-900 px-3 py-2 rounded-2xl border border-zinc-800">
-                      <span className="text-[10px] uppercase text-zinc-500 block">
-                        Saída Registrada
-                      </span>
-                      <span className="text-xs font-bold text-emerald-400 flex items-center sm:justify-end gap-1 mt-0.5">
-                        <Clock className="w-3 h-3" />
-                        {del.dispatchedAt}
-                      </span>
+                    <div className="flex items-center justify-between sm:justify-end gap-2 shrink-0">
+                      <div className="sm:text-right font-mono bg-zinc-900 px-3 py-2 rounded-2xl border border-zinc-800">
+                        <span className="text-[10px] uppercase text-zinc-500 block">
+                          Saída Registrada
+                        </span>
+                        <span className="text-xs font-bold text-emerald-400 flex items-center sm:justify-end gap-1 mt-0.5">
+                          <Clock className="w-3 h-3" />
+                          {del.dispatchedAt}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => onDeleteDelivery(del.id)}
+                        className="p-2.5 rounded-2xl bg-zinc-900 hover:bg-rose-900/80 text-zinc-500 hover:text-rose-200 border border-zinc-800 hover:border-rose-700 transition cursor-pointer"
+                        title="Apagar registro de entrega"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </div>
                   </div>
                 );

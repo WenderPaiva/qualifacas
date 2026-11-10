@@ -256,6 +256,55 @@ export const App: React.FC = () => {
     showToast(`Status do retorno atualizado (${stamp})!`);
   };
 
+  const handleDeleteCompany = (companyId: string) => {
+    const comp = db.companies.find((c) => c.id === companyId);
+    const removedOrderIds = new Set(
+      db.orders.filter((o) => o.companyId === companyId).map((o) => o.id)
+    );
+    const nextCompanies = db.companies.filter((c) => c.id !== companyId);
+    const nextOrders = db.orders.filter((o) => o.companyId !== companyId);
+    const nextDeliveries = db.deliveries.filter((d) => !removedOrderIds.has(d.orderId));
+    const nextReturns = db.returns.filter((r) => !removedOrderIds.has(r.orderId));
+
+    commitDb({
+      ...db,
+      companies: nextCompanies,
+      orders: nextOrders,
+      deliveries: nextDeliveries,
+      returns: nextReturns,
+    });
+
+    if (selectedCompanyId === companyId) {
+      setSelectedCompanyId(nextCompanies[0]?.id || null);
+    }
+    showToast(`Empresa "${comp?.corporateName || companyId}" apagada!`);
+  };
+
+  const handleDeleteOrder = (orderId: string) => {
+    const nextOrders = db.orders.filter((o) => o.id !== orderId);
+    const nextDeliveries = db.deliveries.filter((d) => d.orderId !== orderId);
+    const nextReturns = db.returns.filter((r) => r.orderId !== orderId);
+    commitDb({
+      ...db,
+      orders: nextOrders,
+      deliveries: nextDeliveries,
+      returns: nextReturns,
+    });
+    showToast(`Ordem ${orderId} apagada com sucesso!`);
+  };
+
+  const handleDeleteDelivery = (deliveryId: string) => {
+    const nextDeliveries = db.deliveries.filter((d) => d.id !== deliveryId);
+    commitDb({ ...db, deliveries: nextDeliveries });
+    showToast(`Registro de entrega ${deliveryId} apagado!`);
+  };
+
+  const handleDeleteReturn = (returnId: string) => {
+    const nextReturns = db.returns.filter((r) => r.id !== returnId);
+    commitDb({ ...db, returns: nextReturns });
+    showToast(`Registro de retorno ${returnId} apagado!`);
+  };
+
   const handleResetSeed = () => {
     const emptyDb = createEnterpriseSeedDatabase();
     commitDb(emptyDb);
@@ -314,6 +363,8 @@ export const App: React.FC = () => {
             selectedCompanyId={selectedCompanyId}
             onSelectCompany={setSelectedCompanyId}
             onAddCompany={handleAddCompany}
+            onDeleteCompany={handleDeleteCompany}
+            onDeleteOrder={handleDeleteOrder}
             onAddDieForCompany={(comp, desc, val, mod) =>
               handleCreateOrderFull({
                 companyId: comp.id,
@@ -332,6 +383,7 @@ export const App: React.FC = () => {
           <ProductionKanban
             orders={filteredOrders}
             onMoveStage={handleMoveStage}
+            onDeleteOrder={handleDeleteOrder}
             onQuickRegisterDelivery={(order) => {
               setPrefillDeliveryOrder(order);
               setActiveSection('entregas');
@@ -345,6 +397,7 @@ export const App: React.FC = () => {
             financials={financials}
             onTogglePaid={handleTogglePaid}
             onEmitBilling30d={handleEmitBilling30d}
+            onDeleteOrder={handleDeleteOrder}
           />
         )}
 
@@ -354,6 +407,7 @@ export const App: React.FC = () => {
             deliveries={db.deliveries}
             prefillOrder={prefillDeliveryOrder}
             onAddDelivery={handleAddDelivery}
+            onDeleteDelivery={handleDeleteDelivery}
           />
         )}
 
@@ -363,6 +417,7 @@ export const App: React.FC = () => {
             returns={db.returns}
             onAddReturn={handleAddReturn}
             onUpdateReturnStatus={handleUpdateReturnStatus}
+            onDeleteReturn={handleDeleteReturn}
           />
         )}
       </main>

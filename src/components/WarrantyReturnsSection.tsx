@@ -3,6 +3,7 @@ import {
   ArrowRight,
   Check,
   ShieldAlert,
+  Trash2,
   Wrench,
 } from 'lucide-react';
 import { DieOrder, ReturnStatus, WarrantyReturnRecord } from '../types/order';
@@ -18,6 +19,7 @@ interface WarrantyReturnsSectionProps {
   returns: WarrantyReturnRecord[];
   onAddReturn: (record: Omit<WarrantyReturnRecord, 'id'>) => void;
   onUpdateReturnStatus: (id: string, nextStatus: ReturnStatus) => void;
+  onDeleteReturn: (returnId: string) => void;
 }
 
 const COMMON_REASONS = [
@@ -33,6 +35,7 @@ export const WarrantyReturnsSection: React.FC<WarrantyReturnsSectionProps> = ({
   returns,
   onAddReturn,
   onUpdateReturnStatus,
+  onDeleteReturn,
 }) => {
   const [selectedOrderId, setSelectedOrderId] = useState(orders[0]?.id || '');
   const [reason, setReason] = useState('');
@@ -252,21 +255,31 @@ export const WarrantyReturnsSection: React.FC<WarrantyReturnsSectionProps> = ({
                         <p className="text-xs text-zinc-400 mt-1">{ret.toolDescription}</p>
                       </div>
 
-                      <div className="text-right font-mono">
-                        <span
-                          className={`text-sm font-extrabold block ${
-                            ret.adjustmentAmount === 0
-                              ? 'text-emerald-400'
-                              : 'text-amber-400'
-                          }`}
+                      <div className="flex items-center gap-2">
+                        <div className="text-right font-mono">
+                          <span
+                            className={`text-sm font-extrabold block ${
+                              ret.adjustmentAmount === 0
+                                ? 'text-emerald-400'
+                                : 'text-amber-400'
+                            }`}
+                          >
+                            {ret.adjustmentAmount === 0
+                              ? 'R$ 0,00 (Garantia)'
+                              : `Ajuste: ${formatBRL(ret.adjustmentAmount)}`}
+                          </span>
+                          <span className="text-[10px] text-zinc-500">
+                            Atualizado: {ret.updatedAt}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onDeleteReturn(ret.id)}
+                          className="p-2 rounded-2xl bg-zinc-900 hover:bg-rose-900/80 text-zinc-500 hover:text-rose-200 border border-zinc-800 hover:border-rose-700 transition cursor-pointer"
+                          title="Apagar registro de retorno"
                         >
-                          {ret.adjustmentAmount === 0
-                            ? 'R$ 0,00 (Garantia)'
-                            : `Ajuste: ${formatBRL(ret.adjustmentAmount)}`}
-                        </span>
-                        <span className="text-[10px] text-zinc-500">
-                          Atualizado: {ret.updatedAt}
-                        </span>
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       </div>
                     </div>
 

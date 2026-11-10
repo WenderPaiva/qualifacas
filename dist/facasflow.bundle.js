@@ -851,7 +851,7 @@ exports.CompaniesCrmSection = void 0;
 const react_1 = __importStar(require("react"));
 const lucide_react_1 = require("lucide-react");
 const financeEngine_1 = require("../utils/financeEngine");
-const CompaniesCrmSection = ({ companies, orders, selectedCompanyId, onSelectCompany, onAddCompany, onAddDieForCompany, }) => {
+const CompaniesCrmSection = ({ companies, orders, selectedCompanyId, onSelectCompany, onAddCompany, onDeleteCompany, onDeleteOrder, onAddDieForCompany, }) => {
     const activeCompany = companies.find((c) => c.id === selectedCompanyId) || companies[0] || null;
     // New Company inline modal state
     const [showNewCompanyForm, setShowNewCompanyForm] = (0, react_1.useState)(companies.length === 0);
@@ -932,10 +932,16 @@ const CompaniesCrmSection = ({ companies, orders, selectedCompanyId, onSelectCom
                                 react_1.default.createElement("p", { className: "text-xs font-mono text-zinc-400 mt-0.5" },
                                     "CNPJ: ",
                                     comp.cnpj))),
-                        react_1.default.createElement("span", { className: "px-3 py-1 rounded-2xl bg-zinc-950/80 border border-zinc-800 text-xs font-bold text-rose-400 shrink-0" },
-                            linked.length,
-                            " ",
-                            linked.length === 1 ? 'faca' : 'facas')),
+                        react_1.default.createElement("div", { className: "flex items-center gap-1.5 shrink-0" },
+                            react_1.default.createElement("span", { className: "px-3 py-1 rounded-2xl bg-zinc-950/80 border border-zinc-800 text-xs font-bold text-rose-400" },
+                                linked.length,
+                                " ",
+                                linked.length === 1 ? 'faca' : 'facas'),
+                            react_1.default.createElement("button", { type: "button", onClick: (e) => {
+                                    e.stopPropagation();
+                                    onDeleteCompany(comp.id);
+                                }, className: "p-2 rounded-2xl bg-zinc-950/80 hover:bg-rose-900/80 text-zinc-500 hover:text-rose-200 border border-zinc-800 hover:border-rose-700 transition cursor-pointer", title: "Apagar empresa e facas vinculadas" },
+                                react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" })))),
                     react_1.default.createElement("div", { className: "mt-4 pt-3 border-t border-zinc-800/70 flex items-center justify-between text-xs text-zinc-400" },
                         react_1.default.createElement("div", { className: "flex items-center gap-3" },
                             react_1.default.createElement("span", { className: "flex items-center gap-1" },
@@ -958,9 +964,12 @@ const CompaniesCrmSection = ({ companies, orders, selectedCompanyId, onSelectCom
                             react_1.default.createElement("span", { className: "text-zinc-300" }, activeCompany.phone),
                             " \u2022 Contato: ",
                             react_1.default.createElement("span", { className: "text-zinc-300" }, activeCompany.contactName))),
-                    react_1.default.createElement("div", { className: "p-3.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-right" },
-                        react_1.default.createElement("span", { className: "text-[10px] uppercase text-zinc-400 block" }, "Volume Total Cadastrado"),
-                        react_1.default.createElement("span", { className: "text-xl font-extrabold text-emerald-400 font-mono" }, (0, financeEngine_1.formatBRL)(companyTotalValue)))),
+                    react_1.default.createElement("div", { className: "flex items-center gap-2" },
+                        react_1.default.createElement("div", { className: "p-3.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-right" },
+                            react_1.default.createElement("span", { className: "text-[10px] uppercase text-zinc-400 block" }, "Volume Total Cadastrado"),
+                            react_1.default.createElement("span", { className: "text-xl font-extrabold text-emerald-400 font-mono" }, (0, financeEngine_1.formatBRL)(companyTotalValue))),
+                        react_1.default.createElement("button", { type: "button", onClick: () => onDeleteCompany(activeCompany.id), className: "p-3.5 rounded-2xl bg-zinc-950 hover:bg-rose-900/80 text-zinc-400 hover:text-rose-200 border border-zinc-800 hover:border-rose-700 transition cursor-pointer", title: "Apagar esta empresa" },
+                            react_1.default.createElement(lucide_react_1.Trash2, { className: "w-4 h-4" })))),
                 react_1.default.createElement("form", { onSubmit: handleCreateDieInCompany, className: "p-4 rounded-2xl bg-zinc-950/80 border border-zinc-800/90 space-y-3" },
                     react_1.default.createElement("div", { className: "flex items-center justify-between" },
                         react_1.default.createElement("span", { className: "text-xs font-bold text-slate-200 flex items-center gap-1.5" },
@@ -1011,11 +1020,14 @@ const CompaniesCrmSection = ({ companies, orders, selectedCompanyId, onSelectCom
                                     " \u2022 Vencimento:",
                                     ' ',
                                     (0, financeEngine_1.formatDateBR)(order.dueDate))),
-                            react_1.default.createElement("div", { className: "text-right font-mono shrink-0" },
-                                react_1.default.createElement("span", { className: "text-base font-extrabold text-emerald-400 block" }, (0, financeEngine_1.formatBRL)(order.amount)),
-                                react_1.default.createElement("span", { className: "text-[10px] text-zinc-500" },
-                                    "Atualizado: ",
-                                    order.stageUpdatedAt))));
+                            react_1.default.createElement("div", { className: "flex items-center justify-between sm:justify-end gap-3 shrink-0" },
+                                react_1.default.createElement("div", { className: "text-right font-mono" },
+                                    react_1.default.createElement("span", { className: "text-base font-extrabold text-emerald-400 block" }, (0, financeEngine_1.formatBRL)(order.amount)),
+                                    react_1.default.createElement("span", { className: "text-[10px] text-zinc-500" },
+                                        "Atualizado: ",
+                                        order.stageUpdatedAt)),
+                                react_1.default.createElement("button", { type: "button", onClick: () => onDeleteOrder(order.id), className: "p-2 rounded-xl bg-zinc-900 hover:bg-rose-900/80 text-zinc-500 hover:text-rose-200 border border-zinc-800 hover:border-rose-700 transition cursor-pointer", title: "Apagar esta OS / Faca" },
+                                    react_1.default.createElement(lucide_react_1.Trash2, { className: "w-4 h-4" })))));
                     })))))))));
 };
 exports.CompaniesCrmSection = CompaniesCrmSection;
@@ -1065,7 +1077,7 @@ exports.ProductionKanban = void 0;
 const react_1 = __importStar(require("react"));
 const lucide_react_1 = require("lucide-react");
 const financeEngine_1 = require("../utils/financeEngine");
-const ProductionKanban = ({ orders, onMoveStage, onQuickRegisterDelivery, }) => {
+const ProductionKanban = ({ orders, onMoveStage, onQuickRegisterDelivery, onDeleteOrder, }) => {
     const [draggedId, setDraggedId] = (0, react_1.useState)(null);
     const [dragOverStage, setDragOverStage] = (0, react_1.useState)(null);
     return (react_1.default.createElement("div", { className: "space-y-5" },
@@ -1115,7 +1127,10 @@ const ProductionKanban = ({ orders, onMoveStage, onQuickRegisterDelivery, }) => 
                         }, className: "rounded-2xl p-3.5 bg-zinc-950/90 border border-zinc-800/90 hover:border-rose-700/60 transition-all shadow-md cursor-grab active:cursor-grabbing flex flex-col gap-2.5" },
                         react_1.default.createElement("div", { className: "flex items-center justify-between gap-1.5" },
                             react_1.default.createElement("span", { className: "px-2 py-0.5 rounded-lg bg-rose-950/80 border border-rose-800/60 font-mono text-[11px] font-bold text-rose-300" }, order.id),
-                            react_1.default.createElement("span", { className: `px-2 py-0.5 rounded-full text-[10px] font-semibold border ${modMeta?.badgeClass}` }, modMeta?.short)),
+                            react_1.default.createElement("div", { className: "flex items-center gap-1" },
+                                react_1.default.createElement("span", { className: `px-2 py-0.5 rounded-full text-[10px] font-semibold border ${modMeta?.badgeClass}` }, modMeta?.short),
+                                react_1.default.createElement("button", { type: "button", onClick: () => onDeleteOrder(order.id), className: "p-1 rounded-lg bg-zinc-900 hover:bg-rose-900/80 text-zinc-500 hover:text-rose-200 border border-zinc-800 hover:border-rose-700 transition cursor-pointer", title: "Apagar esta OS" },
+                                    react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3 h-3" })))),
                         react_1.default.createElement("div", null,
                             react_1.default.createElement("span", { className: "text-[11px] font-semibold text-zinc-400 block truncate" }, order.companyName),
                             react_1.default.createElement("h4", { className: "text-xs font-bold text-slate-100 leading-snug mt-0.5" }, order.toolDescription)),
@@ -1182,7 +1197,7 @@ exports.FinanceAnalyticsSection = void 0;
 const react_1 = __importStar(require("react"));
 const lucide_react_1 = require("lucide-react");
 const financeEngine_1 = require("../utils/financeEngine");
-const FinanceAnalyticsSection = ({ orders, financials, onTogglePaid, onEmitBilling30d, }) => {
+const FinanceAnalyticsSection = ({ orders, financials, onTogglePaid, onEmitBilling30d, onDeleteOrder, }) => {
     const [statusFilter, setStatusFilter] = (0, react_1.useState)('todos');
     const [copiedId, setCopiedId] = (0, react_1.useState)(null);
     const [hoveredModality, setHoveredModality] = (0, react_1.useState)(null);
@@ -1398,7 +1413,9 @@ const FinanceAnalyticsSection = ({ orders, financials, onTogglePaid, onEmitBilli
                                         react_1.default.createElement(lucide_react_1.RotateCcw, { className: "w-3 h-3" }),
                                         react_1.default.createElement("span", null, "Reabrir"))) : (react_1.default.createElement(react_1.default.Fragment, null,
                                         react_1.default.createElement(lucide_react_1.Check, { className: "w-3.5 h-3.5 stroke-[2.5]" }),
-                                        react_1.default.createElement("span", null, "Marcar Pago"))))) : null))));
+                                        react_1.default.createElement("span", null, "Marcar Pago"))))) : null,
+                                    react_1.default.createElement("button", { type: "button", onClick: () => onDeleteOrder(order.id), className: "p-1.5 rounded-xl bg-zinc-950 hover:bg-rose-900/80 text-zinc-500 hover:text-rose-200 border border-zinc-800 hover:border-rose-700 transition cursor-pointer", title: "Apagar esta OS" },
+                                        react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" }))))));
                     }))))))));
 };
 exports.FinanceAnalyticsSection = FinanceAnalyticsSection;
@@ -1448,7 +1465,7 @@ exports.DeliveriesLogisticsSection = void 0;
 const react_1 = __importStar(require("react"));
 const lucide_react_1 = require("lucide-react");
 const financeEngine_1 = require("../utils/financeEngine");
-const DeliveriesLogisticsSection = ({ orders, deliveries, prefillOrder, onAddDelivery, }) => {
+const DeliveriesLogisticsSection = ({ orders, deliveries, prefillOrder, onAddDelivery, onDeleteDelivery, }) => {
     const [selectedOrderId, setSelectedOrderId] = (0, react_1.useState)(prefillOrder?.id || orders[0]?.id || '');
     const [method, setMethod] = (0, react_1.useState)('uber_flash');
     const [carrierName, setCarrierName] = (0, react_1.useState)('');
@@ -1558,11 +1575,14 @@ const DeliveriesLogisticsSection = ({ orders, deliveries, prefillOrder, onAddDel
                                 del.notes && (react_1.default.createElement("span", { className: "flex items-center gap-1 text-zinc-500" },
                                     react_1.default.createElement(lucide_react_1.MapPin, { className: "w-3 h-3" }),
                                     del.notes)))),
-                        react_1.default.createElement("div", { className: "sm:text-right font-mono shrink-0 bg-zinc-900 px-3 py-2 rounded-2xl border border-zinc-800" },
-                            react_1.default.createElement("span", { className: "text-[10px] uppercase text-zinc-500 block" }, "Sa\u00EDda Registrada"),
-                            react_1.default.createElement("span", { className: "text-xs font-bold text-emerald-400 flex items-center sm:justify-end gap-1 mt-0.5" },
-                                react_1.default.createElement(lucide_react_1.Clock, { className: "w-3 h-3" }),
-                                del.dispatchedAt))));
+                        react_1.default.createElement("div", { className: "flex items-center justify-between sm:justify-end gap-2 shrink-0" },
+                            react_1.default.createElement("div", { className: "sm:text-right font-mono bg-zinc-900 px-3 py-2 rounded-2xl border border-zinc-800" },
+                                react_1.default.createElement("span", { className: "text-[10px] uppercase text-zinc-500 block" }, "Sa\u00EDda Registrada"),
+                                react_1.default.createElement("span", { className: "text-xs font-bold text-emerald-400 flex items-center sm:justify-end gap-1 mt-0.5" },
+                                    react_1.default.createElement(lucide_react_1.Clock, { className: "w-3 h-3" }),
+                                    del.dispatchedAt)),
+                            react_1.default.createElement("button", { type: "button", onClick: () => onDeleteDelivery(del.id), className: "p-2.5 rounded-2xl bg-zinc-900 hover:bg-rose-900/80 text-zinc-500 hover:text-rose-200 border border-zinc-800 hover:border-rose-700 transition cursor-pointer", title: "Apagar registro de entrega" },
+                                react_1.default.createElement(lucide_react_1.Trash2, { className: "w-4 h-4" })))));
                 })))))));
 };
 exports.DeliveriesLogisticsSection = DeliveriesLogisticsSection;
@@ -1619,7 +1639,7 @@ const COMMON_REASONS = [
     'Substituição de borracha ejetora',
     'Inclusão de furo / trava adicional',
 ];
-const WarrantyReturnsSection = ({ orders, returns, onAddReturn, onUpdateReturnStatus, }) => {
+const WarrantyReturnsSection = ({ orders, returns, onAddReturn, onUpdateReturnStatus, onDeleteReturn, }) => {
     const [selectedOrderId, setSelectedOrderId] = (0, react_1.useState)(orders[0]?.id || '');
     const [reason, setReason] = (0, react_1.useState)('');
     const [technicalAction, setTechnicalAction] = (0, react_1.useState)('');
@@ -1710,15 +1730,18 @@ const WarrantyReturnsSection = ({ orders, returns, onAddReturn, onUpdateReturnSt
                                         react_1.default.createElement("span", { className: `w-1.5 h-1.5 rounded-full ${stMeta.dotClass}` }),
                                         stMeta.label)),
                                 react_1.default.createElement("p", { className: "text-xs text-zinc-400 mt-1" }, ret.toolDescription)),
-                            react_1.default.createElement("div", { className: "text-right font-mono" },
-                                react_1.default.createElement("span", { className: `text-sm font-extrabold block ${ret.adjustmentAmount === 0
-                                        ? 'text-emerald-400'
-                                        : 'text-amber-400'}` }, ret.adjustmentAmount === 0
-                                    ? 'R$ 0,00 (Garantia)'
-                                    : `Ajuste: ${(0, financeEngine_1.formatBRL)(ret.adjustmentAmount)}`),
-                                react_1.default.createElement("span", { className: "text-[10px] text-zinc-500" },
-                                    "Atualizado: ",
-                                    ret.updatedAt))),
+                            react_1.default.createElement("div", { className: "flex items-center gap-2" },
+                                react_1.default.createElement("div", { className: "text-right font-mono" },
+                                    react_1.default.createElement("span", { className: `text-sm font-extrabold block ${ret.adjustmentAmount === 0
+                                            ? 'text-emerald-400'
+                                            : 'text-amber-400'}` }, ret.adjustmentAmount === 0
+                                        ? 'R$ 0,00 (Garantia)'
+                                        : `Ajuste: ${(0, financeEngine_1.formatBRL)(ret.adjustmentAmount)}`),
+                                    react_1.default.createElement("span", { className: "text-[10px] text-zinc-500" },
+                                        "Atualizado: ",
+                                        ret.updatedAt)),
+                                react_1.default.createElement("button", { type: "button", onClick: () => onDeleteReturn(ret.id), className: "p-2 rounded-2xl bg-zinc-900 hover:bg-rose-900/80 text-zinc-500 hover:text-rose-200 border border-zinc-800 hover:border-rose-700 transition cursor-pointer", title: "Apagar registro de retorno" },
+                                    react_1.default.createElement(lucide_react_1.Trash2, { className: "w-4 h-4" })))),
                         react_1.default.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-3 text-xs" },
                             react_1.default.createElement("div", { className: "p-3 rounded-2xl bg-zinc-900/90 border border-zinc-800/80" },
                                 react_1.default.createElement("span", { className: "text-[10px] font-bold uppercase text-rose-400 block mb-0.5" }, "Motivo do Retorno:"),
@@ -2118,6 +2141,47 @@ const App = () => {
         commitDb({ ...db, returns: nextReturns });
         showToast(`Status do retorno atualizado (${stamp})!`);
     };
+    const handleDeleteCompany = (companyId) => {
+        const comp = db.companies.find((c) => c.id === companyId);
+        const removedOrderIds = new Set(db.orders.filter((o) => o.companyId === companyId).map((o) => o.id));
+        const nextCompanies = db.companies.filter((c) => c.id !== companyId);
+        const nextOrders = db.orders.filter((o) => o.companyId !== companyId);
+        const nextDeliveries = db.deliveries.filter((d) => !removedOrderIds.has(d.orderId));
+        const nextReturns = db.returns.filter((r) => !removedOrderIds.has(r.orderId));
+        commitDb({
+            ...db,
+            companies: nextCompanies,
+            orders: nextOrders,
+            deliveries: nextDeliveries,
+            returns: nextReturns,
+        });
+        if (selectedCompanyId === companyId) {
+            setSelectedCompanyId(nextCompanies[0]?.id || null);
+        }
+        showToast(`Empresa "${comp?.corporateName || companyId}" apagada!`);
+    };
+    const handleDeleteOrder = (orderId) => {
+        const nextOrders = db.orders.filter((o) => o.id !== orderId);
+        const nextDeliveries = db.deliveries.filter((d) => d.orderId !== orderId);
+        const nextReturns = db.returns.filter((r) => r.orderId !== orderId);
+        commitDb({
+            ...db,
+            orders: nextOrders,
+            deliveries: nextDeliveries,
+            returns: nextReturns,
+        });
+        showToast(`Ordem ${orderId} apagada com sucesso!`);
+    };
+    const handleDeleteDelivery = (deliveryId) => {
+        const nextDeliveries = db.deliveries.filter((d) => d.id !== deliveryId);
+        commitDb({ ...db, deliveries: nextDeliveries });
+        showToast(`Registro de entrega ${deliveryId} apagado!`);
+    };
+    const handleDeleteReturn = (returnId) => {
+        const nextReturns = db.returns.filter((r) => r.id !== returnId);
+        commitDb({ ...db, returns: nextReturns });
+        showToast(`Registro de retorno ${returnId} apagado!`);
+    };
     const handleResetSeed = () => {
         const emptyDb = (0, seedOrders_1.createEnterpriseSeedDatabase)();
         commitDb(emptyDb);
@@ -2138,7 +2202,7 @@ const App = () => {
             react_1.default.createElement("span", null, toast))),
         react_1.default.createElement("main", { className: "max-w-[1520px] mx-auto lg:pl-24 px-4 sm:px-6 pt-6" },
             activeSection === 'bento_home' && (react_1.default.createElement(BentoOverviewSection_1.BentoOverviewSection, { companies: filteredCompanies, orders: filteredOrders, deliveries: db.deliveries, returns: db.returns, financials: financials, onNavigate: setActiveSection, onOpenNewOrder: () => setIsNewModalOpen(true), onSelectCompany: (id) => setSelectedCompanyId(id) })),
-            activeSection === 'empresas' && (react_1.default.createElement(CompaniesCrmSection_1.CompaniesCrmSection, { companies: filteredCompanies, orders: filteredOrders, selectedCompanyId: selectedCompanyId, onSelectCompany: setSelectedCompanyId, onAddCompany: handleAddCompany, onAddDieForCompany: (comp, desc, val, mod) => handleCreateOrderFull({
+            activeSection === 'empresas' && (react_1.default.createElement(CompaniesCrmSection_1.CompaniesCrmSection, { companies: filteredCompanies, orders: filteredOrders, selectedCompanyId: selectedCompanyId, onSelectCompany: setSelectedCompanyId, onAddCompany: handleAddCompany, onDeleteCompany: handleDeleteCompany, onDeleteOrder: handleDeleteOrder, onAddDieForCompany: (comp, desc, val, mod) => handleCreateOrderFull({
                     companyId: comp.id,
                     companyName: comp.corporateName,
                     companyPhone: comp.phone,
@@ -2147,13 +2211,13 @@ const App = () => {
                     paymentModality: mod,
                     stage: 'arquivo_recebido',
                 }) })),
-            activeSection === 'esteira' && (react_1.default.createElement(ProductionKanban_1.ProductionKanban, { orders: filteredOrders, onMoveStage: handleMoveStage, onQuickRegisterDelivery: (order) => {
+            activeSection === 'esteira' && (react_1.default.createElement(ProductionKanban_1.ProductionKanban, { orders: filteredOrders, onMoveStage: handleMoveStage, onDeleteOrder: handleDeleteOrder, onQuickRegisterDelivery: (order) => {
                     setPrefillDeliveryOrder(order);
                     setActiveSection('entregas');
                 } })),
-            activeSection === 'financeiro' && (react_1.default.createElement(FinanceAnalyticsSection_1.FinanceAnalyticsSection, { orders: filteredOrders, financials: financials, onTogglePaid: handleTogglePaid, onEmitBilling30d: handleEmitBilling30d })),
-            activeSection === 'entregas' && (react_1.default.createElement(DeliveriesLogisticsSection_1.DeliveriesLogisticsSection, { orders: db.orders, deliveries: db.deliveries, prefillOrder: prefillDeliveryOrder, onAddDelivery: handleAddDelivery })),
-            activeSection === 'retornos' && (react_1.default.createElement(WarrantyReturnsSection_1.WarrantyReturnsSection, { orders: db.orders, returns: db.returns, onAddReturn: handleAddReturn, onUpdateReturnStatus: handleUpdateReturnStatus }))),
+            activeSection === 'financeiro' && (react_1.default.createElement(FinanceAnalyticsSection_1.FinanceAnalyticsSection, { orders: filteredOrders, financials: financials, onTogglePaid: handleTogglePaid, onEmitBilling30d: handleEmitBilling30d, onDeleteOrder: handleDeleteOrder })),
+            activeSection === 'entregas' && (react_1.default.createElement(DeliveriesLogisticsSection_1.DeliveriesLogisticsSection, { orders: db.orders, deliveries: db.deliveries, prefillOrder: prefillDeliveryOrder, onAddDelivery: handleAddDelivery, onDeleteDelivery: handleDeleteDelivery })),
+            activeSection === 'retornos' && (react_1.default.createElement(WarrantyReturnsSection_1.WarrantyReturnsSection, { orders: db.orders, returns: db.returns, onAddReturn: handleAddReturn, onUpdateReturnStatus: handleUpdateReturnStatus, onDeleteReturn: handleDeleteReturn }))),
         react_1.default.createElement("button", { type: "button", onClick: () => setIsNewModalOpen(true), className: "fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 px-5 py-3.5 rounded-3xl font-bold text-xs bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 active:scale-95 text-slate-50 border border-rose-500/40 shadow-2xl shadow-rose-950/90 transition-all cursor-pointer" },
             react_1.default.createElement(lucide_react_1.Plus, { className: "w-4 h-4 stroke-[2.5]" }),
             react_1.default.createElement("span", null, "Nova OS")),

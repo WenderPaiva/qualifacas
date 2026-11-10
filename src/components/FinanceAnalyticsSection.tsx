@@ -9,6 +9,7 @@ import {
   PieChart,
   RotateCcw,
   Sparkles,
+  Trash2,
 } from 'lucide-react';
 import { DieOrder, PaymentStatus } from '../types/order';
 import {
@@ -26,6 +27,7 @@ interface FinanceAnalyticsSectionProps {
   financials: FinancialBreakdown;
   onTogglePaid: (orderId: string) => void;
   onEmitBilling30d: (orderId: string) => void;
+  onDeleteOrder: (orderId: string) => void;
 }
 
 export const FinanceAnalyticsSection: React.FC<FinanceAnalyticsSectionProps> = ({
@@ -33,6 +35,7 @@ export const FinanceAnalyticsSection: React.FC<FinanceAnalyticsSectionProps> = (
   financials,
   onTogglePaid,
   onEmitBilling30d,
+  onDeleteOrder,
 }) => {
   const [statusFilter, setStatusFilter] = useState<PaymentStatus | 'todos'>('todos');
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -503,6 +506,16 @@ export const FinanceAnalyticsSection: React.FC<FinanceAnalyticsSectionProps> = (
                             )}
                           </button>
                         ) : null}
+
+                        {/* 4. Apagar OS */}
+                        <button
+                          type="button"
+                          onClick={() => onDeleteOrder(order.id)}
+                          className="p-1.5 rounded-xl bg-zinc-950 hover:bg-rose-900/80 text-zinc-500 hover:text-rose-200 border border-zinc-800 hover:border-rose-700 transition cursor-pointer"
+                          title="Apagar esta OS"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </td>
                   </tr>

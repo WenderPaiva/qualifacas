@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Clock,
+  Trash2,
   Truck,
 } from 'lucide-react';
 import { DieOrder, ProductionStage } from '../types/order';
@@ -18,12 +19,14 @@ interface ProductionKanbanProps {
   orders: DieOrder[];
   onMoveStage: (orderId: string, targetStage: ProductionStage) => void;
   onQuickRegisterDelivery: (order: DieOrder) => void;
+  onDeleteOrder: (orderId: string) => void;
 }
 
 export const ProductionKanban: React.FC<ProductionKanbanProps> = ({
   orders,
   onMoveStage,
   onQuickRegisterDelivery,
+  onDeleteOrder,
 }) => {
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverStage, setDragOverStage] = useState<ProductionStage | null>(null);
@@ -114,16 +117,26 @@ export const ProductionKanban: React.FC<ProductionKanbanProps> = ({
                         }}
                         className="rounded-2xl p-3.5 bg-zinc-950/90 border border-zinc-800/90 hover:border-rose-700/60 transition-all shadow-md cursor-grab active:cursor-grabbing flex flex-col gap-2.5"
                       >
-                        {/* Top OS + Payment Modality */}
+                        {/* Top OS + Payment Modality + Delete */}
                         <div className="flex items-center justify-between gap-1.5">
                           <span className="px-2 py-0.5 rounded-lg bg-rose-950/80 border border-rose-800/60 font-mono text-[11px] font-bold text-rose-300">
                             {order.id}
                           </span>
-                          <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${modMeta?.badgeClass}`}
-                          >
-                            {modMeta?.short}
-                          </span>
+                          <div className="flex items-center gap-1">
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${modMeta?.badgeClass}`}
+                            >
+                              {modMeta?.short}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => onDeleteOrder(order.id)}
+                              className="p-1 rounded-lg bg-zinc-900 hover:bg-rose-900/80 text-zinc-500 hover:text-rose-200 border border-zinc-800 hover:border-rose-700 transition cursor-pointer"
+                              title="Apagar esta OS"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
                         </div>
 
                         {/* Company & Tool Description */}
