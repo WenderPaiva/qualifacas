@@ -23,28 +23,37 @@ export type DeliveryMethod =
 
 export type ReturnStatus = 'em_analise' | 'em_ajuste' | 'liberado';
 
+export type UserRole = 'admin' | 'operador';
+
 export type ActiveSection =
   | 'bento_home'
   | 'empresas'
   | 'esteira'
   | 'financeiro'
   | 'entregas'
-  | 'retornos';
+  | 'retornos'
+  | 'equipe';
 
 export interface TenantAccount {
-  company_id: string; // Identificador único Multi-tenant (ex: "tenant_qualifacas")
-  companyName: string; // Nome da Facaria (ex: "Qualifacas", "Facaria do Francisco")
-  ownerName: string;
+  id?: string; // ID do usuário (ex: "USR-001")
+  company_id: string; // Identificador único Multi-tenant da empresa
+  companyName: string; // Nome da Facaria
+  ownerName: string; // Nome do usuário / funcionário
   email: string;
   password: string;
+  role: UserRole; // 'admin' (Patrão/Total) | 'operador' (Produção: Seções 2, 4 e 5)
+  jobTitle?: string; // Cargo (ex: "Montador de Facas", "Serrador", "Logística", "Proprietário")
   createdAt: string;
 }
 
 export interface AuthSession {
+  userId?: string;
   company_id: string;
   companyName: string;
   ownerName: string;
   email: string;
+  role: UserRole;
+  jobTitle?: string;
   loggedInAt: string;
 }
 
@@ -116,4 +125,16 @@ export interface EnterpriseDatabase {
   orders: DieOrder[];
   deliveries: DeliveryRecord[];
   returns: WarrantyReturnRecord[];
+  employees?: TenantAccount[];
+}
+
+export interface RealtimeSyncEvent {
+  eventId: string;
+  company_id: string;
+  section: 'esteira' | 'entregas' | 'retornos' | 'equipe' | 'all';
+  actionLabel: string;
+  actorName: string;
+  actorRole: UserRole;
+  timestamp: string;
+  db: EnterpriseDatabase;
 }

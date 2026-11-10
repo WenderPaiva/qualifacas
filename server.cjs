@@ -29,6 +29,21 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon',
 };
 
+const sseClientsByCompany = new Map();
+
+function broadcastSseToCompany(companyId, payload) {
+  const clients = sseClientsByCompany.get(companyId);
+  if (!clients) return;
+  const dataStr = `data: ${JSON.stringify(payload)}\n\n`;
+  for (const clientRes of clients) {
+    try {
+      clientRes.write(dataStr);
+    } catch {
+      clients.delete(clientRes);
+    }
+  }
+}
+
 const server = http.createServer((req, res) => {
   const parsedUrl = new URL(req.url || '/', `http://localhost:${PORT}`);
   const pathname = parsedUrl.pathname;
@@ -41,6 +56,28 @@ const server = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
+    return;
+  }
+
+  // Server-Sent Events (SSE) Realtime Stream per Company
+  if (pathname === '/api/realtime' && req.method === 'GET') {
+    const rawCompanyId = parsedUrl.searchParams.get('company_id') || 'tenant_qualifacas';
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+    res.write('\n');
+
+    if (!sseClientsByCompany.has(rawCompanyId)) {
+      sseClientsByCompany.set(rawCompanyId, new Set());
+    }
+    sseClientsByCompany.get(rawCompanyId).add(res);
+
+    req.on('close', () => {
+      const set = sseClientsByCompany.get(rawCompanyId);
+      if (set) set.delete(res);
+    });
     return;
   }
 
@@ -75,6 +112,16 @@ const server = http.createServer((req, res) => {
         try {
           const parsed = JSON.parse(body);
           fs.writeFileSync(tenantDbFile, JSON.stringify(parsed, null, 2), 'utf8');
+          broadcastSseToCompany(rawCompanyId, {
+            eventId: `sse_${Date.now()}`,
+            company_id: rawCompanyId,
+            section: 'all',
+            actionLabel: ' Produção atualizada em tempo real',
+            actorName: 'Fábrica',
+            actorRole: 'operador',
+            timestamp: new Date().toISOString(),
+            db: parsed,
+          });
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ status: 'ok', company_id: rawCompanyId, savedAt: new Date().toISOString() }));
         } catch (err) {

@@ -7,11 +7,13 @@ import {
   LogOut,
   PieChart,
   Plus,
+  Radio,
   Search,
   Truck,
+  Users,
   Wrench,
 } from 'lucide-react';
-import { ActiveSection } from '../types/order';
+import { ActiveSection, UserRole } from '../types/order';
 
 interface HeaderBarProps {
   activeSection: ActiveSection;
@@ -20,6 +22,9 @@ interface HeaderBarProps {
   onSearchChange: (q: string) => void;
   onOpenNewOrder: () => void;
   tenantName: string;
+  userRole: UserRole;
+  userName: string;
+  realtimeStatus: 'connected' | 'supabase_live' | 'reconnecting';
   onLogout: () => void;
   counts: {
     companies: number;
@@ -27,6 +32,7 @@ interface HeaderBarProps {
     overdue: number;
     deliveries: number;
     openReturns: number;
+    employees: number;
   };
 }
 
@@ -34,43 +40,57 @@ export const NAV_SECTIONS: {
   id: ActiveSection;
   label: string;
   shortLabel: string;
+  roles: UserRole[];
   icon: React.FC<{ className?: string }>;
 }[] = [
   {
     id: 'bento_home',
     label: 'Visão Geral',
     shortLabel: 'Visão Geral',
+    roles: ['admin'],
     icon: LayoutGrid,
   },
   {
     id: 'empresas',
     label: 'Seção 1 • Cadastro de Empresas',
     shortLabel: 'Seção 1 • Empresas',
+    roles: ['admin'],
     icon: Building2,
   },
   {
     id: 'esteira',
     label: 'Seção 2 • Esteira Física de Produção',
     shortLabel: 'Seção 2 • Esteira',
+    roles: ['admin', 'operador'],
     icon: Kanban,
   },
   {
     id: 'financeiro',
     label: 'Seção 3 • Finanças & Formas de Pagamento',
     shortLabel: 'Seção 3 • Finanças',
+    roles: ['admin'],
     icon: PieChart,
   },
   {
     id: 'entregas',
     label: 'Seção 4 • Entregas e Logísticas de Saída',
     shortLabel: 'Seção 4 • Entregas',
+    roles: ['admin', 'operador'],
     icon: Truck,
   },
   {
     id: 'retornos',
     label: 'Seção 5 • Retornos e Ajustes',
     shortLabel: 'Seção 5 • Retornos',
+    roles: ['admin', 'operador'],
     icon: Wrench,
+  },
+  {
+    id: 'equipe',
+    label: 'Gestão de Equipe',
+    shortLabel: 'Equipe',
+    roles: ['admin'],
+    icon: Users,
   },
 ];
 
@@ -80,16 +100,23 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   searchQuery,
   onSearchChange,
   onOpenNewOrder,
-  tenantName,
+  userRole,
+  userName,
+  realtimeStatus,
   onLogout,
   counts,
 }) => {
+  const visibleSections = NAV_SECTIONS.filter((item) =>
+    item.roles.includes(userRole)
+  );
+
   const getBadge = (id: ActiveSection) => {
     if (id === 'empresas') return counts.companies;
     if (id === 'esteira') return counts.inProduction;
     if (id === 'financeiro' && counts.overdue > 0) return counts.overdue;
     if (id === 'entregas') return counts.deliveries;
     if (id === 'retornos' && counts.openReturns > 0) return counts.openReturns;
+    if (id === 'equipe') return counts.employees;
     return undefined;
   };
 
@@ -99,16 +126,18 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
       <aside className="hidden lg:flex fixed left-4 top-4 bottom-4 w-16 rounded-3xl bg-zinc-900/90 border border-zinc-800/80 backdrop-blur-xl flex-col items-center justify-between py-5 z-40 shadow-2xl">
         {/* Top Crimson Brand Mark */}
         <button
-          onClick={() => onSelectSection('bento_home')}
+          onClick={() =>
+            onSelectSection(userRole === 'operador' ? 'esteira' : 'bento_home')
+          }
           className="w-10 h-10 rounded-2xl bg-gradient-to-br from-rose-700 to-red-950 border border-rose-500/30 flex items-center justify-center text-slate-50 shadow-lg shadow-rose-950/60 cursor-pointer hover:scale-105 transition"
-          title="FacasFlow Enterprise (Bento Edition)"
+          title="FacasFlow"
         >
           <Layers className="w-5 h-5 stroke-[2.2]" />
         </button>
 
-        {/* Center Navigation Icons */}
+        {/* Center Navigation Icons (Filtered by RBAC Role) */}
         <nav className="flex flex-col items-center gap-2.5">
-          {NAV_SECTIONS.map((item) => {
+          {visibleSections.map((item) => {
             const Icon = item.icon;
             const isActive = activeSection === item.id;
             const badge = getBadge(item.id);
@@ -163,6 +192,28 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
               <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-50 truncate">
                 Facas<span className="text-rose-500">Flow</span>
               </h1>
+
+              {/* Live Realtime Sync Indicator + Active Profile Pill */}
+              <div className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-zinc-900/90 border border-zinc-800 text-[11px] font-medium text-zinc-300">
+                <Radio className="w-3 h-3 text-emerald-400 animate-pulse shrink-0" />
+                <span>
+                  {realtimeStatus === 'supabase_live'
+                    ? 'Realtime Cloud'
+                    : 'Realtime Ativo'}
+                </span>
+                <span className="text-zinc-600">•</span>
+                <span
+                  className={
+                    userRole === 'operador'
+                      ? 'text-amber-300 font-semibold'
+                      : 'text-rose-300 font-semibold'
+                  }
+                >
+                  {userRole === 'operador'
+                    ? `Produção (${userName.split(' ')[0]})`
+                    : 'Administrador'}
+                </span>
+              </div>
             </div>
 
             {/* Search + Primary Action + Logout Button */}
@@ -186,19 +237,21 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
                 )}
               </div>
 
-              <button
-                onClick={onOpenNewOrder}
-                className="inline-flex items-center gap-1.5 sm:gap-2 px-3.5 sm:px-4 py-2.5 rounded-2xl text-xs font-semibold whitespace-nowrap shrink-0 bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 text-slate-50 border border-rose-600/40 shadow-lg shadow-rose-950/60 transition cursor-pointer"
-              >
-                <Plus className="w-4 h-4 stroke-[2.5] shrink-0" />
-                <span>Nova OS</span>
-              </button>
+              {userRole === 'admin' && (
+                <button
+                  onClick={onOpenNewOrder}
+                  className="inline-flex items-center gap-1.5 sm:gap-2 px-3.5 sm:px-4 py-2.5 rounded-2xl text-xs font-semibold whitespace-nowrap shrink-0 bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 text-slate-50 border border-rose-600/40 shadow-lg shadow-rose-950/60 transition cursor-pointer"
+                >
+                  <Plus className="w-4 h-4 stroke-[2.5] shrink-0" />
+                  <span>Nova OS</span>
+                </button>
+              )}
 
               <button
                 type="button"
                 onClick={onLogout}
                 className="inline-flex items-center gap-1.5 px-3 sm:px-3.5 py-2.5 rounded-2xl text-xs font-semibold whitespace-nowrap shrink-0 bg-zinc-900 hover:bg-rose-950/80 text-zinc-300 hover:text-rose-200 border border-zinc-800 hover:border-rose-700/60 transition cursor-pointer"
-                title="Encerrar sessão e trocar de empresa"
+                title="Encerrar sessão e trocar de usuário"
               >
                 <LogOut className="w-3.5 h-3.5 stroke-[2.2] shrink-0" />
                 <span>Sair</span>
@@ -206,9 +259,9 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
             </div>
           </div>
 
-          {/* Section Pills Bar (Wrapped, No Horizontal Scrollbar) */}
+          {/* Section Pills Bar (Wrapped, No Horizontal Scrollbar, Filtered by RBAC Role) */}
           <div className="flex flex-wrap items-center gap-2 pt-1">
-            {NAV_SECTIONS.map((item) => {
+            {visibleSections.map((item) => {
               const Icon = item.icon;
               const isActive = activeSection === item.id;
               const badge = getBadge(item.id);

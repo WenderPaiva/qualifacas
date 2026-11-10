@@ -6,6 +6,7 @@ import {
   AuthSession,
   EnterpriseDatabase,
   TenantAccount,
+  UserRole,
 } from '../types/order';
 import { normalizeOrderPaymentStatus } from '../utils/financeEngine';
 
@@ -22,8 +23,53 @@ function getTenantDbStorageKey(company_id: string): string {
   return `facasflow_tenant_db_${company_id}`;
 }
 
+function normalizeAccount(acc: TenantAccount): TenantAccount {
+  return {
+    ...acc,
+    id: acc.id || `USR-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+    email: acc.email.trim().toLowerCase(),
+    role: acc.role === 'operador' ? 'operador' : 'admin',
+    jobTitle:
+      acc.jobTitle ||
+      (acc.role === 'operador'
+        ? 'Operador de Produção'
+        : 'Administrador / Proprietário'),
+  };
+}
+
 /**
- * Load all registered SaaS tenant accounts (Qualifacas, Facaria do Francisco, + any newly registered)
+ * Check URL for employee invite sync token (?emp_sync=...) so mobile devices can import employee credentials & RBAC role
+ */
+export function checkAndImportInviteFromUrl(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const encoded = params.get('emp_sync');
+    if (!encoded) return;
+
+    const jsonStr = decodeURIComponent(escape(window.atob(encoded)));
+    const imported = JSON.parse(jsonStr) as TenantAccount;
+    if (imported && imported.email && imported.company_id && imported.role) {
+      const accounts = getTenantAccounts();
+      const cleanEmail = imported.email.trim().toLowerCase();
+      const filtered = accounts.filter(
+        (a) => a.email.trim().toLowerCase() !== cleanEmail
+      );
+      const updated = [...filtered, normalizeAccount(imported)];
+      window.localStorage.setItem(TENANTS_REGISTRY_KEY, JSON.stringify(updated));
+
+      // Clean URL parameter without reloading
+      const url = new URL(window.location.href);
+      url.searchParams.delete('emp_sync');
+      window.history.replaceState({}, '', url.toString());
+    }
+  } catch {
+    // ignore invalid token
+  }
+}
+
+/**
+ * Load all registered SaaS tenant & employee accounts
  */
 export function getTenantAccounts(): TenantAccount[] {
   try {
@@ -31,12 +77,13 @@ export function getTenantAccounts(): TenantAccount[] {
     if (raw) {
       const parsed = JSON.parse(raw) as TenantAccount[];
       if (Array.isArray(parsed) && parsed.length > 0) {
-        // Ensure default tenants are always present
-        const existingIds = new Set(parsed.map((t) => t.company_id));
-        const merged = [...parsed];
+        const existingEmails = new Set(
+          parsed.map((t) => t.email.trim().toLowerCase())
+        );
+        const merged = parsed.map(normalizeAccount);
         for (const def of DEFAULT_TENANT_ACCOUNTS) {
-          if (!existingIds.has(def.company_id)) {
-            merged.push(def);
+          if (!existingEmails.has(def.email.trim().toLowerCase())) {
+            merged.push(normalizeAccount(def));
           }
         }
         return merged;
@@ -46,15 +93,137 @@ export function getTenantAccounts(): TenantAccount[] {
     // fallback
   }
 
+  const defaults = DEFAULT_TENANT_ACCOUNTS.map(normalizeAccount);
+  try {
+    window.localStorage.setItem(TENANTS_REGISTRY_KEY, JSON.stringify(defaults));
+  } catch {
+    // ignore
+  }
+  return defaults;
+}
+
+export function saveTenantAccounts(accounts: TenantAccount[]): TenantAccount[] {
+  const normalized = accounts.map(normalizeAccount);
   try {
     window.localStorage.setItem(
       TENANTS_REGISTRY_KEY,
-      JSON.stringify(DEFAULT_TENANT_ACCOUNTS)
+      JSON.stringify(normalized)
     );
   } catch {
     // ignore
   }
-  return DEFAULT_TENANT_ACCOUNTS;
+  return normalized;
+}
+
+/**
+ * Get all users/employees belonging strictly to a specific `company_id`
+ */
+export function getCompanyEmployees(company_id: string): TenantAccount[] {
+  const all = getTenantAccounts();
+  return all.filter((acc) => acc.company_id === company_id);
+}
+
+/**
+ * Register a new employee under the current Admin's `company_id`
+ */
+export function registerEmployeeForCompany(payload: {
+  company_id: string;
+  companyName: string;
+  ownerName: string;
+  email: string;
+  password: string;
+  role: UserRole;
+  jobTitle: string;
+}): { employee?: TenantAccount; error?: string } {
+  const email = payload.email.trim().toLowerCase();
+  const ownerName = payload.ownerName.trim();
+  const password = payload.password.trim();
+  const jobTitle =
+    payload.jobTitle.trim() ||
+    (payload.role === 'operador' ? 'Operador de Produção' : 'Administrador');
+
+  if (!ownerName || !email || !password) {
+    return { error: 'Preencha nome, e-mail e senha do funcionário.' };
+  }
+
+  const accounts = getTenantAccounts();
+  if (accounts.some((a) => a.email.trim().toLowerCase() === email)) {
+    return { error: 'Já existe um usuário cadastrado com este e-mail.' };
+  }
+
+  const companyUsers = accounts.filter(
+    (a) => a.company_id === payload.company_id
+  );
+  const nextId = `USR-${String(companyUsers.length + 1).padStart(3, '0')}`;
+
+  const newEmployee: TenantAccount = {
+    id: nextId,
+    company_id: payload.company_id,
+    companyName: payload.companyName,
+    ownerName,
+    email,
+    password,
+    role: payload.role,
+    jobTitle,
+    createdAt: new Date().toISOString().slice(0, 10),
+  };
+
+  const updated = [...accounts, newEmployee];
+  saveTenantAccounts(updated);
+
+  return { employee: newEmployee };
+}
+
+/**
+ * Update an employee's role ('admin' | 'operador') within the same company
+ */
+export function updateEmployeeRoleInCompany(
+  email: string,
+  company_id: string,
+  nextRole: UserRole
+): TenantAccount[] {
+  const cleanEmail = email.trim().toLowerCase();
+  const accounts = getTenantAccounts();
+  const updated = accounts.map((acc) => {
+    if (
+      acc.company_id === company_id &&
+      acc.email.trim().toLowerCase() === cleanEmail
+    ) {
+      return {
+        ...acc,
+        role: nextRole,
+        jobTitle:
+          nextRole === 'operador'
+            ? acc.jobTitle === 'Administrador / Proprietário'
+              ? 'Operador de Produção'
+              : acc.jobTitle
+            : acc.jobTitle,
+      };
+    }
+    return acc;
+  });
+  saveTenantAccounts(updated);
+  return updated.filter((a) => a.company_id === company_id);
+}
+
+/**
+ * Delete an employee account from a company
+ */
+export function deleteEmployeeFromCompany(
+  email: string,
+  company_id: string
+): TenantAccount[] {
+  const cleanEmail = email.trim().toLowerCase();
+  const accounts = getTenantAccounts();
+  const updated = accounts.filter(
+    (acc) =>
+      !(
+        acc.company_id === company_id &&
+        acc.email.trim().toLowerCase() === cleanEmail
+      )
+  );
+  saveTenantAccounts(updated);
+  return updated.filter((a) => a.company_id === company_id);
 }
 
 /**
@@ -62,11 +231,15 @@ export function getTenantAccounts(): TenantAccount[] {
  */
 export function getActiveSession(): AuthSession | null {
   try {
+    checkAndImportInviteFromUrl();
     const raw = window.localStorage.getItem(ACTIVE_SESSION_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as AuthSession;
     if (parsed && parsed.company_id && parsed.companyName && parsed.email) {
-      return parsed;
+      return {
+        ...parsed,
+        role: parsed.role === 'operador' ? 'operador' : 'admin',
+      };
     }
     return null;
   } catch {
@@ -108,7 +281,7 @@ function buildDeterministicCompanyId(email: string): string {
 }
 
 /**
- * Authenticate a tenant by email & password (with mobile keyboard normalization)
+ * Authenticate a user (Admin or Operador) by email & password
  */
 export function authenticateTenant(
   emailInput: string,
@@ -125,9 +298,36 @@ export function authenticateTenant(
 
   const accounts = getTenantAccounts();
 
-  const existingByEmail = accounts.find(
+  // Also check if any tenant database on this device has this employee inside its `employees` list
+  let existingByEmail = accounts.find(
     (acc) => acc.email.trim().toLowerCase() === email
   );
+
+  if (!existingByEmail) {
+    try {
+      for (let i = 0; i < window.localStorage.length; i++) {
+        const key = window.localStorage.key(i);
+        if (key && key.startsWith('facasflow_tenant_db_')) {
+          const rawDb = window.localStorage.getItem(key);
+          if (rawDb) {
+            const parsedDb = JSON.parse(rawDb) as EnterpriseDatabase;
+            if (Array.isArray(parsedDb.employees)) {
+              const foundEmp = parsedDb.employees.find(
+                (e) => e.email.trim().toLowerCase() === email
+              );
+              if (foundEmp) {
+                existingByEmail = normalizeAccount(foundEmp);
+                saveTenantAccounts([...accounts, existingByEmail]);
+                break;
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
 
   if (existingByEmail) {
     const storedPass = existingByEmail.password.trim();
@@ -142,10 +342,13 @@ export function authenticateTenant(
     }
 
     const session: AuthSession = {
+      userId: existingByEmail.id,
       company_id: existingByEmail.company_id,
       companyName: existingByEmail.companyName,
       ownerName: existingByEmail.ownerName,
       email: existingByEmail.email.trim().toLowerCase(),
+      role: existingByEmail.role === 'operador' ? 'operador' : 'admin',
+      jobTitle: existingByEmail.jobTitle,
       loggedInAt: new Date().toISOString(),
     };
 
@@ -153,9 +356,7 @@ export function authenticateTenant(
     return { session };
   }
 
-  // Cross-device / mobile login support: if the account was created on another device
-  // (e.g. Desktop) and is not yet in this mobile browser's localStorage, provision it
-  // deterministically from the normalized email so mobile login works seamlessly.
+  // Cross-device fallback for newly registered company owners
   if (email.includes('@') && password.length >= 1) {
     const company_id = buildDeterministicCompanyId(email);
     const localPrefix = email.split('@')[0] || 'Facaria';
@@ -163,29 +364,27 @@ export function authenticateTenant(
       localPrefix.charAt(0).toUpperCase() + localPrefix.slice(1);
 
     const syncedAccount: TenantAccount = {
+      id: 'USR-001',
       company_id,
       companyName: formattedName,
       ownerName: formattedName,
       email,
       password,
+      role: 'admin',
+      jobTitle: 'Administrador / Proprietário',
       createdAt: new Date().toISOString().slice(0, 10),
     };
 
-    const updatedAccounts = [...accounts, syncedAccount];
-    try {
-      window.localStorage.setItem(
-        TENANTS_REGISTRY_KEY,
-        JSON.stringify(updatedAccounts)
-      );
-    } catch {
-      // ignore
-    }
+    saveTenantAccounts([...accounts, syncedAccount]);
 
     const session: AuthSession = {
+      userId: syncedAccount.id,
       company_id: syncedAccount.company_id,
       companyName: syncedAccount.companyName,
       ownerName: syncedAccount.ownerName,
       email: syncedAccount.email,
+      role: 'admin',
+      jobTitle: syncedAccount.jobTitle,
       loggedInAt: new Date().toISOString(),
     };
 
@@ -199,7 +398,7 @@ export function authenticateTenant(
 }
 
 /**
- * Register a new tenant (Facaria) and automatically sign in
+ * Register a new tenant (Facaria) as Admin/Owner and automatically sign in
  */
 export function registerNewTenant(payload: {
   companyName: string;
@@ -218,38 +417,38 @@ export function registerNewTenant(payload: {
 
   const accounts = getTenantAccounts();
   if (accounts.some((a) => a.email.trim().toLowerCase() === email)) {
-    return { error: 'Já existe uma facaria cadastrada com este e-mail.' };
+    return { error: 'Já existe uma conta cadastrada com este e-mail.' };
   }
 
   const company_id = buildDeterministicCompanyId(email);
 
   const newAccount: TenantAccount = {
+    id: 'USR-001',
     company_id,
     companyName,
     ownerName,
     email,
     password,
+    role: 'admin',
+    jobTitle: 'Administrador / Proprietário',
     createdAt: new Date().toISOString().slice(0, 10),
   };
 
-  const updatedAccounts = [...accounts, newAccount];
-  try {
-    window.localStorage.setItem(
-      TENANTS_REGISTRY_KEY,
-      JSON.stringify(updatedAccounts)
-    );
-  } catch {
-    // ignore
-  }
+  saveTenantAccounts([...accounts, newAccount]);
 
-  // Initialize isolated empty database for this new tenant
-  saveEnterpriseDatabase(createEnterpriseSeedDatabase(company_id));
+  // Initialize isolated database for this new tenant including the owner in employees
+  const initialDb = createEnterpriseSeedDatabase(company_id);
+  initialDb.employees = [newAccount];
+  saveEnterpriseDatabase(initialDb);
 
   const session: AuthSession = {
+    userId: newAccount.id,
     company_id: newAccount.company_id,
     companyName: newAccount.companyName,
     ownerName: newAccount.ownerName,
     email: newAccount.email,
+    role: 'admin',
+    jobTitle: newAccount.jobTitle,
     loggedInAt: new Date().toISOString(),
   };
 
@@ -261,8 +460,34 @@ function normalizeDb(
   db: EnterpriseDatabase,
   company_id: string
 ): EnterpriseDatabase {
+  const registryEmployees = getCompanyEmployees(company_id);
+  const dbEmployees = Array.isArray(db.employees) ? db.employees : [];
+
+  // Merge employees from registry and db so Realtime sync propagates employee list too
+  const mergedEmpMap = new Map<string, TenantAccount>();
+  for (const emp of [...registryEmployees, ...dbEmployees]) {
+    if (emp && emp.email && emp.company_id === company_id) {
+      mergedEmpMap.set(emp.email.trim().toLowerCase(), normalizeAccount(emp));
+    }
+  }
+  const mergedEmployees = Array.from(mergedEmpMap.values());
+
+  // Sync merged employees back into global tenant registry on this client
+  if (mergedEmployees.length > 0) {
+    try {
+      const allAccounts = getTenantAccounts();
+      const others = allAccounts.filter((a) => a.company_id !== company_id);
+      window.localStorage.setItem(
+        TENANTS_REGISTRY_KEY,
+        JSON.stringify([...others, ...mergedEmployees])
+      );
+    } catch {
+      // ignore
+    }
+  }
+
   return {
-    version: 5,
+    version: 6,
     company_id,
     companies: (Array.isArray(db.companies) ? db.companies : [])
       .filter((c) => !c.company_id || c.company_id === company_id)
@@ -281,6 +506,7 @@ function normalizeDb(
     returns: (Array.isArray(db.returns) ? db.returns : [])
       .filter((r) => !r.company_id || r.company_id === company_id)
       .map((r) => ({ ...r, company_id })),
+    employees: mergedEmployees,
   };
 }
 

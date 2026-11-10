@@ -393,30 +393,37 @@ exports.DEFAULT_TENANT_ACCOUNTS = void 0;
 exports.createEnterpriseSeedDatabase = createEnterpriseSeedDatabase;
 exports.DEFAULT_TENANT_ACCOUNTS = [
     {
+        id: 'USR-001',
         company_id: 'tenant_qualifacas',
         companyName: 'Qualifacas',
         ownerName: 'Wender Paiva',
         email: 'contato@qualifacas.com',
         password: '123456',
+        role: 'admin',
+        jobTitle: 'Administrador / Proprietário',
         createdAt: '2026-11-10',
     },
     {
+        id: 'USR-002',
         company_id: 'tenant_francisco',
         companyName: 'Facaria do Francisco',
         ownerName: 'Francisco',
         email: 'francisco@facaria.com',
         password: '123456',
+        role: 'admin',
+        jobTitle: 'Administrador / Proprietário',
         createdAt: '2026-11-10',
     },
 ];
 function createEnterpriseSeedDatabase(company_id = 'tenant_qualifacas') {
     return {
-        version: 5,
+        version: 6,
         company_id,
         companies: [],
         orders: [],
         deliveries: [],
         returns: [],
+        employees: [],
     };
 }
 
@@ -428,7 +435,13 @@ __moduleFactories["./services/storageAdapter"] = Object.assign(
   function(module, exports, require) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.checkAndImportInviteFromUrl = checkAndImportInviteFromUrl;
 exports.getTenantAccounts = getTenantAccounts;
+exports.saveTenantAccounts = saveTenantAccounts;
+exports.getCompanyEmployees = getCompanyEmployees;
+exports.registerEmployeeForCompany = registerEmployeeForCompany;
+exports.updateEmployeeRoleInCompany = updateEmployeeRoleInCompany;
+exports.deleteEmployeeFromCompany = deleteEmployeeFromCompany;
 exports.getActiveSession = getActiveSession;
 exports.saveActiveSession = saveActiveSession;
 exports.clearActiveSession = clearActiveSession;
@@ -452,8 +465,49 @@ const LEGACY_DEMO_KEYS = [
 function getTenantDbStorageKey(company_id) {
     return `facasflow_tenant_db_${company_id}`;
 }
+function normalizeAccount(acc) {
+    return {
+        ...acc,
+        id: acc.id || `USR-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+        email: acc.email.trim().toLowerCase(),
+        role: acc.role === 'operador' ? 'operador' : 'admin',
+        jobTitle: acc.jobTitle ||
+            (acc.role === 'operador'
+                ? 'Operador de Produção'
+                : 'Administrador / Proprietário'),
+    };
+}
 /**
- * Load all registered SaaS tenant accounts (Qualifacas, Facaria do Francisco, + any newly registered)
+ * Check URL for employee invite sync token (?emp_sync=...) so mobile devices can import employee credentials & RBAC role
+ */
+function checkAndImportInviteFromUrl() {
+    if (typeof window === 'undefined')
+        return;
+    try {
+        const params = new URLSearchParams(window.location.search);
+        const encoded = params.get('emp_sync');
+        if (!encoded)
+            return;
+        const jsonStr = decodeURIComponent(escape(window.atob(encoded)));
+        const imported = JSON.parse(jsonStr);
+        if (imported && imported.email && imported.company_id && imported.role) {
+            const accounts = getTenantAccounts();
+            const cleanEmail = imported.email.trim().toLowerCase();
+            const filtered = accounts.filter((a) => a.email.trim().toLowerCase() !== cleanEmail);
+            const updated = [...filtered, normalizeAccount(imported)];
+            window.localStorage.setItem(TENANTS_REGISTRY_KEY, JSON.stringify(updated));
+            // Clean URL parameter without reloading
+            const url = new URL(window.location.href);
+            url.searchParams.delete('emp_sync');
+            window.history.replaceState({}, '', url.toString());
+        }
+    }
+    catch {
+        // ignore invalid token
+    }
+}
+/**
+ * Load all registered SaaS tenant & employee accounts
  */
 function getTenantAccounts() {
     try {
@@ -461,12 +515,11 @@ function getTenantAccounts() {
         if (raw) {
             const parsed = JSON.parse(raw);
             if (Array.isArray(parsed) && parsed.length > 0) {
-                // Ensure default tenants are always present
-                const existingIds = new Set(parsed.map((t) => t.company_id));
-                const merged = [...parsed];
+                const existingEmails = new Set(parsed.map((t) => t.email.trim().toLowerCase()));
+                const merged = parsed.map(normalizeAccount);
                 for (const def of seedOrders_1.DEFAULT_TENANT_ACCOUNTS) {
-                    if (!existingIds.has(def.company_id)) {
-                        merged.push(def);
+                    if (!existingEmails.has(def.email.trim().toLowerCase())) {
+                        merged.push(normalizeAccount(def));
                     }
                 }
                 return merged;
@@ -476,25 +529,115 @@ function getTenantAccounts() {
     catch {
         // fallback
     }
+    const defaults = seedOrders_1.DEFAULT_TENANT_ACCOUNTS.map(normalizeAccount);
     try {
-        window.localStorage.setItem(TENANTS_REGISTRY_KEY, JSON.stringify(seedOrders_1.DEFAULT_TENANT_ACCOUNTS));
+        window.localStorage.setItem(TENANTS_REGISTRY_KEY, JSON.stringify(defaults));
     }
     catch {
         // ignore
     }
-    return seedOrders_1.DEFAULT_TENANT_ACCOUNTS;
+    return defaults;
+}
+function saveTenantAccounts(accounts) {
+    const normalized = accounts.map(normalizeAccount);
+    try {
+        window.localStorage.setItem(TENANTS_REGISTRY_KEY, JSON.stringify(normalized));
+    }
+    catch {
+        // ignore
+    }
+    return normalized;
+}
+/**
+ * Get all users/employees belonging strictly to a specific `company_id`
+ */
+function getCompanyEmployees(company_id) {
+    const all = getTenantAccounts();
+    return all.filter((acc) => acc.company_id === company_id);
+}
+/**
+ * Register a new employee under the current Admin's `company_id`
+ */
+function registerEmployeeForCompany(payload) {
+    const email = payload.email.trim().toLowerCase();
+    const ownerName = payload.ownerName.trim();
+    const password = payload.password.trim();
+    const jobTitle = payload.jobTitle.trim() ||
+        (payload.role === 'operador' ? 'Operador de Produção' : 'Administrador');
+    if (!ownerName || !email || !password) {
+        return { error: 'Preencha nome, e-mail e senha do funcionário.' };
+    }
+    const accounts = getTenantAccounts();
+    if (accounts.some((a) => a.email.trim().toLowerCase() === email)) {
+        return { error: 'Já existe um usuário cadastrado com este e-mail.' };
+    }
+    const companyUsers = accounts.filter((a) => a.company_id === payload.company_id);
+    const nextId = `USR-${String(companyUsers.length + 1).padStart(3, '0')}`;
+    const newEmployee = {
+        id: nextId,
+        company_id: payload.company_id,
+        companyName: payload.companyName,
+        ownerName,
+        email,
+        password,
+        role: payload.role,
+        jobTitle,
+        createdAt: new Date().toISOString().slice(0, 10),
+    };
+    const updated = [...accounts, newEmployee];
+    saveTenantAccounts(updated);
+    return { employee: newEmployee };
+}
+/**
+ * Update an employee's role ('admin' | 'operador') within the same company
+ */
+function updateEmployeeRoleInCompany(email, company_id, nextRole) {
+    const cleanEmail = email.trim().toLowerCase();
+    const accounts = getTenantAccounts();
+    const updated = accounts.map((acc) => {
+        if (acc.company_id === company_id &&
+            acc.email.trim().toLowerCase() === cleanEmail) {
+            return {
+                ...acc,
+                role: nextRole,
+                jobTitle: nextRole === 'operador'
+                    ? acc.jobTitle === 'Administrador / Proprietário'
+                        ? 'Operador de Produção'
+                        : acc.jobTitle
+                    : acc.jobTitle,
+            };
+        }
+        return acc;
+    });
+    saveTenantAccounts(updated);
+    return updated.filter((a) => a.company_id === company_id);
+}
+/**
+ * Delete an employee account from a company
+ */
+function deleteEmployeeFromCompany(email, company_id) {
+    const cleanEmail = email.trim().toLowerCase();
+    const accounts = getTenantAccounts();
+    const updated = accounts.filter((acc) => !(acc.company_id === company_id &&
+        acc.email.trim().toLowerCase() === cleanEmail));
+    saveTenantAccounts(updated);
+    return updated.filter((a) => a.company_id === company_id);
 }
 /**
  * Get current persisted session so page refresh stays logged in
  */
 function getActiveSession() {
     try {
+        checkAndImportInviteFromUrl();
         const raw = window.localStorage.getItem(ACTIVE_SESSION_KEY);
         if (!raw)
             return null;
         const parsed = JSON.parse(raw);
         if (parsed && parsed.company_id && parsed.companyName && parsed.email) {
-            return parsed;
+            return {
+                ...parsed,
+                role: parsed.role === 'operador' ? 'operador' : 'admin',
+            };
         }
         return null;
     }
@@ -535,7 +678,7 @@ function buildDeterministicCompanyId(email) {
     return `tenant_${clean}`;
 }
 /**
- * Authenticate a tenant by email & password (with mobile keyboard normalization)
+ * Authenticate a user (Admin or Operador) by email & password
  */
 function authenticateTenant(emailInput, passwordInput) {
     const email = emailInput.trim().toLowerCase();
@@ -546,7 +689,32 @@ function authenticateTenant(emailInput, passwordInput) {
         };
     }
     const accounts = getTenantAccounts();
-    const existingByEmail = accounts.find((acc) => acc.email.trim().toLowerCase() === email);
+    // Also check if any tenant database on this device has this employee inside its `employees` list
+    let existingByEmail = accounts.find((acc) => acc.email.trim().toLowerCase() === email);
+    if (!existingByEmail) {
+        try {
+            for (let i = 0; i < window.localStorage.length; i++) {
+                const key = window.localStorage.key(i);
+                if (key && key.startsWith('facasflow_tenant_db_')) {
+                    const rawDb = window.localStorage.getItem(key);
+                    if (rawDb) {
+                        const parsedDb = JSON.parse(rawDb);
+                        if (Array.isArray(parsedDb.employees)) {
+                            const foundEmp = parsedDb.employees.find((e) => e.email.trim().toLowerCase() === email);
+                            if (foundEmp) {
+                                existingByEmail = normalizeAccount(foundEmp);
+                                saveTenantAccounts([...accounts, existingByEmail]);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch {
+            // ignore
+        }
+    }
     if (existingByEmail) {
         const storedPass = existingByEmail.password.trim();
         const isPasswordMatch = storedPass === password ||
@@ -557,42 +725,43 @@ function authenticateTenant(emailInput, passwordInput) {
             };
         }
         const session = {
+            userId: existingByEmail.id,
             company_id: existingByEmail.company_id,
             companyName: existingByEmail.companyName,
             ownerName: existingByEmail.ownerName,
             email: existingByEmail.email.trim().toLowerCase(),
+            role: existingByEmail.role === 'operador' ? 'operador' : 'admin',
+            jobTitle: existingByEmail.jobTitle,
             loggedInAt: new Date().toISOString(),
         };
         saveActiveSession(session);
         return { session };
     }
-    // Cross-device / mobile login support: if the account was created on another device
-    // (e.g. Desktop) and is not yet in this mobile browser's localStorage, provision it
-    // deterministically from the normalized email so mobile login works seamlessly.
+    // Cross-device fallback for newly registered company owners
     if (email.includes('@') && password.length >= 1) {
         const company_id = buildDeterministicCompanyId(email);
         const localPrefix = email.split('@')[0] || 'Facaria';
         const formattedName = localPrefix.charAt(0).toUpperCase() + localPrefix.slice(1);
         const syncedAccount = {
+            id: 'USR-001',
             company_id,
             companyName: formattedName,
             ownerName: formattedName,
             email,
             password,
+            role: 'admin',
+            jobTitle: 'Administrador / Proprietário',
             createdAt: new Date().toISOString().slice(0, 10),
         };
-        const updatedAccounts = [...accounts, syncedAccount];
-        try {
-            window.localStorage.setItem(TENANTS_REGISTRY_KEY, JSON.stringify(updatedAccounts));
-        }
-        catch {
-            // ignore
-        }
+        saveTenantAccounts([...accounts, syncedAccount]);
         const session = {
+            userId: syncedAccount.id,
             company_id: syncedAccount.company_id,
             companyName: syncedAccount.companyName,
             ownerName: syncedAccount.ownerName,
             email: syncedAccount.email,
+            role: 'admin',
+            jobTitle: syncedAccount.jobTitle,
             loggedInAt: new Date().toISOString(),
         };
         saveActiveSession(session);
@@ -603,7 +772,7 @@ function authenticateTenant(emailInput, passwordInput) {
     };
 }
 /**
- * Register a new tenant (Facaria) and automatically sign in
+ * Register a new tenant (Facaria) as Admin/Owner and automatically sign in
  */
 function registerNewTenant(payload) {
     const email = payload.email.trim().toLowerCase();
@@ -615,39 +784,62 @@ function registerNewTenant(payload) {
     }
     const accounts = getTenantAccounts();
     if (accounts.some((a) => a.email.trim().toLowerCase() === email)) {
-        return { error: 'Já existe uma facaria cadastrada com este e-mail.' };
+        return { error: 'Já existe uma conta cadastrada com este e-mail.' };
     }
     const company_id = buildDeterministicCompanyId(email);
     const newAccount = {
+        id: 'USR-001',
         company_id,
         companyName,
         ownerName,
         email,
         password,
+        role: 'admin',
+        jobTitle: 'Administrador / Proprietário',
         createdAt: new Date().toISOString().slice(0, 10),
     };
-    const updatedAccounts = [...accounts, newAccount];
-    try {
-        window.localStorage.setItem(TENANTS_REGISTRY_KEY, JSON.stringify(updatedAccounts));
-    }
-    catch {
-        // ignore
-    }
-    // Initialize isolated empty database for this new tenant
-    saveEnterpriseDatabase((0, seedOrders_1.createEnterpriseSeedDatabase)(company_id));
+    saveTenantAccounts([...accounts, newAccount]);
+    // Initialize isolated database for this new tenant including the owner in employees
+    const initialDb = (0, seedOrders_1.createEnterpriseSeedDatabase)(company_id);
+    initialDb.employees = [newAccount];
+    saveEnterpriseDatabase(initialDb);
     const session = {
+        userId: newAccount.id,
         company_id: newAccount.company_id,
         companyName: newAccount.companyName,
         ownerName: newAccount.ownerName,
         email: newAccount.email,
+        role: 'admin',
+        jobTitle: newAccount.jobTitle,
         loggedInAt: new Date().toISOString(),
     };
     saveActiveSession(session);
     return { session };
 }
 function normalizeDb(db, company_id) {
+    const registryEmployees = getCompanyEmployees(company_id);
+    const dbEmployees = Array.isArray(db.employees) ? db.employees : [];
+    // Merge employees from registry and db so Realtime sync propagates employee list too
+    const mergedEmpMap = new Map();
+    for (const emp of [...registryEmployees, ...dbEmployees]) {
+        if (emp && emp.email && emp.company_id === company_id) {
+            mergedEmpMap.set(emp.email.trim().toLowerCase(), normalizeAccount(emp));
+        }
+    }
+    const mergedEmployees = Array.from(mergedEmpMap.values());
+    // Sync merged employees back into global tenant registry on this client
+    if (mergedEmployees.length > 0) {
+        try {
+            const allAccounts = getTenantAccounts();
+            const others = allAccounts.filter((a) => a.company_id !== company_id);
+            window.localStorage.setItem(TENANTS_REGISTRY_KEY, JSON.stringify([...others, ...mergedEmployees]));
+        }
+        catch {
+            // ignore
+        }
+    }
     return {
-        version: 5,
+        version: 6,
         company_id,
         companies: (Array.isArray(db.companies) ? db.companies : [])
             .filter((c) => !c.company_id || c.company_id === company_id)
@@ -666,6 +858,7 @@ function normalizeDb(db, company_id) {
         returns: (Array.isArray(db.returns) ? db.returns : [])
             .filter((r) => !r.company_id || r.company_id === company_id)
             .map((r) => ({ ...r, company_id })),
+        employees: mergedEmployees,
     };
 }
 /**
@@ -752,6 +945,312 @@ function getNextReturnId(db) {
             max = num;
     }
     return `RET-${String(max + 1).padStart(3, '0')}`;
+}
+
+  },
+  { dir: "./services" }
+);
+
+__moduleFactories["./services/realtimeEngine"] = Object.assign(
+  function(module, exports, require) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.getSupabaseConfig = getSupabaseConfig;
+exports.saveSupabaseConfig = saveSupabaseConfig;
+exports.publishRealtimeUpdate = publishRealtimeUpdate;
+exports.subscribeToCompanyRealtime = subscribeToCompanyRealtime;
+exports.broadcastEmployeeRegistryUpdate = broadcastEmployeeRegistryUpdate;
+const SUPABASE_CONFIG_KEY = 'facasflow_supabase_config_v1';
+const CLIENT_INSTANCE_ID = `client_${Math.random().toString(36).slice(2, 10)}`;
+function getSupabaseConfig() {
+    try {
+        const raw = window.localStorage.getItem(SUPABASE_CONFIG_KEY);
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed.url === 'string' && typeof parsed.anonKey === 'string') {
+                return parsed;
+            }
+        }
+    }
+    catch {
+        // ignore
+    }
+    return { url: '', anonKey: '', enabled: false };
+}
+function saveSupabaseConfig(config) {
+    try {
+        window.localStorage.setItem(SUPABASE_CONFIG_KEY, JSON.stringify(config));
+    }
+    catch {
+        // ignore
+    }
+}
+// Active Supabase channel reference if connected
+let activeSupabaseChannel = null;
+let activeSupabaseClient = null;
+let activeBroadcastChannel = null;
+/**
+ * Publish a real-time update for Sections 2 (Esteira), 4 (Entregas), 5 (Retornos), or Equipe
+ * across Supabase Realtime, BroadcastChannel, StorageEvent, and Local Server SSE.
+ */
+function publishRealtimeUpdate(params) {
+    const event = {
+        eventId: `rt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        senderInstanceId: CLIENT_INSTANCE_ID,
+        company_id: params.company_id,
+        section: params.section,
+        actionLabel: params.actionLabel,
+        actorName: params.actorName,
+        actorRole: params.actorRole,
+        timestamp: new Date().toISOString(),
+        db: params.db,
+    };
+    // 1. Native BroadcastChannel (Instant cross-tab sync)
+    try {
+        if (activeBroadcastChannel) {
+            activeBroadcastChannel.postMessage(event);
+        }
+        else if (typeof BroadcastChannel !== 'undefined') {
+            const ch = new BroadcastChannel(`facasflow_rt_${params.company_id}`);
+            ch.postMessage(event);
+            ch.close();
+        }
+    }
+    catch {
+        // ignore
+    }
+    // 2. LocalStorage Realtime Event key (triggers 'storage' event in other tabs)
+    try {
+        window.localStorage.setItem(`facasflow_rt_event_${params.company_id}`, JSON.stringify(event));
+    }
+    catch {
+        // ignore
+    }
+    // 3. Supabase Realtime Channel Broadcast + Optional Table Upsert
+    try {
+        if (activeSupabaseChannel) {
+            activeSupabaseChannel.send({
+                type: 'broadcast',
+                event: 'facasflow_sync',
+                payload: event,
+            });
+        }
+        if (activeSupabaseClient) {
+            activeSupabaseClient
+                .from('facasflow_tenant_state')
+                .upsert({
+                company_id: params.company_id,
+                db_payload: params.db,
+                updated_at: event.timestamp,
+                last_action: params.actionLabel,
+                last_actor: params.actorName,
+            }, { onConflict: 'company_id' })
+                .then(() => { })
+                .catch(() => { });
+        }
+    }
+    catch {
+        // ignore
+    }
+}
+/**
+ * Subscribe to real-time updates for a specific `company_id` (Sections 2, 4, 5 & Team)
+ */
+function subscribeToCompanyRealtime(company_id, onRemoteUpdate, onConnectionStatusChange) {
+    let isDisposed = false;
+    let lastSeenEventId = '';
+    const handleIncoming = (rawEvent) => {
+        if (isDisposed || !rawEvent)
+            return;
+        if (rawEvent.senderInstanceId === CLIENT_INSTANCE_ID)
+            return;
+        if (rawEvent.company_id !== company_id)
+            return;
+        if (rawEvent.eventId && rawEvent.eventId === lastSeenEventId)
+            return;
+        if (!rawEvent.db || !Array.isArray(rawEvent.db.orders))
+            return;
+        lastSeenEventId = rawEvent.eventId || String(Date.now());
+        onRemoteUpdate(rawEvent);
+    };
+    // 1. Setup BroadcastChannel
+    if (typeof BroadcastChannel !== 'undefined') {
+        try {
+            if (activeBroadcastChannel) {
+                activeBroadcastChannel.close();
+            }
+            activeBroadcastChannel = new BroadcastChannel(`facasflow_rt_${company_id}`);
+            activeBroadcastChannel.onmessage = (msg) => {
+                handleIncoming(msg.data);
+            };
+            onConnectionStatusChange?.('connected');
+        }
+        catch {
+            // ignore
+        }
+    }
+    // 2. Setup Window Storage Event Listener (fires when another tab modifies localStorage)
+    const storageHandler = (e) => {
+        if (!e.newValue)
+            return;
+        if (e.key === `facasflow_rt_event_${company_id}`) {
+            try {
+                const parsed = JSON.parse(e.newValue);
+                handleIncoming(parsed);
+            }
+            catch {
+                // ignore
+            }
+        }
+        else if (e.key === `facasflow_tenant_db_${company_id}`) {
+            try {
+                const parsedDb = JSON.parse(e.newValue);
+                if (parsedDb && parsedDb.company_id === company_id) {
+                    handleIncoming({
+                        eventId: `storage_${Date.now()}`,
+                        company_id,
+                        section: 'all',
+                        actionLabel: 'Sincronização em tempo real recebida',
+                        actorName: 'Equipe',
+                        actorRole: 'operador',
+                        timestamp: new Date().toISOString(),
+                        db: parsedDb,
+                    });
+                }
+            }
+            catch {
+                // ignore
+            }
+        }
+    };
+    window.addEventListener('storage', storageHandler);
+    // 3. Setup Server-Sent Events (SSE) if running on localhost server.cjs
+    let sseSource = null;
+    if (typeof EventSource !== 'undefined' &&
+        (window.location.hostname === 'localhost' ||
+            window.location.hostname === '127.0.0.1')) {
+        try {
+            sseSource = new EventSource(`/api/realtime?company_id=${encodeURIComponent(company_id)}`);
+            sseSource.onmessage = (evt) => {
+                try {
+                    const data = JSON.parse(evt.data);
+                    handleIncoming(data);
+                }
+                catch {
+                    // ignore
+                }
+            };
+        }
+        catch {
+            // ignore
+        }
+    }
+    // 4. Setup Supabase Realtime Channel (Broadcast + Postgres Changes for Sections 2, 4, 5)
+    const supaCfg = getSupabaseConfig();
+    if (supaCfg.enabled && supaCfg.url.trim() && supaCfg.anonKey.trim()) {
+        const dynamicImport = new Function('url', 'return import(url)');
+        dynamicImport('https://esm.sh/@supabase/supabase-js@2.47.10')
+            .then((mod) => {
+            if (isDisposed)
+                return;
+            const createClient = mod.createClient;
+            const client = createClient(supaCfg.url.trim(), supaCfg.anonKey.trim(), {
+                realtime: { params: { eventsPerSecond: 20 } },
+            });
+            activeSupabaseClient = client;
+            // Fetch latest state from Supabase table if available
+            client
+                .from('facasflow_tenant_state')
+                .select('db_payload, last_action, last_actor, updated_at')
+                .eq('company_id', company_id)
+                .maybeSingle()
+                .then(({ data }) => {
+                if (!isDisposed && data?.db_payload) {
+                    handleIncoming({
+                        eventId: `supa_init_${data.updated_at}`,
+                        company_id,
+                        section: 'all',
+                        actionLabel: data.last_action || 'Sincronizado via Supabase',
+                        actorName: data.last_actor || 'Supabase Cloud',
+                        actorRole: 'operador',
+                        timestamp: data.updated_at || new Date().toISOString(),
+                        db: data.db_payload,
+                    });
+                }
+            })
+                .catch(() => { });
+            const channel = client
+                .channel(`facasflow_company_${company_id}`, {
+                config: { broadcast: { self: false } },
+            })
+                .on('broadcast', { event: 'facasflow_sync' }, (payload) => {
+                if (payload?.payload) {
+                    handleIncoming(payload.payload);
+                }
+            })
+                .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'facasflow_tenant_state',
+                filter: `company_id=eq.${company_id}`,
+            }, (change) => {
+                const row = change?.new;
+                if (row && row.db_payload) {
+                    handleIncoming({
+                        eventId: `pg_${row.updated_at || Date.now()}`,
+                        company_id,
+                        section: 'all',
+                        actionLabel: row.last_action || 'Atualização Supabase Realtime',
+                        actorName: row.last_actor || 'Produção',
+                        actorRole: 'operador',
+                        timestamp: row.updated_at || new Date().toISOString(),
+                        db: row.db_payload,
+                    });
+                }
+            })
+                .subscribe((status) => {
+                if (status === 'SUBSCRIBED' && !isDisposed) {
+                    onConnectionStatusChange?.('supabase_live');
+                }
+            });
+            activeSupabaseChannel = channel;
+        })
+            .catch(() => {
+            // Fallback to native BroadcastChannel/Storage realtime
+        });
+    }
+    return () => {
+        isDisposed = true;
+        window.removeEventListener('storage', storageHandler);
+        if (sseSource) {
+            sseSource.close();
+            sseSource = null;
+        }
+        if (activeBroadcastChannel) {
+            activeBroadcastChannel.close();
+            activeBroadcastChannel = null;
+        }
+        if (activeSupabaseClient && activeSupabaseChannel) {
+            try {
+                activeSupabaseClient.removeChannel(activeSupabaseChannel);
+            }
+            catch {
+                // ignore
+            }
+            activeSupabaseChannel = null;
+        }
+    };
+}
+/**
+ * Sync employee accounts across Supabase / BroadcastChannel for the same company
+ */
+function broadcastEmployeeRegistryUpdate(accounts) {
+    try {
+        window.localStorage.setItem('facasflow_saas_tenants_v1', JSON.stringify(accounts));
+    }
+    catch {
+        // ignore
+    }
 }
 
   },
@@ -919,40 +1418,54 @@ exports.NAV_SECTIONS = [
         id: 'bento_home',
         label: 'Visão Geral',
         shortLabel: 'Visão Geral',
+        roles: ['admin'],
         icon: lucide_react_1.LayoutGrid,
     },
     {
         id: 'empresas',
         label: 'Seção 1 • Cadastro de Empresas',
         shortLabel: 'Seção 1 • Empresas',
+        roles: ['admin'],
         icon: lucide_react_1.Building2,
     },
     {
         id: 'esteira',
         label: 'Seção 2 • Esteira Física de Produção',
         shortLabel: 'Seção 2 • Esteira',
+        roles: ['admin', 'operador'],
         icon: lucide_react_1.Kanban,
     },
     {
         id: 'financeiro',
         label: 'Seção 3 • Finanças & Formas de Pagamento',
         shortLabel: 'Seção 3 • Finanças',
+        roles: ['admin'],
         icon: lucide_react_1.PieChart,
     },
     {
         id: 'entregas',
         label: 'Seção 4 • Entregas e Logísticas de Saída',
         shortLabel: 'Seção 4 • Entregas',
+        roles: ['admin', 'operador'],
         icon: lucide_react_1.Truck,
     },
     {
         id: 'retornos',
         label: 'Seção 5 • Retornos e Ajustes',
         shortLabel: 'Seção 5 • Retornos',
+        roles: ['admin', 'operador'],
         icon: lucide_react_1.Wrench,
     },
+    {
+        id: 'equipe',
+        label: 'Gestão de Equipe',
+        shortLabel: 'Equipe',
+        roles: ['admin'],
+        icon: lucide_react_1.Users,
+    },
 ];
-const HeaderBar = ({ activeSection, onSelectSection, searchQuery, onSearchChange, onOpenNewOrder, tenantName, onLogout, counts, }) => {
+const HeaderBar = ({ activeSection, onSelectSection, searchQuery, onSearchChange, onOpenNewOrder, userRole, userName, realtimeStatus, onLogout, counts, }) => {
+    const visibleSections = exports.NAV_SECTIONS.filter((item) => item.roles.includes(userRole));
     const getBadge = (id) => {
         if (id === 'empresas')
             return counts.companies;
@@ -964,13 +1477,15 @@ const HeaderBar = ({ activeSection, onSelectSection, searchQuery, onSearchChange
             return counts.deliveries;
         if (id === 'retornos' && counts.openReturns > 0)
             return counts.openReturns;
+        if (id === 'equipe')
+            return counts.employees;
         return undefined;
     };
     return (react_1.default.createElement(react_1.default.Fragment, null,
         react_1.default.createElement("aside", { className: "hidden lg:flex fixed left-4 top-4 bottom-4 w-16 rounded-3xl bg-zinc-900/90 border border-zinc-800/80 backdrop-blur-xl flex-col items-center justify-between py-5 z-40 shadow-2xl" },
-            react_1.default.createElement("button", { onClick: () => onSelectSection('bento_home'), className: "w-10 h-10 rounded-2xl bg-gradient-to-br from-rose-700 to-red-950 border border-rose-500/30 flex items-center justify-center text-slate-50 shadow-lg shadow-rose-950/60 cursor-pointer hover:scale-105 transition", title: "FacasFlow Enterprise (Bento Edition)" },
+            react_1.default.createElement("button", { onClick: () => onSelectSection(userRole === 'operador' ? 'esteira' : 'bento_home'), className: "w-10 h-10 rounded-2xl bg-gradient-to-br from-rose-700 to-red-950 border border-rose-500/30 flex items-center justify-center text-slate-50 shadow-lg shadow-rose-950/60 cursor-pointer hover:scale-105 transition", title: "FacasFlow" },
                 react_1.default.createElement(lucide_react_1.Layers, { className: "w-5 h-5 stroke-[2.2]" })),
-            react_1.default.createElement("nav", { className: "flex flex-col items-center gap-2.5" }, exports.NAV_SECTIONS.map((item) => {
+            react_1.default.createElement("nav", { className: "flex flex-col items-center gap-2.5" }, visibleSections.map((item) => {
                 const Icon = item.icon;
                 const isActive = activeSection === item.id;
                 const badge = getBadge(item.id);
@@ -992,19 +1507,30 @@ const HeaderBar = ({ activeSection, onSelectSection, searchQuery, onSearchChange
                             react_1.default.createElement(lucide_react_1.Layers, { className: "w-4 h-4" })),
                         react_1.default.createElement("h1", { className: "text-lg sm:text-xl font-bold tracking-tight text-slate-50 truncate" },
                             "Facas",
-                            react_1.default.createElement("span", { className: "text-rose-500" }, "Flow"))),
+                            react_1.default.createElement("span", { className: "text-rose-500" }, "Flow")),
+                        react_1.default.createElement("div", { className: "hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-zinc-900/90 border border-zinc-800 text-[11px] font-medium text-zinc-300" },
+                            react_1.default.createElement(lucide_react_1.Radio, { className: "w-3 h-3 text-emerald-400 animate-pulse shrink-0" }),
+                            react_1.default.createElement("span", null, realtimeStatus === 'supabase_live'
+                                ? 'Realtime Cloud'
+                                : 'Realtime Ativo'),
+                            react_1.default.createElement("span", { className: "text-zinc-600" }, "\u2022"),
+                            react_1.default.createElement("span", { className: userRole === 'operador'
+                                    ? 'text-amber-300 font-semibold'
+                                    : 'text-rose-300 font-semibold' }, userRole === 'operador'
+                                ? `Produção (${userName.split(' ')[0]})`
+                                : 'Administrador'))),
                     react_1.default.createElement("div", { className: "flex items-center gap-2 shrink-0" },
                         react_1.default.createElement("div", { className: "hidden md:block relative w-64" },
                             react_1.default.createElement(lucide_react_1.Search, { className: "w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" }),
                             react_1.default.createElement("input", { type: "text", value: searchQuery, onChange: (e) => onSearchChange(e.target.value), placeholder: "Buscar OS, empresa, CNPJ ou faca...", className: "w-full pl-9 pr-8 py-2 text-xs rounded-2xl bg-zinc-900 border border-zinc-800 text-slate-100 placeholder-zinc-500 focus:border-rose-700 outline-none transition" }),
                             searchQuery && (react_1.default.createElement("button", { onClick: () => onSearchChange(''), className: "absolute right-3 top-1/2 -translate-y-1/2 text-xs text-zinc-500 hover:text-slate-200" }, "\u2715"))),
-                        react_1.default.createElement("button", { onClick: onOpenNewOrder, className: "inline-flex items-center gap-1.5 sm:gap-2 px-3.5 sm:px-4 py-2.5 rounded-2xl text-xs font-semibold whitespace-nowrap shrink-0 bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 text-slate-50 border border-rose-600/40 shadow-lg shadow-rose-950/60 transition cursor-pointer" },
+                        userRole === 'admin' && (react_1.default.createElement("button", { onClick: onOpenNewOrder, className: "inline-flex items-center gap-1.5 sm:gap-2 px-3.5 sm:px-4 py-2.5 rounded-2xl text-xs font-semibold whitespace-nowrap shrink-0 bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 text-slate-50 border border-rose-600/40 shadow-lg shadow-rose-950/60 transition cursor-pointer" },
                             react_1.default.createElement(lucide_react_1.Plus, { className: "w-4 h-4 stroke-[2.5] shrink-0" }),
-                            react_1.default.createElement("span", null, "Nova OS")),
-                        react_1.default.createElement("button", { type: "button", onClick: onLogout, className: "inline-flex items-center gap-1.5 px-3 sm:px-3.5 py-2.5 rounded-2xl text-xs font-semibold whitespace-nowrap shrink-0 bg-zinc-900 hover:bg-rose-950/80 text-zinc-300 hover:text-rose-200 border border-zinc-800 hover:border-rose-700/60 transition cursor-pointer", title: "Encerrar sess\u00E3o e trocar de empresa" },
+                            react_1.default.createElement("span", null, "Nova OS"))),
+                        react_1.default.createElement("button", { type: "button", onClick: onLogout, className: "inline-flex items-center gap-1.5 px-3 sm:px-3.5 py-2.5 rounded-2xl text-xs font-semibold whitespace-nowrap shrink-0 bg-zinc-900 hover:bg-rose-950/80 text-zinc-300 hover:text-rose-200 border border-zinc-800 hover:border-rose-700/60 transition cursor-pointer", title: "Encerrar sess\u00E3o e trocar de usu\u00E1rio" },
                             react_1.default.createElement(lucide_react_1.LogOut, { className: "w-3.5 h-3.5 stroke-[2.2] shrink-0" }),
                             react_1.default.createElement("span", null, "Sair")))),
-                react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2 pt-1" }, exports.NAV_SECTIONS.map((item) => {
+                react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2 pt-1" }, visibleSections.map((item) => {
                     const Icon = item.icon;
                     const isActive = activeSection === item.id;
                     const badge = getBadge(item.id);
@@ -2167,6 +2693,310 @@ exports.WarrantyReturnsSection = WarrantyReturnsSection;
   { dir: "./components" }
 );
 
+__moduleFactories["./components/TeamManagementSection"] = Object.assign(
+  function(module, exports, require) {
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.TeamManagementSection = void 0;
+const react_1 = __importStar(require("react"));
+const lucide_react_1 = require("lucide-react");
+const realtimeEngine_1 = require("../services/realtimeEngine");
+const TeamManagementSection = ({ session, employees, realtimeStatus, onAddEmployee, onToggleEmployeeRole, onDeleteEmployee, onImpersonateEmployee, onSupabaseConfigSaved, }) => {
+    const [ownerName, setOwnerName] = (0, react_1.useState)('');
+    const [email, setEmail] = (0, react_1.useState)('');
+    const [password, setPassword] = (0, react_1.useState)('');
+    const [jobTitle, setJobTitle] = (0, react_1.useState)('');
+    const [role, setRole] = (0, react_1.useState)('operador');
+    const [formError, setFormError] = (0, react_1.useState)(null);
+    const [confirmDeleteEmail, setConfirmDeleteEmail] = (0, react_1.useState)(null);
+    const [copiedEmail, setCopiedEmail] = (0, react_1.useState)(null);
+    // Supabase Realtime Optional Cloud Config
+    const [supaConfig, setSupaConfig] = (0, react_1.useState)(() => (0, realtimeEngine_1.getSupabaseConfig)());
+    const [showSupaPanel, setShowSupaPanel] = (0, react_1.useState)(false);
+    const [copiedSql, setCopiedSql] = (0, react_1.useState)(false);
+    const handleSubmit = (e) => {
+        e.preventDefault();
+        setFormError(null);
+        const res = onAddEmployee({
+            ownerName: ownerName.trim(),
+            email: email.trim().toLowerCase(),
+            password: password.trim(),
+            role,
+            jobTitle: jobTitle.trim() ||
+                (role === 'operador' ? 'Operador de Produção' : 'Administrador'),
+        });
+        if (res.error) {
+            setFormError(res.error);
+            return;
+        }
+        setOwnerName('');
+        setEmail('');
+        setPassword('');
+        setJobTitle('');
+        setRole('operador');
+    };
+    const handleCopyMobileInviteLink = (emp) => {
+        try {
+            const token = window.btoa(unescape(encodeURIComponent(JSON.stringify(emp))));
+            const baseUrl = `${window.location.origin}${window.location.pathname}`;
+            const inviteUrl = `${baseUrl}?emp_sync=${encodeURIComponent(token)}`;
+            navigator.clipboard.writeText(inviteUrl);
+            setCopiedEmail(emp.email);
+            setTimeout(() => setCopiedEmail(null), 2500);
+        }
+        catch {
+            // ignore
+        }
+    };
+    const handleSaveSupabase = (e) => {
+        e.preventDefault();
+        (0, realtimeEngine_1.saveSupabaseConfig)(supaConfig);
+        onSupabaseConfigSaved();
+        setShowSupaPanel(false);
+    };
+    const supabaseSqlSnippet = `-- Execute no SQL Editor do seu projeto Supabase para habilitar o Realtime Multi-Tenant:
+create table if not exists public.facasflow_tenant_state (
+  company_id text primary key,
+  db_payload jsonb not null default '{}'::jsonb,
+  last_action text,
+  last_actor text,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.facasflow_tenant_state enable row level security;
+
+create policy "Allow tenant realtime access"
+  on public.facasflow_tenant_state
+  for all
+  to anon, authenticated
+  using (true)
+  with check (true);
+
+alter publication supabase_realtime add table public.facasflow_tenant_state;`;
+    return (react_1.default.createElement("div", { className: "space-y-6" },
+        react_1.default.createElement("div", { className: "rounded-3xl bg-zinc-900/90 border border-zinc-800/90 p-6 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 shadow-xl" },
+            react_1.default.createElement("div", { className: "space-y-1" },
+                react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2.5" },
+                    react_1.default.createElement("span", { className: "px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider bg-rose-950/90 text-rose-300 border border-rose-700/50 flex items-center gap-1.5" },
+                        react_1.default.createElement(lucide_react_1.Shield, { className: "w-3.5 h-3.5 text-rose-400" }),
+                        "Painel do Administrador"),
+                    react_1.default.createElement("span", { className: "px-3 py-1 rounded-full text-[11px] font-semibold bg-emerald-950/70 text-emerald-300 border border-emerald-700/40 flex items-center gap-1.5" },
+                        react_1.default.createElement(lucide_react_1.Radio, { className: "w-3.5 h-3.5 text-emerald-400 animate-pulse" }),
+                        realtimeStatus === 'supabase_live'
+                            ? 'Supabase Realtime Conectado (Seções 2, 4 e 5)'
+                            : 'Sincronização em Tempo Real Ativa (Seções 2, 4 e 5)')),
+                react_1.default.createElement("h2", { className: "text-xl font-bold text-slate-50 pt-1" }, "Gest\u00E3o de Funcion\u00E1rios & Controle de Acesso (RBAC)"),
+                react_1.default.createElement("p", { className: "text-xs text-zinc-400 max-w-3xl" },
+                    "Cadastre os operadores da sua f\u00E1brica. Quando um funcion\u00E1rio com perfil",
+                    ' ',
+                    react_1.default.createElement("strong", { className: "text-slate-200" }, "Operador / Produ\u00E7\u00E3o"),
+                    " faz login, ele enxerga exclusivamente as",
+                    ' ',
+                    react_1.default.createElement("strong", { className: "text-rose-400" }, "Se\u00E7\u00F5es 2 (Esteira), 4 (Entregas) e 5 (Retornos)"),
+                    ", e toda atualiza\u00E7\u00E3o reflete na sua tela em tempo real sem precisar dar F5.")),
+            react_1.default.createElement("div", { className: "flex items-center gap-2.5 shrink-0" },
+                react_1.default.createElement("button", { type: "button", onClick: () => setShowSupaPanel((prev) => !prev), className: "inline-flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-semibold bg-zinc-950 hover:bg-zinc-800 text-zinc-200 border border-zinc-800 transition cursor-pointer" },
+                    react_1.default.createElement(lucide_react_1.Database, { className: "w-4 h-4 text-emerald-400" }),
+                    react_1.default.createElement("span", null, "Configurar Supabase Realtime")))),
+        showSupaPanel && (react_1.default.createElement("div", { className: "rounded-3xl bg-zinc-900 border border-emerald-800/50 p-6 space-y-4 shadow-2xl" },
+            react_1.default.createElement("div", { className: "flex items-start justify-between gap-4" },
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("h3", { className: "text-sm font-bold text-slate-50 flex items-center gap-2" },
+                        react_1.default.createElement(lucide_react_1.Database, { className: "w-4 h-4 text-emerald-400" }),
+                        "Conex\u00E3o Supabase Realtime (Se\u00E7\u00F5es 2, 4 e 5 em Nuvem)"),
+                    react_1.default.createElement("p", { className: "text-xs text-zinc-400 mt-0.5" }, "O FacasFlow j\u00E1 sincroniza abas e sess\u00F5es em tempo real automaticamente. Para sincronizar dispositivos em redes diferentes via Supabase Cloud, insira a URL e a Anon/Publishable Key do seu projeto Supabase.")),
+                react_1.default.createElement("label", { className: "inline-flex items-center gap-2 text-xs font-semibold text-emerald-300 cursor-pointer" },
+                    react_1.default.createElement("input", { type: "checkbox", checked: supaConfig.enabled, onChange: (e) => setSupaConfig({ ...supaConfig, enabled: e.target.checked }), className: "rounded accent-emerald-500 w-4 h-4" }),
+                    react_1.default.createElement("span", null, "Habilitar Supabase Cloud"))),
+            react_1.default.createElement("form", { onSubmit: handleSaveSupabase, className: "grid grid-cols-1 md:grid-cols-12 gap-3" },
+                react_1.default.createElement("div", { className: "md:col-span-5" },
+                    react_1.default.createElement("label", { className: "block text-[11px] font-semibold text-zinc-400 mb-1" }, "Supabase Project URL"),
+                    react_1.default.createElement("input", { type: "url", value: supaConfig.url, onChange: (e) => setSupaConfig({ ...supaConfig, url: e.target.value }), placeholder: "https://seu-projeto.supabase.co", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-emerald-500 outline-none" })),
+                react_1.default.createElement("div", { className: "md:col-span-5" },
+                    react_1.default.createElement("label", { className: "block text-[11px] font-semibold text-zinc-400 mb-1" }, "Supabase Publishable / Anon Key"),
+                    react_1.default.createElement("input", { type: "password", value: supaConfig.anonKey, onChange: (e) => setSupaConfig({ ...supaConfig, anonKey: e.target.value }), placeholder: "eyJhbGciOiJIUzI1NiIsInR5cCI6...", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-emerald-500 outline-none" })),
+                react_1.default.createElement("div", { className: "md:col-span-2 flex items-end" },
+                    react_1.default.createElement("button", { type: "submit", className: "w-full py-2.5 px-4 rounded-2xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-zinc-950 transition cursor-pointer" }, "Salvar & Conectar"))),
+            react_1.default.createElement("div", { className: "rounded-2xl bg-zinc-950 border border-zinc-800 p-3.5" },
+                react_1.default.createElement("div", { className: "flex items-center justify-between mb-2" },
+                    react_1.default.createElement("span", { className: "text-[11px] font-semibold text-zinc-400" }, "Script SQL para criar a tabela Realtime no Supabase:"),
+                    react_1.default.createElement("button", { type: "button", onClick: () => {
+                            navigator.clipboard.writeText(supabaseSqlSnippet);
+                            setCopiedSql(true);
+                            setTimeout(() => setCopiedSql(false), 2000);
+                        }, className: "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-[11px] font-semibold text-zinc-300 border border-zinc-800 cursor-pointer" }, copiedSql ? (react_1.default.createElement(react_1.default.Fragment, null,
+                        react_1.default.createElement(lucide_react_1.Check, { className: "w-3.5 h-3.5 text-emerald-400" }),
+                        react_1.default.createElement("span", null, "SQL Copiado!"))) : (react_1.default.createElement(react_1.default.Fragment, null,
+                        react_1.default.createElement(lucide_react_1.Copy, { className: "w-3.5 h-3.5" }),
+                        react_1.default.createElement("span", null, "Copiar SQL"))))),
+                react_1.default.createElement("pre", { className: "text-[11px] font-mono text-zinc-400 overflow-x-auto leading-relaxed" }, supabaseSqlSnippet)))),
+        react_1.default.createElement("div", { className: "grid grid-cols-1 lg:grid-cols-12 gap-6" },
+            react_1.default.createElement("div", { className: "lg:col-span-5 rounded-3xl bg-zinc-900/90 border border-zinc-800/90 p-6 shadow-xl flex flex-col justify-between" },
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("div", { className: "flex items-center gap-2.5 mb-5" },
+                        react_1.default.createElement("div", { className: "w-9 h-9 rounded-2xl bg-rose-950/80 border border-rose-700/50 flex items-center justify-center text-rose-400" },
+                            react_1.default.createElement(lucide_react_1.UserPlus, { className: "w-4 h-4" })),
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("h3", { className: "text-sm font-bold text-slate-50" }, "Cadastrar Novo Funcion\u00E1rio"),
+                            react_1.default.createElement("p", { className: "text-[11px] text-zinc-400" }, "Vinculado automaticamente \u00E0 sua empresa"))),
+                    formError && (react_1.default.createElement("div", { className: "mb-4 p-3 rounded-2xl bg-rose-950/60 border border-rose-700/60 text-rose-200 text-xs flex items-center gap-2" },
+                        react_1.default.createElement(lucide_react_1.AlertCircle, { className: "w-4 h-4 text-rose-400 shrink-0" }),
+                        react_1.default.createElement("span", null, formError))),
+                    react_1.default.createElement("form", { onSubmit: handleSubmit, className: "space-y-3.5" },
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1" }, "Nome do Funcion\u00E1rio *"),
+                            react_1.default.createElement("input", { type: "text", required: true, value: ownerName, onChange: (e) => setOwnerName(e.target.value), placeholder: "Ex: Carlos Montador", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" })),
+                        react_1.default.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 gap-3" },
+                            react_1.default.createElement("div", null,
+                                react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1" }, "E-mail de Login *"),
+                                react_1.default.createElement("div", { className: "relative" },
+                                    react_1.default.createElement(lucide_react_1.Mail, { className: "w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" }),
+                                    react_1.default.createElement("input", { type: "email", inputMode: "email", autoCapitalize: "none", autoCorrect: "off", spellCheck: false, required: true, value: email, onChange: (e) => setEmail(e.target.value), placeholder: "carlos@facaria.com", className: "w-full pl-9 pr-3 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" }))),
+                            react_1.default.createElement("div", null,
+                                react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1" }, "Senha de Acesso *"),
+                                react_1.default.createElement("div", { className: "relative" },
+                                    react_1.default.createElement(lucide_react_1.Lock, { className: "w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" }),
+                                    react_1.default.createElement("input", { type: "text", autoCapitalize: "none", autoCorrect: "off", spellCheck: false, required: true, value: password, onChange: (e) => setPassword(e.target.value), placeholder: "Ex: 123456", className: "w-full pl-9 pr-3 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" })))),
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1" }, "Cargo / Fun\u00E7\u00E3o na F\u00E1brica"),
+                            react_1.default.createElement("input", { type: "text", value: jobTitle, onChange: (e) => setJobTitle(e.target.value), placeholder: "Ex: Serrador, Dobrador, Expedi\u00E7\u00E3o...", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" })),
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1.5" }, "N\u00EDvel de Permiss\u00E3o (Perfil de Acesso) *"),
+                            react_1.default.createElement("div", { className: "grid grid-cols-1 gap-2" },
+                                react_1.default.createElement("button", { type: "button", onClick: () => setRole('operador'), className: `p-3 rounded-2xl border text-left transition cursor-pointer flex items-start gap-3 ${role === 'operador'
+                                        ? 'bg-rose-950/50 border-rose-600/70 text-slate-50'
+                                        : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:bg-zinc-900'}` },
+                                    react_1.default.createElement(lucide_react_1.Wrench, { className: `w-4 h-4 mt-0.5 shrink-0 ${role === 'operador' ? 'text-rose-400' : 'text-zinc-500'}` }),
+                                    react_1.default.createElement("div", null,
+                                        react_1.default.createElement("div", { className: "text-xs font-bold text-slate-100" }, "Operador / Produ\u00E7\u00E3o (Restrito \u00E0 F\u00E1brica)"),
+                                        react_1.default.createElement("div", { className: "text-[11px] text-zinc-400 mt-0.5 leading-relaxed" },
+                                            "Libera acesso ",
+                                            react_1.default.createElement("strong", null, "apenas"),
+                                            " \u00E0s Se\u00E7\u00F5es",
+                                            ' ',
+                                            react_1.default.createElement("span", { className: "text-rose-300 font-semibold" }, "2 (Esteira F\u00EDsica), 4 (Entregas) e 5 (Retornos)"),
+                                            ". Oculta Finan\u00E7as, Empresas e Vis\u00E3o Geral."))),
+                                react_1.default.createElement("button", { type: "button", onClick: () => setRole('admin'), className: `p-3 rounded-2xl border text-left transition cursor-pointer flex items-start gap-3 ${role === 'admin'
+                                        ? 'bg-rose-950/50 border-rose-600/70 text-slate-50'
+                                        : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:bg-zinc-900'}` },
+                                    react_1.default.createElement(lucide_react_1.Shield, { className: `w-4 h-4 mt-0.5 shrink-0 ${role === 'admin' ? 'text-rose-400' : 'text-zinc-500'}` }),
+                                    react_1.default.createElement("div", null,
+                                        react_1.default.createElement("div", { className: "text-xs font-bold text-slate-100" }, "Administrador / Patr\u00E3o (Acesso Total)"),
+                                        react_1.default.createElement("div", { className: "text-[11px] text-zinc-400 mt-0.5 leading-relaxed" }, "Acesso irrestrito a todas as se\u00E7\u00F5es, financeiro, cadastro de empresas e gest\u00E3o de equipe."))))),
+                        react_1.default.createElement("button", { type: "submit", className: "w-full py-3 px-4 rounded-2xl font-bold text-xs bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 text-white border border-rose-600/40 shadow-lg shadow-rose-950/70 flex items-center justify-center gap-2 transition cursor-pointer mt-2" },
+                            react_1.default.createElement(lucide_react_1.UserPlus, { className: "w-4 h-4" }),
+                            react_1.default.createElement("span", null, "Cadastrar Funcion\u00E1rio na Empresa"))))),
+            react_1.default.createElement("div", { className: "lg:col-span-7 rounded-3xl bg-zinc-900/90 border border-zinc-800/90 p-6 shadow-xl flex flex-col justify-between" },
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-2 mb-5" },
+                        react_1.default.createElement("div", { className: "flex items-center gap-2.5" },
+                            react_1.default.createElement("div", { className: "w-9 h-9 rounded-2xl bg-zinc-800 border border-zinc-700 flex items-center justify-center text-slate-200" },
+                                react_1.default.createElement(lucide_react_1.Users, { className: "w-4 h-4" })),
+                            react_1.default.createElement("div", null,
+                                react_1.default.createElement("h3", { className: "text-sm font-bold text-slate-50" },
+                                    "Usu\u00E1rios & Funcion\u00E1rios da Empresa (",
+                                    employees.length,
+                                    ")"),
+                                react_1.default.createElement("p", { className: "text-[11px] text-zinc-400" }, "Gerencie cargos, teste a vis\u00E3o de operador ou envie o link de acesso para o celular do funcion\u00E1rio")))),
+                    react_1.default.createElement("div", { className: "space-y-3" }, employees.map((emp) => {
+                        const isSelf = emp.email.trim().toLowerCase() ===
+                            session.email.trim().toLowerCase();
+                        const isOperador = emp.role === 'operador';
+                        return (react_1.default.createElement("div", { key: emp.email, className: "p-4 rounded-2xl bg-zinc-950/90 border border-zinc-800/90 hover:border-zinc-700 transition flex flex-col sm:flex-row sm:items-center justify-between gap-4" },
+                            react_1.default.createElement("div", { className: "space-y-1 min-w-0" },
+                                react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
+                                    react_1.default.createElement("span", { className: "text-sm font-bold text-slate-100" }, emp.ownerName),
+                                    isSelf && (react_1.default.createElement("span", { className: "px-2 py-0.5 rounded-lg bg-zinc-800 text-zinc-300 text-[10px] font-semibold" }, "Voc\u00EA")),
+                                    react_1.default.createElement("span", { className: `px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide border ${isOperador
+                                            ? 'bg-amber-950/70 text-amber-300 border-amber-700/50'
+                                            : 'bg-rose-950/80 text-rose-300 border-rose-700/50'}` }, isOperador
+                                        ? 'Operador • Seções 2, 4 e 5'
+                                        : 'Administrador Total')),
+                                react_1.default.createElement("div", { className: "text-xs text-zinc-400 flex flex-wrap items-center gap-x-3 gap-y-1" },
+                                    react_1.default.createElement("span", null,
+                                        "Cargo:",
+                                        ' ',
+                                        react_1.default.createElement("strong", { className: "text-zinc-200" }, emp.jobTitle ||
+                                            (isOperador ? 'Operador de Produção' : 'Administrador'))),
+                                    react_1.default.createElement("span", null, "\u2022"),
+                                    react_1.default.createElement("span", null,
+                                        "E-mail:",
+                                        ' ',
+                                        react_1.default.createElement("code", { className: "text-slate-200 font-mono" }, emp.email)),
+                                    react_1.default.createElement("span", null, "\u2022"),
+                                    react_1.default.createElement("span", { className: "inline-flex items-center gap-1" },
+                                        react_1.default.createElement(lucide_react_1.KeyRound, { className: "w-3 h-3 text-zinc-500" }),
+                                        "Senha:",
+                                        ' ',
+                                        react_1.default.createElement("code", { className: "text-slate-300 font-mono" }, emp.password)))),
+                            react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2 shrink-0" },
+                                react_1.default.createElement("button", { type: "button", onClick: () => handleCopyMobileInviteLink(emp), className: "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-zinc-800 text-[11px] font-semibold transition cursor-pointer", title: "Copiar link de acesso configurado para o celular do funcion\u00E1rio" }, copiedEmail === emp.email ? (react_1.default.createElement(react_1.default.Fragment, null,
+                                    react_1.default.createElement(lucide_react_1.Check, { className: "w-3.5 h-3.5 text-emerald-400" }),
+                                    react_1.default.createElement("span", { className: "text-emerald-300" }, "Link Copiado!"))) : (react_1.default.createElement(react_1.default.Fragment, null,
+                                    react_1.default.createElement(lucide_react_1.Copy, { className: "w-3.5 h-3.5 text-zinc-400" }),
+                                    react_1.default.createElement("span", null, "Link Celular")))),
+                                !isSelf && (react_1.default.createElement("button", { type: "button", onClick: () => onImpersonateEmployee(emp), className: "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-950/60 hover:bg-rose-900/80 text-rose-200 border border-rose-800/50 text-[11px] font-semibold transition cursor-pointer", title: "Entrar imediatamente com o perfil deste funcion\u00E1rio para testar a vis\u00E3o dele" },
+                                    react_1.default.createElement(lucide_react_1.Eye, { className: "w-3.5 h-3.5" }),
+                                    react_1.default.createElement("span", null,
+                                        "Entrar como ",
+                                        emp.ownerName.split(' ')[0]))),
+                                !isSelf && (react_1.default.createElement("button", { type: "button", onClick: () => onToggleEmployeeRole(emp.email, isOperador ? 'admin' : 'operador'), className: "inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 text-[11px] font-medium transition cursor-pointer", title: "Alternar entre Operador (Se\u00E7\u00F5es 2, 4, 5) e Administrador" },
+                                    react_1.default.createElement(lucide_react_1.UserCheck, { className: "w-3.5 h-3.5 text-zinc-400" }),
+                                    react_1.default.createElement("span", null, isOperador ? 'Tornar Admin' : 'Tornar Operador'))),
+                                !isSelf &&
+                                    (confirmDeleteEmail === emp.email ? (react_1.default.createElement("div", { className: "inline-flex items-center gap-1 bg-rose-950/90 border border-rose-700/70 rounded-xl px-2 py-1" },
+                                        react_1.default.createElement("button", { type: "button", onClick: () => {
+                                                onDeleteEmployee(emp.email);
+                                                setConfirmDeleteEmail(null);
+                                            }, className: "text-[10px] font-bold text-rose-200 hover:text-white px-1.5 cursor-pointer" }, "Confirmar"),
+                                        react_1.default.createElement("button", { type: "button", onClick: () => setConfirmDeleteEmail(null), className: "text-[10px] text-zinc-400 hover:text-zinc-200 px-1 cursor-pointer" }, "\u2715"))) : (react_1.default.createElement("button", { type: "button", onClick: () => setConfirmDeleteEmail(emp.email), className: "p-2 rounded-xl bg-zinc-900 hover:bg-rose-950/80 text-zinc-400 hover:text-rose-300 border border-zinc-800 hover:border-rose-700/50 transition cursor-pointer", title: "Apagar funcion\u00E1rio" },
+                                        react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" })))))));
+                    }))),
+                react_1.default.createElement("div", { className: "mt-6 pt-4 border-t border-zinc-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-400" },
+                    react_1.default.createElement("span", { className: "flex items-center gap-1.5" },
+                        react_1.default.createElement(lucide_react_1.ShieldAlert, { className: "w-3.5 h-3.5 text-rose-400" }),
+                        "Operadores enxergam apenas as Se\u00E7\u00F5es 2, 4 e 5."),
+                    react_1.default.createElement("span", null, "Dica: Abra uma aba an\u00F4nima e fa\u00E7a login como operador para ver o Realtime funcionando ao vivo!"))))));
+};
+exports.TeamManagementSection = TeamManagementSection;
+
+  },
+  { dir: "./components" }
+);
+
 __moduleFactories["./components/FastEntryModal"] = Object.assign(
   function(module, exports, require) {
 "use strict";
@@ -2362,35 +3192,74 @@ const FastEntryModal_1 = require("./components/FastEntryModal");
 const FinanceAnalyticsSection_1 = require("./components/FinanceAnalyticsSection");
 const HeaderBar_1 = require("./components/HeaderBar");
 const ProductionKanban_1 = require("./components/ProductionKanban");
+const TeamManagementSection_1 = require("./components/TeamManagementSection");
 const WarrantyReturnsSection_1 = require("./components/WarrantyReturnsSection");
+const realtimeEngine_1 = require("./services/realtimeEngine");
 const storageAdapter_1 = require("./services/storageAdapter");
 const financeEngine_1 = require("./utils/financeEngine");
+const OPERATOR_ALLOWED_SECTIONS = [
+    'esteira',
+    'entregas',
+    'retornos',
+];
 const App = () => {
     const [session, setSession] = (0, react_1.useState)(() => (0, storageAdapter_1.getActiveSession)());
     const [db, setDb] = (0, react_1.useState)(() => {
         const active = (0, storageAdapter_1.getActiveSession)();
         return (0, storageAdapter_1.loadEnterpriseDatabase)(active?.company_id || 'tenant_qualifacas');
     });
-    const [activeSection, setActiveSection] = (0, react_1.useState)('bento_home');
+    const [employees, setEmployees] = (0, react_1.useState)(() => {
+        const active = (0, storageAdapter_1.getActiveSession)();
+        return (0, storageAdapter_1.getCompanyEmployees)(active?.company_id || 'tenant_qualifacas');
+    });
+    const [activeSection, setActiveSection] = (0, react_1.useState)(() => {
+        const active = (0, storageAdapter_1.getActiveSession)();
+        return active?.role === 'operador' ? 'esteira' : 'bento_home';
+    });
+    const [realtimeStatus, setRealtimeStatus] = (0, react_1.useState)('connected');
+    const [realtimeConfigTick, setRealtimeConfigTick] = (0, react_1.useState)(0);
     const [searchQuery, setSearchQuery] = (0, react_1.useState)('');
     const [selectedCompanyId, setSelectedCompanyId] = (0, react_1.useState)(db.companies[0]?.id || null);
     const [prefillDeliveryOrder, setPrefillDeliveryOrder] = (0, react_1.useState)(null);
     const [isNewModalOpen, setIsNewModalOpen] = (0, react_1.useState)(false);
     const [toast, setToast] = (0, react_1.useState)(null);
-    const showToast = (msg) => {
-        setToast(msg);
+    const showToast = (message, isRealtime = false) => {
+        setToast({ message, isRealtime });
         setTimeout(() => {
-            setToast((prev) => (prev === msg ? null : prev));
-        }, 3500);
+            setToast((prev) => (prev?.message === message ? null : prev));
+        }, 3800);
     };
+    // Subscribe to Realtime updates for the logged-in company_id (Sections 2, 4, 5 & Team)
+    (0, react_1.useEffect)(() => {
+        if (!session?.company_id)
+            return;
+        const unsubscribe = (0, realtimeEngine_1.subscribeToCompanyRealtime)(session.company_id, (remoteEvent) => {
+            const saved = (0, storageAdapter_1.saveEnterpriseDatabase)({
+                ...remoteEvent.db,
+                company_id: session.company_id,
+            });
+            setDb(saved);
+            setEmployees((0, storageAdapter_1.getCompanyEmployees)(session.company_id));
+            showToast(`[Tempo Real] ${remoteEvent.actorName}: ${remoteEvent.actionLabel}`, true);
+        }, (status) => {
+            setRealtimeStatus(status);
+        });
+        return () => {
+            unsubscribe();
+        };
+    }, [session?.company_id, realtimeConfigTick]);
     const handleAuthenticated = (newSession) => {
         const tenantDb = (0, storageAdapter_1.loadEnterpriseDatabase)(newSession.company_id);
+        const companyEmps = (0, storageAdapter_1.getCompanyEmployees)(newSession.company_id);
         setSession(newSession);
         setDb(tenantDb);
+        setEmployees(companyEmps);
         setSelectedCompanyId(tenantDb.companies[0]?.id || null);
-        setActiveSection('bento_home');
+        setActiveSection(newSession.role === 'operador' ? 'esteira' : 'bento_home');
         setSearchQuery('');
-        showToast('Sessão iniciada com sucesso!');
+        showToast(newSession.role === 'operador'
+            ? `Acesso de Produção liberado (${newSession.ownerName})`
+            : 'Sessão iniciada com sucesso!');
     };
     const handleLogout = () => {
         (0, storageAdapter_1.clearActiveSession)();
@@ -2398,13 +3267,34 @@ const App = () => {
         setSearchQuery('');
         setIsNewModalOpen(false);
     };
-    const commitDb = (nextDb) => {
+    const handleSelectSection = (target) => {
+        if (session?.role === 'operador' &&
+            !OPERATOR_ALLOWED_SECTIONS.includes(target)) {
+            setActiveSection('esteira');
+            return;
+        }
+        setActiveSection(target);
+    };
+    const commitDb = (nextDb, realtimeMeta) => {
         const activeTenantId = session?.company_id || nextDb.company_id || 'tenant_qualifacas';
+        const currentEmps = (0, storageAdapter_1.getCompanyEmployees)(activeTenantId);
         const saved = (0, storageAdapter_1.saveEnterpriseDatabase)({
             ...nextDb,
             company_id: activeTenantId,
+            employees: currentEmps,
         });
         setDb(saved);
+        setEmployees(currentEmps);
+        if (realtimeMeta && session) {
+            (0, realtimeEngine_1.publishRealtimeUpdate)({
+                company_id: activeTenantId,
+                section: realtimeMeta.section,
+                actionLabel: realtimeMeta.actionLabel,
+                actorName: session.ownerName,
+                actorRole: session.role,
+                db: saved,
+            });
+        }
     };
     // Search filtering
     const filteredOrders = (0, react_1.useMemo)(() => {
@@ -2442,6 +3332,9 @@ const App = () => {
         commitDb({
             ...db,
             companies: [created, ...db.companies],
+        }, {
+            section: 'all',
+            actionLabel: `Empresa "${created.corporateName}" cadastrada`,
         });
         setSelectedCompanyId(newId);
         showToast(`Empresa "${created.corporateName}" cadastrada!`);
@@ -2457,12 +3350,12 @@ const App = () => {
             payload.paymentModality === 'dinheiro') {
             payStatus = 'pago';
         }
-        // Ensure company exists in CRM
         let updatedCompanies = db.companies;
         if (!db.companies.some((c) => c.id === payload.companyId)) {
             updatedCompanies = [
                 {
                     id: payload.companyId,
+                    company_id: session?.company_id,
                     corporateName: payload.companyName,
                     cnpj: 'Não informado',
                     phone: payload.companyPhone,
@@ -2473,6 +3366,7 @@ const App = () => {
         }
         const newOrder = {
             id: nextOrderId,
+            company_id: session?.company_id,
             companyId: payload.companyId,
             companyName: payload.companyName,
             companyPhone: payload.companyPhone,
@@ -2487,16 +3381,22 @@ const App = () => {
             dueDate: (0, financeEngine_1.addDays)(today, days),
             paidAt: payStatus === 'pago' ? today : undefined,
         };
+        const stageLabel = financeEngine_1.PRODUCTION_STAGES.find((s) => s.id === payload.stage)?.label ||
+            payload.stage;
         commitDb({
             ...db,
             companies: updatedCompanies,
             orders: [newOrder, ...db.orders],
+        }, {
+            section: 'esteira',
+            actionLabel: `Nova ${newOrder.id} enviada para "${stageLabel}"`,
         });
         if (!selectedCompanyId) {
             setSelectedCompanyId(payload.companyId);
         }
-        showToast(`${newOrder.id} criada em "${financeEngine_1.PRODUCTION_STAGES.find((s) => s.id === payload.stage)?.label}"!`);
+        showToast(`${newOrder.id} criada em "${stageLabel}"!`);
     };
+    // Seção 2 • Esteira Física de Produção (Realtime Broadcast)
     const handleMoveStage = (orderId, targetStage) => {
         const stamp = (0, financeEngine_1.nowTimestampBR)();
         const nextOrders = db.orders.map((o) => {
@@ -2506,11 +3406,17 @@ const App = () => {
                 ...o,
                 stage: targetStage,
                 stageUpdatedAt: stamp,
-                stageHistory: [...(o.stageHistory || []), { stage: targetStage, timestamp: stamp }],
+                stageHistory: [
+                    ...(o.stageHistory || []),
+                    { stage: targetStage, timestamp: stamp },
+                ],
             };
         });
-        commitDb({ ...db, orders: nextOrders });
-        const stageName = financeEngine_1.PRODUCTION_STAGES.find((s) => s.id === targetStage)?.label;
+        const stageName = financeEngine_1.PRODUCTION_STAGES.find((s) => s.id === targetStage)?.label || targetStage;
+        commitDb({ ...db, orders: nextOrders }, {
+            section: 'esteira',
+            actionLabel: `${orderId} avançou para "${stageName}" na Seção 2`,
+        });
         showToast(`${orderId} avançou para "${stageName}" (${stamp})`);
     };
     const handleTogglePaid = (orderId) => {
@@ -2525,7 +3431,10 @@ const App = () => {
                 paidAt: isPaid ? undefined : today,
             };
         });
-        commitDb({ ...db, orders: nextOrders });
+        commitDb({ ...db, orders: nextOrders }, {
+            section: 'all',
+            actionLabel: `Status financeiro de ${orderId} atualizado`,
+        });
         showToast(`Status financeiro de ${orderId} atualizado!`);
     };
     const handleEmitBilling30d = (orderId) => {
@@ -2539,12 +3448,17 @@ const App = () => {
                 dueDate: (0, financeEngine_1.addDays)(today, 30),
             };
         });
-        commitDb({ ...db, orders: nextOrders });
+        commitDb({ ...db, orders: nextOrders }, {
+            section: 'all',
+            actionLabel: `Faturamento 30 dias gerado para ${orderId}`,
+        });
         showToast(`Faturamento 30 dias gerado para ${orderId}!`);
     };
+    // Seção 4 • Entregas e Logísticas de Saída (Realtime Broadcast)
     const handleAddDelivery = (deliveryData) => {
         const newDel = {
             id: (0, storageAdapter_1.getNextDeliveryId)(db),
+            company_id: session?.company_id,
             ...deliveryData,
         };
         const stamp = (0, financeEngine_1.nowTimestampBR)();
@@ -2555,24 +3469,36 @@ const App = () => {
             ...db,
             orders: nextOrders,
             deliveries: [newDel, ...db.deliveries],
+        }, {
+            section: 'entregas',
+            actionLabel: `Saída logística da ${deliveryData.orderId} registrada na Seção 4`,
         });
         showToast(`Saída logística da ${deliveryData.orderId} registrada!`);
     };
+    // Seção 5 • Retornos e Ajustes (Realtime Broadcast)
     const handleAddReturn = (retData) => {
         const newRet = {
             id: (0, storageAdapter_1.getNextReturnId)(db),
+            company_id: session?.company_id,
             ...retData,
         };
         commitDb({
             ...db,
             returns: [newRet, ...db.returns],
+        }, {
+            section: 'retornos',
+            actionLabel: `Retorno de garantia (${retData.orderId}) registrado na Seção 5`,
         });
         showToast(`Retorno de garantia (${retData.orderId}) registrado!`);
     };
     const handleUpdateReturnStatus = (id, nextStatus) => {
         const stamp = (0, financeEngine_1.nowTimestampBR)();
+        const targetRet = db.returns.find((r) => r.id === id);
         const nextReturns = db.returns.map((r) => r.id === id ? { ...r, status: nextStatus, updatedAt: stamp } : r);
-        commitDb({ ...db, returns: nextReturns });
+        commitDb({ ...db, returns: nextReturns }, {
+            section: 'retornos',
+            actionLabel: `Status do retorno ${targetRet?.orderId || id} alterado para "${nextStatus}" na Seção 5`,
+        });
         showToast(`Status do retorno atualizado (${stamp})!`);
     };
     const handleDeleteCompany = (companyId) => {
@@ -2588,6 +3514,9 @@ const App = () => {
             orders: nextOrders,
             deliveries: nextDeliveries,
             returns: nextReturns,
+        }, {
+            section: 'all',
+            actionLabel: `Empresa "${comp?.corporateName || companyId}" removida`,
         });
         if (selectedCompanyId === companyId) {
             setSelectedCompanyId(nextCompanies[0]?.id || null);
@@ -2603,18 +3532,84 @@ const App = () => {
             orders: nextOrders,
             deliveries: nextDeliveries,
             returns: nextReturns,
+        }, {
+            section: 'esteira',
+            actionLabel: `Ordem ${orderId} apagada`,
         });
         showToast(`Ordem ${orderId} apagada com sucesso!`);
     };
     const handleDeleteDelivery = (deliveryId) => {
         const nextDeliveries = db.deliveries.filter((d) => d.id !== deliveryId);
-        commitDb({ ...db, deliveries: nextDeliveries });
+        commitDb({ ...db, deliveries: nextDeliveries }, {
+            section: 'entregas',
+            actionLabel: `Registro de entrega ${deliveryId} apagado na Seção 4`,
+        });
         showToast(`Registro de entrega ${deliveryId} apagado!`);
     };
     const handleDeleteReturn = (returnId) => {
         const nextReturns = db.returns.filter((r) => r.id !== returnId);
-        commitDb({ ...db, returns: nextReturns });
+        commitDb({ ...db, returns: nextReturns }, {
+            section: 'retornos',
+            actionLabel: `Registro de retorno ${returnId} apagado na Seção 5`,
+        });
         showToast(`Registro de retorno ${returnId} apagado!`);
+    };
+    // Employee Management (Admin Only)
+    const handleAddEmployee = (payload) => {
+        if (!session)
+            return { error: 'Sessão inválida.' };
+        const res = (0, storageAdapter_1.registerEmployeeForCompany)({
+            company_id: session.company_id,
+            companyName: session.companyName,
+            ...payload,
+        });
+        if (res.error || !res.employee) {
+            return { error: res.error };
+        }
+        const updatedList = (0, storageAdapter_1.getCompanyEmployees)(session.company_id);
+        setEmployees(updatedList);
+        commitDb({ ...db, employees: updatedList }, {
+            section: 'equipe',
+            actionLabel: `Funcionário "${res.employee.ownerName}" (${res.employee.role === 'operador' ? 'Operador' : 'Admin'}) cadastrado`,
+        });
+        showToast(`Funcionário "${res.employee.ownerName}" cadastrado com sucesso!`);
+        return {};
+    };
+    const handleToggleEmployeeRole = (email, nextRole) => {
+        if (!session)
+            return;
+        const updatedList = (0, storageAdapter_1.updateEmployeeRoleInCompany)(email, session.company_id, nextRole);
+        setEmployees(updatedList);
+        commitDb({ ...db, employees: updatedList }, {
+            section: 'equipe',
+            actionLabel: `Permissão de ${email} alterada para ${nextRole === 'operador' ? 'Operador' : 'Administrador'}`,
+        });
+        showToast(`Perfil de ${email} alterado para ${nextRole === 'operador' ? 'Operador (Seções 2, 4 e 5)' : 'Administrador'}!`);
+    };
+    const handleDeleteEmployee = (email) => {
+        if (!session)
+            return;
+        const updatedList = (0, storageAdapter_1.deleteEmployeeFromCompany)(email, session.company_id);
+        setEmployees(updatedList);
+        commitDb({ ...db, employees: updatedList }, {
+            section: 'equipe',
+            actionLabel: `Funcionário ${email} removido da equipe`,
+        });
+        showToast(`Funcionário ${email} removido!`);
+    };
+    const handleImpersonateEmployee = (emp) => {
+        const newSession = {
+            userId: emp.id,
+            company_id: emp.company_id,
+            companyName: emp.companyName,
+            ownerName: emp.ownerName,
+            email: emp.email,
+            role: emp.role,
+            jobTitle: emp.jobTitle,
+            loggedInAt: new Date().toISOString(),
+        };
+        (0, storageAdapter_1.saveActiveSession)(newSession);
+        handleAuthenticated(newSession);
     };
     const counts = {
         companies: db.companies.length,
@@ -2622,18 +3617,26 @@ const App = () => {
         overdue: financials.overdueCount,
         deliveries: db.deliveries.length,
         openReturns: db.returns.filter((r) => r.status !== 'liberado').length,
+        employees: employees.length,
     };
     if (!session) {
         return react_1.default.createElement(AuthLoginScreen_1.AuthLoginScreen, { onAuthenticated: handleAuthenticated });
     }
+    // Enforce RBAC section access
+    const effectiveSection = session.role === 'operador' &&
+        !OPERATOR_ALLOWED_SECTIONS.includes(activeSection)
+        ? 'esteira'
+        : activeSection;
     return (react_1.default.createElement("div", { className: "min-h-screen bg-zinc-950 text-slate-100 pb-24 selection:bg-rose-800 selection:text-white" },
-        react_1.default.createElement(HeaderBar_1.HeaderBar, { activeSection: activeSection, onSelectSection: setActiveSection, searchQuery: searchQuery, onSearchChange: setSearchQuery, onOpenNewOrder: () => setIsNewModalOpen(true), tenantName: session.companyName, onLogout: handleLogout, counts: counts }),
-        toast && (react_1.default.createElement("div", { className: "fixed bottom-20 right-6 z-50 px-4 py-3 rounded-2xl bg-zinc-900 border border-rose-700/70 text-slate-50 text-xs font-semibold shadow-2xl flex items-center gap-2" },
-            react_1.default.createElement(lucide_react_1.CheckCircle2, { className: "w-4 h-4 text-emerald-400 shrink-0" }),
-            react_1.default.createElement("span", null, toast))),
+        react_1.default.createElement(HeaderBar_1.HeaderBar, { activeSection: effectiveSection, onSelectSection: handleSelectSection, searchQuery: searchQuery, onSearchChange: setSearchQuery, onOpenNewOrder: () => setIsNewModalOpen(true), tenantName: session.companyName, userRole: session.role, userName: session.ownerName, realtimeStatus: realtimeStatus, onLogout: handleLogout, counts: counts }),
+        toast && (react_1.default.createElement("div", { className: `fixed bottom-20 right-6 z-50 px-4 py-3 rounded-2xl bg-zinc-900 border ${toast.isRealtime
+                ? 'border-emerald-500/70 shadow-emerald-950/60'
+                : 'border-rose-700/70'} text-slate-50 text-xs font-semibold shadow-2xl flex items-center gap-2` },
+            toast.isRealtime ? (react_1.default.createElement(lucide_react_1.Radio, { className: "w-4 h-4 text-emerald-400 animate-pulse shrink-0" })) : (react_1.default.createElement(lucide_react_1.CheckCircle2, { className: "w-4 h-4 text-emerald-400 shrink-0" })),
+            react_1.default.createElement("span", null, toast.message))),
         react_1.default.createElement("main", { className: "max-w-[1520px] mx-auto lg:pl-24 px-4 sm:px-6 pt-6" },
-            activeSection === 'bento_home' && (react_1.default.createElement(BentoOverviewSection_1.BentoOverviewSection, { companies: filteredCompanies, orders: filteredOrders, deliveries: db.deliveries, returns: db.returns, financials: financials, onNavigate: setActiveSection, onOpenNewOrder: () => setIsNewModalOpen(true), onSelectCompany: (id) => setSelectedCompanyId(id) })),
-            activeSection === 'empresas' && (react_1.default.createElement(CompaniesCrmSection_1.CompaniesCrmSection, { companies: filteredCompanies, orders: filteredOrders, selectedCompanyId: selectedCompanyId, onSelectCompany: setSelectedCompanyId, onAddCompany: handleAddCompany, onDeleteCompany: handleDeleteCompany, onDeleteOrder: handleDeleteOrder, onAddDieForCompany: (comp, desc, val, mod) => handleCreateOrderFull({
+            session.role === 'admin' && effectiveSection === 'bento_home' && (react_1.default.createElement(BentoOverviewSection_1.BentoOverviewSection, { companies: filteredCompanies, orders: filteredOrders, deliveries: db.deliveries, returns: db.returns, financials: financials, onNavigate: handleSelectSection, onOpenNewOrder: () => setIsNewModalOpen(true), onSelectCompany: (id) => setSelectedCompanyId(id) })),
+            session.role === 'admin' && effectiveSection === 'empresas' && (react_1.default.createElement(CompaniesCrmSection_1.CompaniesCrmSection, { companies: filteredCompanies, orders: filteredOrders, selectedCompanyId: selectedCompanyId, onSelectCompany: setSelectedCompanyId, onAddCompany: handleAddCompany, onDeleteCompany: handleDeleteCompany, onDeleteOrder: handleDeleteOrder, onAddDieForCompany: (comp, desc, val, mod) => handleCreateOrderFull({
                     companyId: comp.id,
                     companyName: comp.corporateName,
                     companyPhone: comp.phone,
@@ -2642,17 +3645,21 @@ const App = () => {
                     paymentModality: mod,
                     stage: 'arquivo_recebido',
                 }) })),
-            activeSection === 'esteira' && (react_1.default.createElement(ProductionKanban_1.ProductionKanban, { orders: filteredOrders, onMoveStage: handleMoveStage, onDeleteOrder: handleDeleteOrder, onQuickRegisterDelivery: (order) => {
+            effectiveSection === 'esteira' && (react_1.default.createElement(ProductionKanban_1.ProductionKanban, { orders: filteredOrders, onMoveStage: handleMoveStage, onDeleteOrder: handleDeleteOrder, onQuickRegisterDelivery: (order) => {
                     setPrefillDeliveryOrder(order);
-                    setActiveSection('entregas');
+                    handleSelectSection('entregas');
                 } })),
-            activeSection === 'financeiro' && (react_1.default.createElement(FinanceAnalyticsSection_1.FinanceAnalyticsSection, { orders: filteredOrders, financials: financials, onTogglePaid: handleTogglePaid, onEmitBilling30d: handleEmitBilling30d, onDeleteOrder: handleDeleteOrder })),
-            activeSection === 'entregas' && (react_1.default.createElement(DeliveriesLogisticsSection_1.DeliveriesLogisticsSection, { orders: db.orders, deliveries: db.deliveries, prefillOrder: prefillDeliveryOrder, onAddDelivery: handleAddDelivery, onDeleteDelivery: handleDeleteDelivery })),
-            activeSection === 'retornos' && (react_1.default.createElement(WarrantyReturnsSection_1.WarrantyReturnsSection, { orders: db.orders, returns: db.returns, onAddReturn: handleAddReturn, onUpdateReturnStatus: handleUpdateReturnStatus, onDeleteReturn: handleDeleteReturn }))),
-        react_1.default.createElement("button", { type: "button", onClick: () => setIsNewModalOpen(true), className: "fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 px-5 py-3.5 rounded-3xl font-bold text-xs bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 active:scale-95 text-slate-50 border border-rose-500/40 shadow-2xl shadow-rose-950/90 transition-all cursor-pointer" },
+            session.role === 'admin' && effectiveSection === 'financeiro' && (react_1.default.createElement(FinanceAnalyticsSection_1.FinanceAnalyticsSection, { orders: filteredOrders, financials: financials, onTogglePaid: handleTogglePaid, onEmitBilling30d: handleEmitBilling30d, onDeleteOrder: handleDeleteOrder })),
+            effectiveSection === 'entregas' && (react_1.default.createElement(DeliveriesLogisticsSection_1.DeliveriesLogisticsSection, { orders: db.orders, deliveries: db.deliveries, prefillOrder: prefillDeliveryOrder, onAddDelivery: handleAddDelivery, onDeleteDelivery: handleDeleteDelivery })),
+            effectiveSection === 'retornos' && (react_1.default.createElement(WarrantyReturnsSection_1.WarrantyReturnsSection, { orders: db.orders, returns: db.returns, onAddReturn: handleAddReturn, onUpdateReturnStatus: handleUpdateReturnStatus, onDeleteReturn: handleDeleteReturn })),
+            session.role === 'admin' && effectiveSection === 'equipe' && (react_1.default.createElement(TeamManagementSection_1.TeamManagementSection, { session: session, employees: employees, realtimeStatus: realtimeStatus, onAddEmployee: handleAddEmployee, onToggleEmployeeRole: handleToggleEmployeeRole, onDeleteEmployee: handleDeleteEmployee, onImpersonateEmployee: handleImpersonateEmployee, onSupabaseConfigSaved: () => {
+                    setRealtimeConfigTick((t) => t + 1);
+                    showToast('Configuração Supabase Realtime salva e reconectada!');
+                } }))),
+        session.role === 'admin' && (react_1.default.createElement("button", { type: "button", onClick: () => setIsNewModalOpen(true), className: "fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 px-5 py-3.5 rounded-3xl font-bold text-xs bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 active:scale-95 text-slate-50 border border-rose-500/40 shadow-2xl shadow-rose-950/90 transition-all cursor-pointer" },
             react_1.default.createElement(lucide_react_1.Plus, { className: "w-4 h-4 stroke-[2.5]" }),
-            react_1.default.createElement("span", null, "Nova OS")),
-        react_1.default.createElement(FastEntryModal_1.FastEntryModal, { isOpen: isNewModalOpen, onClose: () => setIsNewModalOpen(false), companies: db.companies, nextOrderId: nextOrderId, onSaveOrder: handleCreateOrderFull })));
+            react_1.default.createElement("span", null, "Nova OS"))),
+        session.role === 'admin' && (react_1.default.createElement(FastEntryModal_1.FastEntryModal, { isOpen: isNewModalOpen, onClose: () => setIsNewModalOpen(false), companies: db.companies, nextOrderId: nextOrderId, onSaveOrder: handleCreateOrderFull }))));
 };
 exports.App = App;
 exports.default = exports.App;
