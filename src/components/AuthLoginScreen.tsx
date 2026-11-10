@@ -36,7 +36,9 @@ export const AuthLoginScreen: React.FC<AuthLoginScreenProps> = ({
   const handleLoginSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
-    const res = authenticateTenant(email, password);
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedPassword = password.trim();
+    const res = authenticateTenant(normalizedEmail, normalizedPassword);
     if (res.error || !res.session) {
       setErrorMsg(res.error || 'Falha na autenticação.');
       return;
@@ -47,11 +49,13 @@ export const AuthLoginScreen: React.FC<AuthLoginScreenProps> = ({
   const handleRegisterSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+    const normalizedRegEmail = regEmail.trim().toLowerCase();
+    const normalizedRegPassword = regPassword.trim();
     const res = registerNewTenant({
       companyName,
       ownerName,
-      email: regEmail,
-      password: regPassword,
+      email: normalizedRegEmail,
+      password: normalizedRegPassword,
     });
     if (res.error || !res.session) {
       setErrorMsg(res.error || 'Não foi possível criar a conta.');
@@ -128,6 +132,11 @@ export const AuthLoginScreen: React.FC<AuthLoginScreenProps> = ({
                 <Mail className="w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
                   type="email"
+                  inputMode="email"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  autoComplete="email"
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
@@ -145,6 +154,10 @@ export const AuthLoginScreen: React.FC<AuthLoginScreenProps> = ({
                 <Lock className="w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
                   type="password"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  autoComplete="current-password"
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -197,6 +210,11 @@ export const AuthLoginScreen: React.FC<AuthLoginScreenProps> = ({
               </label>
               <input
                 type="email"
+                inputMode="email"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                autoComplete="email"
                 required
                 value={regEmail}
                 onChange={(e) => setRegEmail(e.target.value)}
@@ -211,6 +229,10 @@ export const AuthLoginScreen: React.FC<AuthLoginScreenProps> = ({
               </label>
               <input
                 type="password"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                autoComplete="new-password"
                 required
                 value={regPassword}
                 onChange={(e) => setRegPassword(e.target.value)}

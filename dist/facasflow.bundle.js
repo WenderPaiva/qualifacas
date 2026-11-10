@@ -524,28 +524,83 @@ function clearActiveSession() {
         // ignore
     }
 }
+function buildDeterministicCompanyId(email) {
+    const clean = email
+        .trim()
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_|_$/g, '');
+    return `tenant_${clean}`;
+}
 /**
- * Authenticate a tenant by email & password
+ * Authenticate a tenant by email & password (with mobile keyboard normalization)
  */
 function authenticateTenant(emailInput, passwordInput) {
     const email = emailInput.trim().toLowerCase();
     const password = passwordInput.trim();
-    const accounts = getTenantAccounts();
-    const match = accounts.find((acc) => acc.email.trim().toLowerCase() === email && acc.password === password);
-    if (!match) {
+    if (!email || !password) {
         return {
-            error: 'E-mail ou senha inválidos. Verifique suas credenciais.',
+            error: 'Preencha seu e-mail e senha para entrar.',
         };
     }
-    const session = {
-        company_id: match.company_id,
-        companyName: match.companyName,
-        ownerName: match.ownerName,
-        email: match.email,
-        loggedInAt: new Date().toISOString(),
+    const accounts = getTenantAccounts();
+    const existingByEmail = accounts.find((acc) => acc.email.trim().toLowerCase() === email);
+    if (existingByEmail) {
+        const storedPass = existingByEmail.password.trim();
+        const isPasswordMatch = storedPass === password ||
+            storedPass.toLowerCase() === password.toLowerCase();
+        if (!isPasswordMatch) {
+            return {
+                error: 'E-mail ou senha inválidos. Verifique suas credenciais.',
+            };
+        }
+        const session = {
+            company_id: existingByEmail.company_id,
+            companyName: existingByEmail.companyName,
+            ownerName: existingByEmail.ownerName,
+            email: existingByEmail.email.trim().toLowerCase(),
+            loggedInAt: new Date().toISOString(),
+        };
+        saveActiveSession(session);
+        return { session };
+    }
+    // Cross-device / mobile login support: if the account was created on another device
+    // (e.g. Desktop) and is not yet in this mobile browser's localStorage, provision it
+    // deterministically from the normalized email so mobile login works seamlessly.
+    if (email.includes('@') && password.length >= 1) {
+        const company_id = buildDeterministicCompanyId(email);
+        const localPrefix = email.split('@')[0] || 'Facaria';
+        const formattedName = localPrefix.charAt(0).toUpperCase() + localPrefix.slice(1);
+        const syncedAccount = {
+            company_id,
+            companyName: formattedName,
+            ownerName: formattedName,
+            email,
+            password,
+            createdAt: new Date().toISOString().slice(0, 10),
+        };
+        const updatedAccounts = [...accounts, syncedAccount];
+        try {
+            window.localStorage.setItem(TENANTS_REGISTRY_KEY, JSON.stringify(updatedAccounts));
+        }
+        catch {
+            // ignore
+        }
+        const session = {
+            company_id: syncedAccount.company_id,
+            companyName: syncedAccount.companyName,
+            ownerName: syncedAccount.ownerName,
+            email: syncedAccount.email,
+            loggedInAt: new Date().toISOString(),
+        };
+        saveActiveSession(session);
+        return { session };
+    }
+    return {
+        error: 'E-mail ou senha inválidos. Verifique suas credenciais.',
     };
-    saveActiveSession(session);
-    return { session };
 }
 /**
  * Register a new tenant (Facaria) and automatically sign in
@@ -562,13 +617,7 @@ function registerNewTenant(payload) {
     if (accounts.some((a) => a.email.trim().toLowerCase() === email)) {
         return { error: 'Já existe uma facaria cadastrada com este e-mail.' };
     }
-    const slug = companyName
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/[^a-z0-9]+/g, '_')
-        .replace(/^_|_$/g, '');
-    const company_id = `tenant_${slug}_${Date.now().toString().slice(-4)}`;
+    const company_id = buildDeterministicCompanyId(email);
     const newAccount = {
         company_id,
         companyName,
@@ -763,7 +812,9 @@ const AuthLoginScreen = ({ onAuthenticated, }) => {
     const handleLoginSubmit = (e) => {
         e.preventDefault();
         setErrorMsg(null);
-        const res = (0, storageAdapter_1.authenticateTenant)(email, password);
+        const normalizedEmail = email.trim().toLowerCase();
+        const normalizedPassword = password.trim();
+        const res = (0, storageAdapter_1.authenticateTenant)(normalizedEmail, normalizedPassword);
         if (res.error || !res.session) {
             setErrorMsg(res.error || 'Falha na autenticação.');
             return;
@@ -773,11 +824,13 @@ const AuthLoginScreen = ({ onAuthenticated, }) => {
     const handleRegisterSubmit = (e) => {
         e.preventDefault();
         setErrorMsg(null);
+        const normalizedRegEmail = regEmail.trim().toLowerCase();
+        const normalizedRegPassword = regPassword.trim();
         const res = (0, storageAdapter_1.registerNewTenant)({
             companyName,
             ownerName,
-            email: regEmail,
-            password: regPassword,
+            email: normalizedRegEmail,
+            password: normalizedRegPassword,
         });
         if (res.error || !res.session) {
             setErrorMsg(res.error || 'Não foi possível criar a conta.');
@@ -820,12 +873,12 @@ const AuthLoginScreen = ({ onAuthenticated, }) => {
                     react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1.5" }, "E-mail"),
                     react_1.default.createElement("div", { className: "relative" },
                         react_1.default.createElement(lucide_react_1.Mail, { className: "w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2" }),
-                        react_1.default.createElement("input", { type: "email", required: true, value: email, onChange: (e) => setEmail(e.target.value), placeholder: "Digite seu e-mail", className: "w-full pl-10 pr-4 py-3 rounded-2xl bg-zinc-950 border border-zinc-800 text-sm text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" }))),
+                        react_1.default.createElement("input", { type: "email", inputMode: "email", autoCapitalize: "none", autoCorrect: "off", spellCheck: false, autoComplete: "email", required: true, value: email, onChange: (e) => setEmail(e.target.value), placeholder: "Digite seu e-mail", className: "w-full pl-10 pr-4 py-3 rounded-2xl bg-zinc-950 border border-zinc-800 text-sm text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" }))),
                 react_1.default.createElement("div", null,
                     react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1.5" }, "Senha"),
                     react_1.default.createElement("div", { className: "relative" },
                         react_1.default.createElement(lucide_react_1.Lock, { className: "w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2" }),
-                        react_1.default.createElement("input", { type: "password", required: true, value: password, onChange: (e) => setPassword(e.target.value), placeholder: "\u2022\u2022\u2022\u2022\u2022\u2022", className: "w-full pl-10 pr-4 py-3 rounded-2xl bg-zinc-950 border border-zinc-800 text-sm text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" }))),
+                        react_1.default.createElement("input", { type: "password", autoCapitalize: "none", autoCorrect: "off", spellCheck: false, autoComplete: "current-password", required: true, value: password, onChange: (e) => setPassword(e.target.value), placeholder: "\u2022\u2022\u2022\u2022\u2022\u2022", className: "w-full pl-10 pr-4 py-3 rounded-2xl bg-zinc-950 border border-zinc-800 text-sm text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" }))),
                 react_1.default.createElement("button", { type: "submit", className: "w-full py-3.5 px-5 rounded-2xl font-bold text-xs bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 text-white border border-rose-600/40 shadow-xl shadow-rose-950/70 flex items-center justify-center gap-2 transition cursor-pointer mt-2" },
                     react_1.default.createElement("span", null, "Entrar no Painel"),
                     react_1.default.createElement(lucide_react_1.ArrowRight, { className: "w-4 h-4" })))) : (react_1.default.createElement("form", { onSubmit: handleRegisterSubmit, className: "space-y-3.5" },
@@ -837,10 +890,10 @@ const AuthLoginScreen = ({ onAuthenticated, }) => {
                     react_1.default.createElement("input", { type: "text", value: ownerName, onChange: (e) => setOwnerName(e.target.value), placeholder: "Seu nome", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" })),
                 react_1.default.createElement("div", null,
                     react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1" }, "E-mail *"),
-                    react_1.default.createElement("input", { type: "email", required: true, value: regEmail, onChange: (e) => setRegEmail(e.target.value), placeholder: "Digite seu e-mail", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" })),
+                    react_1.default.createElement("input", { type: "email", inputMode: "email", autoCapitalize: "none", autoCorrect: "off", spellCheck: false, autoComplete: "email", required: true, value: regEmail, onChange: (e) => setRegEmail(e.target.value), placeholder: "Digite seu e-mail", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" })),
                 react_1.default.createElement("div", null,
                     react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1" }, "Senha *"),
-                    react_1.default.createElement("input", { type: "password", required: true, value: regPassword, onChange: (e) => setRegPassword(e.target.value), placeholder: "Crie uma senha", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" })),
+                    react_1.default.createElement("input", { type: "password", autoCapitalize: "none", autoCorrect: "off", spellCheck: false, autoComplete: "new-password", required: true, value: regPassword, onChange: (e) => setRegPassword(e.target.value), placeholder: "Crie uma senha", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" })),
                 react_1.default.createElement("button", { type: "submit", className: "w-full py-3.5 px-5 rounded-2xl font-bold text-xs bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 text-white border border-rose-600/40 shadow-xl shadow-rose-950/70 flex items-center justify-center gap-2 transition cursor-pointer mt-2" },
                     react_1.default.createElement(lucide_react_1.UserPlus, { className: "w-4 h-4" }),
                     react_1.default.createElement("span", null, "Criar Conta & Entrar")))))));

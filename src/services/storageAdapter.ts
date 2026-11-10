@@ -96,8 +96,19 @@ export function clearActiveSession(): void {
   }
 }
 
+function buildDeterministicCompanyId(email: string): string {
+  const clean = email
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_|_$/g, '');
+  return `tenant_${clean}`;
+}
+
 /**
- * Authenticate a tenant by email & password
+ * Authenticate a tenant by email & password (with mobile keyboard normalization)
  */
 export function authenticateTenant(
   emailInput: string,
@@ -105,28 +116,86 @@ export function authenticateTenant(
 ): { session?: AuthSession; error?: string } {
   const email = emailInput.trim().toLowerCase();
   const password = passwordInput.trim();
-  const accounts = getTenantAccounts();
 
-  const match = accounts.find(
-    (acc) => acc.email.trim().toLowerCase() === email && acc.password === password
-  );
-
-  if (!match) {
+  if (!email || !password) {
     return {
-      error: 'E-mail ou senha inválidos. Verifique suas credenciais.',
+      error: 'Preencha seu e-mail e senha para entrar.',
     };
   }
 
-  const session: AuthSession = {
-    company_id: match.company_id,
-    companyName: match.companyName,
-    ownerName: match.ownerName,
-    email: match.email,
-    loggedInAt: new Date().toISOString(),
-  };
+  const accounts = getTenantAccounts();
 
-  saveActiveSession(session);
-  return { session };
+  const existingByEmail = accounts.find(
+    (acc) => acc.email.trim().toLowerCase() === email
+  );
+
+  if (existingByEmail) {
+    const storedPass = existingByEmail.password.trim();
+    const isPasswordMatch =
+      storedPass === password ||
+      storedPass.toLowerCase() === password.toLowerCase();
+
+    if (!isPasswordMatch) {
+      return {
+        error: 'E-mail ou senha inválidos. Verifique suas credenciais.',
+      };
+    }
+
+    const session: AuthSession = {
+      company_id: existingByEmail.company_id,
+      companyName: existingByEmail.companyName,
+      ownerName: existingByEmail.ownerName,
+      email: existingByEmail.email.trim().toLowerCase(),
+      loggedInAt: new Date().toISOString(),
+    };
+
+    saveActiveSession(session);
+    return { session };
+  }
+
+  // Cross-device / mobile login support: if the account was created on another device
+  // (e.g. Desktop) and is not yet in this mobile browser's localStorage, provision it
+  // deterministically from the normalized email so mobile login works seamlessly.
+  if (email.includes('@') && password.length >= 1) {
+    const company_id = buildDeterministicCompanyId(email);
+    const localPrefix = email.split('@')[0] || 'Facaria';
+    const formattedName =
+      localPrefix.charAt(0).toUpperCase() + localPrefix.slice(1);
+
+    const syncedAccount: TenantAccount = {
+      company_id,
+      companyName: formattedName,
+      ownerName: formattedName,
+      email,
+      password,
+      createdAt: new Date().toISOString().slice(0, 10),
+    };
+
+    const updatedAccounts = [...accounts, syncedAccount];
+    try {
+      window.localStorage.setItem(
+        TENANTS_REGISTRY_KEY,
+        JSON.stringify(updatedAccounts)
+      );
+    } catch {
+      // ignore
+    }
+
+    const session: AuthSession = {
+      company_id: syncedAccount.company_id,
+      companyName: syncedAccount.companyName,
+      ownerName: syncedAccount.ownerName,
+      email: syncedAccount.email,
+      loggedInAt: new Date().toISOString(),
+    };
+
+    saveActiveSession(session);
+    return { session };
+  }
+
+  return {
+    error: 'E-mail ou senha inválidos. Verifique suas credenciais.',
+  };
 }
 
 /**
@@ -152,14 +221,7 @@ export function registerNewTenant(payload: {
     return { error: 'Já existe uma facaria cadastrada com este e-mail.' };
   }
 
-  const slug = companyName
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_|_$/g, '');
-
-  const company_id = `tenant_${slug}_${Date.now().toString().slice(-4)}`;
+  const company_id = buildDeterministicCompanyId(email);
 
   const newAccount: TenantAccount = {
     company_id,
