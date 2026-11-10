@@ -6,7 +6,6 @@ import {
   LayoutGrid,
   PieChart,
   Plus,
-  RotateCcw,
   Search,
   Truck,
   Wrench,
@@ -19,7 +18,6 @@ interface HeaderBarProps {
   searchQuery: string;
   onSearchChange: (q: string) => void;
   onOpenNewOrder: () => void;
-  onResetSeed: () => void;
   counts: {
     companies: number;
     inProduction: number;
@@ -79,7 +77,6 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   searchQuery,
   onSearchChange,
   onOpenNewOrder,
-  onResetSeed,
   counts,
 }) => {
   const getBadge = (id: ActiveSection) => {
@@ -138,14 +135,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           })}
         </nav>
 
-        {/* Bottom Quick Action */}
-        <button
-          onClick={onResetSeed}
-          className="w-10 h-10 rounded-2xl bg-zinc-800/70 hover:bg-zinc-800 text-zinc-400 hover:text-slate-100 flex items-center justify-center transition cursor-pointer"
-          title="Restaurar Dados de Demonstração"
-        >
-          <RotateCcw className="w-4 h-4" />
-        </button>
+        <div className="w-10 h-10" />
       </aside>
 
       {/* Top Navigation Header */}

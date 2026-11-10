@@ -305,13 +305,6 @@ export const App: React.FC = () => {
     showToast(`Registro de retorno ${returnId} apagado!`);
   };
 
-  const handleResetSeed = () => {
-    const emptyDb = createEnterpriseSeedDatabase();
-    commitDb(emptyDb);
-    setSelectedCompanyId(null);
-    showToast('Painel zerado e pronto para uso em produção!');
-  };
-
   const counts = {
     companies: db.companies.length,
     inProduction: db.orders.filter((o) => o.stage !== 'faca_pronta').length,
@@ -329,7 +322,6 @@ export const App: React.FC = () => {
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         onOpenNewOrder={() => setIsNewModalOpen(true)}
-        onResetSeed={handleResetSeed}
         counts={counts}
       />
 

@@ -554,7 +554,7 @@ exports.NAV_SECTIONS = [
         icon: lucide_react_1.Wrench,
     },
 ];
-const HeaderBar = ({ activeSection, onSelectSection, searchQuery, onSearchChange, onOpenNewOrder, onResetSeed, counts, }) => {
+const HeaderBar = ({ activeSection, onSelectSection, searchQuery, onSearchChange, onOpenNewOrder, counts, }) => {
     const getBadge = (id) => {
         if (id === 'empresas')
             return counts.companies;
@@ -584,8 +584,7 @@ const HeaderBar = ({ activeSection, onSelectSection, searchQuery, onSearchChange
                             ? 'bg-rose-500 text-white'
                             : 'bg-zinc-800 text-zinc-200 border border-zinc-700'}` }, badge))));
             })),
-            react_1.default.createElement("button", { onClick: onResetSeed, className: "w-10 h-10 rounded-2xl bg-zinc-800/70 hover:bg-zinc-800 text-zinc-400 hover:text-slate-100 flex items-center justify-center transition cursor-pointer", title: "Restaurar Dados de Demonstra\u00E7\u00E3o" },
-                react_1.default.createElement(lucide_react_1.RotateCcw, { className: "w-4 h-4" }))),
+            react_1.default.createElement("div", { className: "w-10 h-10" })),
         react_1.default.createElement("header", { className: "sticky top-0 z-30 bg-zinc-950/85 backdrop-blur-xl border-b border-zinc-900" },
             react_1.default.createElement("div", { className: "max-w-[1520px] mx-auto lg:pl-24 px-4 sm:px-6 py-3.5 flex flex-col gap-3" },
                 react_1.default.createElement("div", { className: "flex items-center justify-between gap-4" },
@@ -1961,7 +1960,6 @@ const FinanceAnalyticsSection_1 = require("./components/FinanceAnalyticsSection"
 const HeaderBar_1 = require("./components/HeaderBar");
 const ProductionKanban_1 = require("./components/ProductionKanban");
 const WarrantyReturnsSection_1 = require("./components/WarrantyReturnsSection");
-const seedOrders_1 = require("./data/seedOrders");
 const storageAdapter_1 = require("./services/storageAdapter");
 const financeEngine_1 = require("./utils/financeEngine");
 const App = () => {
@@ -2182,12 +2180,6 @@ const App = () => {
         commitDb({ ...db, returns: nextReturns });
         showToast(`Registro de retorno ${returnId} apagado!`);
     };
-    const handleResetSeed = () => {
-        const emptyDb = (0, seedOrders_1.createEnterpriseSeedDatabase)();
-        commitDb(emptyDb);
-        setSelectedCompanyId(null);
-        showToast('Painel zerado e pronto para uso em produção!');
-    };
     const counts = {
         companies: db.companies.length,
         inProduction: db.orders.filter((o) => o.stage !== 'faca_pronta').length,
@@ -2196,7 +2188,7 @@ const App = () => {
         openReturns: db.returns.filter((r) => r.status !== 'liberado').length,
     };
     return (react_1.default.createElement("div", { className: "min-h-screen bg-zinc-950 text-slate-100 pb-24 selection:bg-rose-800 selection:text-white" },
-        react_1.default.createElement(HeaderBar_1.HeaderBar, { activeSection: activeSection, onSelectSection: setActiveSection, searchQuery: searchQuery, onSearchChange: setSearchQuery, onOpenNewOrder: () => setIsNewModalOpen(true), onResetSeed: handleResetSeed, counts: counts }),
+        react_1.default.createElement(HeaderBar_1.HeaderBar, { activeSection: activeSection, onSelectSection: setActiveSection, searchQuery: searchQuery, onSearchChange: setSearchQuery, onOpenNewOrder: () => setIsNewModalOpen(true), counts: counts }),
         toast && (react_1.default.createElement("div", { className: "fixed bottom-20 right-6 z-50 px-4 py-3 rounded-2xl bg-zinc-900 border border-rose-700/70 text-slate-50 text-xs font-semibold shadow-2xl flex items-center gap-2" },
             react_1.default.createElement(lucide_react_1.CheckCircle2, { className: "w-4 h-4 text-emerald-400 shrink-0" }),
             react_1.default.createElement("span", null, toast))),
