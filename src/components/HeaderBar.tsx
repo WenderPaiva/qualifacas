@@ -151,22 +151,22 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         </button>
       </aside>
 
-      {/* Top Navigation Header */}
-      <header className="sticky top-0 z-30 bg-zinc-950/85 backdrop-blur-xl border-b border-zinc-900">
-        <div className="max-w-[1520px] mx-auto lg:pl-24 px-4 sm:px-6 py-3.5 flex flex-col gap-3">
-          <div className="flex items-center justify-between gap-4">
+      {/* Top Navigation Header (Relative on mobile so it scrolls naturally; sticky only on md+ desktop/tablet) */}
+      <header className="relative md:sticky md:top-0 z-30 bg-zinc-950 md:bg-zinc-950/85 md:backdrop-blur-xl border-b border-zinc-900">
+        <div className="max-w-[1520px] mx-auto lg:pl-24 px-4 sm:px-6 py-4 md:py-3.5 flex flex-col gap-3.5">
+          <div className="flex items-center justify-between gap-2 sm:gap-4">
             {/* Brand Title (Clean FacasFlow Logo Only) */}
-            <div className="flex items-center gap-3">
-              <div className="lg:hidden w-9 h-9 rounded-2xl bg-gradient-to-br from-rose-700 to-red-950 border border-rose-500/30 flex items-center justify-center text-slate-50">
+            <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+              <div className="lg:hidden w-9 h-9 rounded-2xl bg-gradient-to-br from-rose-700 to-red-950 border border-rose-500/30 flex items-center justify-center text-slate-50 shrink-0">
                 <Layers className="w-4 h-4" />
               </div>
-              <h1 className="text-xl font-bold tracking-tight text-slate-50">
+              <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-50 truncate">
                 Facas<span className="text-rose-500">Flow</span>
               </h1>
             </div>
 
             {/* Search + Primary Action + Logout Button */}
-            <div className="flex items-center gap-2.5">
+            <div className="flex items-center gap-2 shrink-0">
               <div className="hidden md:block relative w-64">
                 <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
                 <input
@@ -188,19 +188,19 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 
               <button
                 onClick={onOpenNewOrder}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-semibold bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 text-slate-50 border border-rose-600/40 shadow-lg shadow-rose-950/60 transition cursor-pointer"
+                className="inline-flex items-center gap-1.5 sm:gap-2 px-3.5 sm:px-4 py-2.5 rounded-2xl text-xs font-semibold whitespace-nowrap shrink-0 bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 text-slate-50 border border-rose-600/40 shadow-lg shadow-rose-950/60 transition cursor-pointer"
               >
-                <Plus className="w-4 h-4 stroke-[2.5]" />
+                <Plus className="w-4 h-4 stroke-[2.5] shrink-0" />
                 <span>Nova OS</span>
               </button>
 
               <button
                 type="button"
                 onClick={onLogout}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-2xl text-xs font-semibold bg-zinc-900 hover:bg-rose-950/80 text-zinc-300 hover:text-rose-200 border border-zinc-800 hover:border-rose-700/60 transition cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 sm:px-3.5 py-2.5 rounded-2xl text-xs font-semibold whitespace-nowrap shrink-0 bg-zinc-900 hover:bg-rose-950/80 text-zinc-300 hover:text-rose-200 border border-zinc-800 hover:border-rose-700/60 transition cursor-pointer"
                 title="Encerrar sessão e trocar de empresa"
               >
-                <LogOut className="w-3.5 h-3.5 stroke-[2.2]" />
+                <LogOut className="w-3.5 h-3.5 stroke-[2.2] shrink-0" />
                 <span>Sair</span>
               </button>
             </div>
