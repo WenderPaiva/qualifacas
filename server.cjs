@@ -44,12 +44,16 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // REST API Adapter Endpoint: /api/orders
+  // REST API Adapter Endpoint: /api/orders (Multi-tenant aware)
   if (pathname === '/api/orders') {
+    const rawCompanyId = parsedUrl.searchParams.get('company_id') || 'tenant_qualifacas';
+    const safeCompanyId = rawCompanyId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const tenantDbFile = path.join(DATA_DIR, `facasflow-db-${safeCompanyId}.json`);
+
     if (req.method === 'GET') {
-      if (fs.existsSync(DB_FILE)) {
+      if (fs.existsSync(tenantDbFile)) {
         try {
-          const raw = fs.readFileSync(DB_FILE, 'utf8');
+          const raw = fs.readFileSync(tenantDbFile, 'utf8');
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(raw);
           return;
@@ -58,7 +62,7 @@ const server = http.createServer((req, res) => {
         }
       }
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ orders: [] }));
+      res.end(JSON.stringify({ company_id: rawCompanyId, orders: [] }));
       return;
     }
 
@@ -70,9 +74,9 @@ const server = http.createServer((req, res) => {
       req.on('end', () => {
         try {
           const parsed = JSON.parse(body);
-          fs.writeFileSync(DB_FILE, JSON.stringify(parsed, null, 2), 'utf8');
+          fs.writeFileSync(tenantDbFile, JSON.stringify(parsed, null, 2), 'utf8');
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ status: 'ok', savedAt: new Date().toISOString() }));
+          res.end(JSON.stringify({ status: 'ok', company_id: rawCompanyId, savedAt: new Date().toISOString() }));
         } catch (err) {
           res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ error: 'Invalid JSON payload' }));

@@ -389,10 +389,30 @@ __moduleFactories["./data/seedOrders"] = Object.assign(
   function(module, exports, require) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.DEFAULT_TENANT_ACCOUNTS = void 0;
 exports.createEnterpriseSeedDatabase = createEnterpriseSeedDatabase;
-function createEnterpriseSeedDatabase() {
+exports.DEFAULT_TENANT_ACCOUNTS = [
+    {
+        company_id: 'tenant_qualifacas',
+        companyName: 'Qualifacas',
+        ownerName: 'Wender Paiva',
+        email: 'contato@qualifacas.com',
+        password: '123456',
+        createdAt: '2026-11-10',
+    },
+    {
+        company_id: 'tenant_francisco',
+        companyName: 'Facaria do Francisco',
+        ownerName: 'Francisco',
+        email: 'francisco@facaria.com',
+        password: '123456',
+        createdAt: '2026-11-10',
+    },
+];
+function createEnterpriseSeedDatabase(company_id = 'tenant_qualifacas') {
     return {
-        version: 4,
+        version: 5,
+        company_id,
         companies: [],
         orders: [],
         deliveries: [],
@@ -408,6 +428,12 @@ __moduleFactories["./services/storageAdapter"] = Object.assign(
   function(module, exports, require) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.getTenantAccounts = getTenantAccounts;
+exports.getActiveSession = getActiveSession;
+exports.saveActiveSession = saveActiveSession;
+exports.clearActiveSession = clearActiveSession;
+exports.authenticateTenant = authenticateTenant;
+exports.registerNewTenant = registerNewTenant;
 exports.loadEnterpriseDatabase = loadEnterpriseDatabase;
 exports.saveEnterpriseDatabase = saveEnterpriseDatabase;
 exports.getNextOrderId = getNextOrderId;
@@ -415,58 +441,235 @@ exports.getNextDeliveryId = getNextDeliveryId;
 exports.getNextReturnId = getNextReturnId;
 const seedOrders_1 = require("../data/seedOrders");
 const financeEngine_1 = require("../utils/financeEngine");
-const STORAGE_KEY = 'facasflow_production_v1';
+const TENANTS_REGISTRY_KEY = 'facasflow_saas_tenants_v1';
+const ACTIVE_SESSION_KEY = 'facasflow_active_session_v1';
+const LEGACY_SINGLE_PROD_KEY = 'facasflow_production_v1';
 const LEGACY_DEMO_KEYS = [
     'facasflow_orders_v1',
     'facasflow_lean_v2',
     'facasflow_enterprise_bento_v3',
 ];
-function normalizeDb(db) {
+function getTenantDbStorageKey(company_id) {
+    return `facasflow_tenant_db_${company_id}`;
+}
+/**
+ * Load all registered SaaS tenant accounts (Qualifacas, Facaria do Francisco, + any newly registered)
+ */
+function getTenantAccounts() {
+    try {
+        const raw = window.localStorage.getItem(TENANTS_REGISTRY_KEY);
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+                // Ensure default tenants are always present
+                const existingIds = new Set(parsed.map((t) => t.company_id));
+                const merged = [...parsed];
+                for (const def of seedOrders_1.DEFAULT_TENANT_ACCOUNTS) {
+                    if (!existingIds.has(def.company_id)) {
+                        merged.push(def);
+                    }
+                }
+                return merged;
+            }
+        }
+    }
+    catch {
+        // fallback
+    }
+    try {
+        window.localStorage.setItem(TENANTS_REGISTRY_KEY, JSON.stringify(seedOrders_1.DEFAULT_TENANT_ACCOUNTS));
+    }
+    catch {
+        // ignore
+    }
+    return seedOrders_1.DEFAULT_TENANT_ACCOUNTS;
+}
+/**
+ * Get current persisted session so page refresh stays logged in
+ */
+function getActiveSession() {
+    try {
+        const raw = window.localStorage.getItem(ACTIVE_SESSION_KEY);
+        if (!raw)
+            return null;
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.company_id && parsed.companyName && parsed.email) {
+            return parsed;
+        }
+        return null;
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Save active session on login
+ */
+function saveActiveSession(session) {
+    try {
+        window.localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(session));
+    }
+    catch {
+        // ignore
+    }
+}
+/**
+ * Logout and clear active session
+ */
+function clearActiveSession() {
+    try {
+        window.localStorage.removeItem(ACTIVE_SESSION_KEY);
+    }
+    catch {
+        // ignore
+    }
+}
+/**
+ * Authenticate a tenant by email & password
+ */
+function authenticateTenant(emailInput, passwordInput) {
+    const email = emailInput.trim().toLowerCase();
+    const password = passwordInput.trim();
+    const accounts = getTenantAccounts();
+    const match = accounts.find((acc) => acc.email.trim().toLowerCase() === email && acc.password === password);
+    if (!match) {
+        return {
+            error: 'E-mail ou senha inválidos. Verifique suas credenciais.',
+        };
+    }
+    const session = {
+        company_id: match.company_id,
+        companyName: match.companyName,
+        ownerName: match.ownerName,
+        email: match.email,
+        loggedInAt: new Date().toISOString(),
+    };
+    saveActiveSession(session);
+    return { session };
+}
+/**
+ * Register a new tenant (Facaria) and automatically sign in
+ */
+function registerNewTenant(payload) {
+    const email = payload.email.trim().toLowerCase();
+    const companyName = payload.companyName.trim();
+    const ownerName = payload.ownerName.trim() || companyName;
+    const password = payload.password.trim();
+    if (!companyName || !email || !password) {
+        return { error: 'Preencha todos os campos obrigatórios.' };
+    }
+    const accounts = getTenantAccounts();
+    if (accounts.some((a) => a.email.trim().toLowerCase() === email)) {
+        return { error: 'Já existe uma facaria cadastrada com este e-mail.' };
+    }
+    const slug = companyName
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_|_$/g, '');
+    const company_id = `tenant_${slug}_${Date.now().toString().slice(-4)}`;
+    const newAccount = {
+        company_id,
+        companyName,
+        ownerName,
+        email,
+        password,
+        createdAt: new Date().toISOString().slice(0, 10),
+    };
+    const updatedAccounts = [...accounts, newAccount];
+    try {
+        window.localStorage.setItem(TENANTS_REGISTRY_KEY, JSON.stringify(updatedAccounts));
+    }
+    catch {
+        // ignore
+    }
+    // Initialize isolated empty database for this new tenant
+    saveEnterpriseDatabase((0, seedOrders_1.createEnterpriseSeedDatabase)(company_id));
+    const session = {
+        company_id: newAccount.company_id,
+        companyName: newAccount.companyName,
+        ownerName: newAccount.ownerName,
+        email: newAccount.email,
+        loggedInAt: new Date().toISOString(),
+    };
+    saveActiveSession(session);
+    return { session };
+}
+function normalizeDb(db, company_id) {
     return {
-        version: 4,
-        companies: Array.isArray(db.companies) ? db.companies : [],
+        version: 5,
+        company_id,
+        companies: (Array.isArray(db.companies) ? db.companies : [])
+            .filter((c) => !c.company_id || c.company_id === company_id)
+            .map((c) => ({ ...c, company_id })),
         orders: (Array.isArray(db.orders) ? db.orders : [])
-            .map(financeEngine_1.normalizeOrderPaymentStatus)
+            .filter((o) => !o.company_id || o.company_id === company_id)
+            .map((o) => (0, financeEngine_1.normalizeOrderPaymentStatus)({ ...o, company_id }))
             .sort((a, b) => {
             const nA = parseInt(a.id.replace(/\D/g, ''), 10) || 0;
             const nB = parseInt(b.id.replace(/\D/g, ''), 10) || 0;
             return nB - nA;
         }),
-        deliveries: Array.isArray(db.deliveries) ? db.deliveries : [],
-        returns: Array.isArray(db.returns) ? db.returns : [],
+        deliveries: (Array.isArray(db.deliveries) ? db.deliveries : [])
+            .filter((d) => !d.company_id || d.company_id === company_id)
+            .map((d) => ({ ...d, company_id })),
+        returns: (Array.isArray(db.returns) ? db.returns : [])
+            .filter((r) => !r.company_id || r.company_id === company_id)
+            .map((r) => ({ ...r, company_id })),
     };
 }
-function loadEnterpriseDatabase() {
+/**
+ * Load database strictly isolated for the given tenant `company_id`
+ */
+function loadEnterpriseDatabase(company_id = 'tenant_qualifacas') {
     try {
-        // Remove old demo keys so browser starts completely clean
         for (const oldKey of LEGACY_DEMO_KEYS) {
             window.localStorage.removeItem(oldKey);
         }
-        const raw = window.localStorage.getItem(STORAGE_KEY);
+        const tenantKey = getTenantDbStorageKey(company_id);
+        const raw = window.localStorage.getItem(tenantKey);
         if (raw) {
             const parsed = JSON.parse(raw);
             if (parsed && Array.isArray(parsed.companies) && Array.isArray(parsed.orders)) {
-                return normalizeDb(parsed);
+                return normalizeDb(parsed, company_id);
+            }
+        }
+        // One-time migration for Qualifacas if legacy production key exists
+        if (company_id === 'tenant_qualifacas') {
+            const legacyRaw = window.localStorage.getItem(LEGACY_SINGLE_PROD_KEY);
+            if (legacyRaw) {
+                const legacyParsed = JSON.parse(legacyRaw);
+                if (legacyParsed && Array.isArray(legacyParsed.orders)) {
+                    const migrated = normalizeDb(legacyParsed, company_id);
+                    saveEnterpriseDatabase(migrated);
+                    return migrated;
+                }
             }
         }
     }
     catch {
-        // Fallback to empty production database
+        // Fallback to empty isolated tenant database
     }
-    const emptyDb = normalizeDb((0, seedOrders_1.createEnterpriseSeedDatabase)());
+    const emptyDb = normalizeDb((0, seedOrders_1.createEnterpriseSeedDatabase)(company_id), company_id);
     saveEnterpriseDatabase(emptyDb);
     return emptyDb;
 }
+/**
+ * Save database strictly isolated under `facasflow_tenant_db_${db.company_id}`
+ */
 function saveEnterpriseDatabase(db) {
-    const normalized = normalizeDb(db);
+    const company_id = db.company_id || 'tenant_qualifacas';
+    const normalized = normalizeDb(db, company_id);
+    const tenantKey = getTenantDbStorageKey(company_id);
     try {
-        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+        window.localStorage.setItem(tenantKey, JSON.stringify(normalized));
     }
     catch {
         // ignore quota issues
     }
     if (typeof window !== 'undefined' && window.location.protocol.startsWith('http')) {
-        fetch('/api/orders', {
+        fetch(`/api/orders?company_id=${encodeURIComponent(company_id)}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(normalized),
@@ -504,6 +707,200 @@ function getNextReturnId(db) {
 
   },
   { dir: "./services" }
+);
+
+__moduleFactories["./components/AuthLoginScreen"] = Object.assign(
+  function(module, exports, require) {
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.AuthLoginScreen = void 0;
+const react_1 = __importStar(require("react"));
+const lucide_react_1 = require("lucide-react");
+const storageAdapter_1 = require("../services/storageAdapter");
+const AuthLoginScreen = ({ onAuthenticated, }) => {
+    const [mode, setMode] = (0, react_1.useState)('login');
+    const [email, setEmail] = (0, react_1.useState)('contato@qualifacas.com');
+    const [password, setPassword] = (0, react_1.useState)('123456');
+    // Register fields
+    const [companyName, setCompanyName] = (0, react_1.useState)('');
+    const [ownerName, setOwnerName] = (0, react_1.useState)('');
+    const [regEmail, setRegEmail] = (0, react_1.useState)('');
+    const [regPassword, setRegPassword] = (0, react_1.useState)('');
+    const [errorMsg, setErrorMsg] = (0, react_1.useState)(null);
+    const [tenants, setTenants] = (0, react_1.useState)(() => (0, storageAdapter_1.getTenantAccounts)());
+    const handleLoginSubmit = (e) => {
+        e.preventDefault();
+        setErrorMsg(null);
+        const res = (0, storageAdapter_1.authenticateTenant)(email, password);
+        if (res.error || !res.session) {
+            setErrorMsg(res.error || 'Falha na autenticação.');
+            return;
+        }
+        onAuthenticated(res.session);
+    };
+    const handleRegisterSubmit = (e) => {
+        e.preventDefault();
+        setErrorMsg(null);
+        const res = (0, storageAdapter_1.registerNewTenant)({
+            companyName,
+            ownerName,
+            email: regEmail,
+            password: regPassword,
+        });
+        if (res.error || !res.session) {
+            setErrorMsg(res.error || 'Não foi possível criar a conta.');
+            return;
+        }
+        setTenants((0, storageAdapter_1.getTenantAccounts)());
+        onAuthenticated(res.session);
+    };
+    const handleQuickLogin = (account) => {
+        setErrorMsg(null);
+        setMode('login');
+        setEmail(account.email);
+        setPassword(account.password);
+        const res = (0, storageAdapter_1.authenticateTenant)(account.email, account.password);
+        if (res.session) {
+            onAuthenticated(res.session);
+        }
+    };
+    return (react_1.default.createElement("div", { className: "min-h-screen bg-zinc-950 text-slate-100 flex flex-col justify-center items-center px-4 py-10 relative overflow-hidden selection:bg-rose-800 selection:text-white" },
+        react_1.default.createElement("div", { className: "pointer-events-none fixed -top-40 left-1/2 -translate-x-1/2 w-[680px] h-[360px] bg-rose-900/20 blur-[130px] rounded-full" }),
+        react_1.default.createElement("div", { className: "pointer-events-none fixed -bottom-40 right-10 w-[420px] h-[300px] bg-red-950/25 blur-[120px] rounded-full" }),
+        react_1.default.createElement("div", { className: "w-full max-w-4xl grid grid-cols-1 lg:grid-cols-12 gap-6 relative z-10" },
+            react_1.default.createElement("div", { className: "lg:col-span-5 rounded-3xl bg-zinc-900/90 border border-zinc-800/90 p-7 flex flex-col justify-between shadow-2xl" },
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("div", { className: "flex items-center gap-3 mb-6" },
+                        react_1.default.createElement("div", { className: "w-11 h-11 rounded-2xl bg-gradient-to-br from-rose-700 to-red-950 border border-rose-500/40 flex items-center justify-center text-slate-50 shadow-lg shadow-rose-950/70" },
+                            react_1.default.createElement(lucide_react_1.Layers, { className: "w-5 h-5 stroke-[2.2]" })),
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("h1", { className: "text-2xl font-bold tracking-tight text-slate-50 leading-none" },
+                                "Facas",
+                                react_1.default.createElement("span", { className: "text-rose-500" }, "Flow")),
+                            react_1.default.createElement("span", { className: "text-[11px] font-medium text-zinc-400" }, "SaaS Multi-Empresa \u2022 Corte & Vinco"))),
+                    react_1.default.createElement("h2", { className: "text-lg font-bold text-slate-100 leading-snug mb-2" }, "Gest\u00E3o industrial com isolamento total de dados por facaria."),
+                    react_1.default.createElement("p", { className: "text-xs text-zinc-400 leading-relaxed mb-6" },
+                        "Cada empresa possui seu pr\u00F3prio ambiente isolado (",
+                        react_1.default.createElement("code", { className: "text-rose-400 font-mono" }, "company_id"),
+                        "). Ordens de servi\u00E7o, clientes, esteira f\u00EDsica e financeiro nunca se misturam."),
+                    react_1.default.createElement("div", { className: "space-y-2.5" },
+                        react_1.default.createElement("div", { className: "flex items-center justify-between" },
+                            react_1.default.createElement("span", { className: "text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center gap-1.5" },
+                                react_1.default.createElement(lucide_react_1.Sparkles, { className: "w-3.5 h-3.5 text-rose-500" }),
+                                "Acesso R\u00E1pido (Contas Cadastradas)")),
+                        react_1.default.createElement("div", { className: "space-y-2 max-h-60 overflow-y-auto pr-1" }, tenants.map((acc) => (react_1.default.createElement("button", { key: acc.company_id, type: "button", onClick: () => handleQuickLogin(acc), className: "w-full text-left p-3 rounded-2xl bg-zinc-950/80 hover:bg-zinc-800/80 border border-zinc-800/90 hover:border-rose-700/50 transition-all group cursor-pointer flex items-center justify-between gap-2" },
+                            react_1.default.createElement("div", { className: "min-w-0" },
+                                react_1.default.createElement("div", { className: "flex items-center gap-2" },
+                                    react_1.default.createElement(lucide_react_1.Building2, { className: "w-3.5 h-3.5 text-rose-500 shrink-0" }),
+                                    react_1.default.createElement("span", { className: "text-xs font-bold text-slate-100 truncate" }, acc.companyName)),
+                                react_1.default.createElement("div", { className: "text-[11px] text-zinc-400 truncate mt-0.5" },
+                                    acc.email,
+                                    " \u2022 Senha:",
+                                    ' ',
+                                    react_1.default.createElement("span", { className: "font-mono text-zinc-300" }, acc.password))),
+                            react_1.default.createElement("span", { className: "px-2.5 py-1 rounded-xl bg-rose-950/60 border border-rose-800/50 text-[10px] font-semibold text-rose-300 group-hover:bg-rose-800 group-hover:text-white transition shrink-0" }, "Entrar"))))))),
+                react_1.default.createElement("div", { className: "mt-6 pt-4 border-t border-zinc-800/80 flex items-center gap-2 text-[11px] text-zinc-400" },
+                    react_1.default.createElement(lucide_react_1.ShieldCheck, { className: "w-4 h-4 text-emerald-400 shrink-0" }),
+                    react_1.default.createElement("span", null, "Sess\u00E3o persistente e dados blindados por tenant."))),
+            react_1.default.createElement("div", { className: "lg:col-span-7 rounded-3xl bg-zinc-900/90 border border-zinc-800/90 p-7 sm:p-9 shadow-2xl flex flex-col justify-between" },
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("div", { className: "grid grid-cols-2 gap-2 p-1.5 rounded-2xl bg-zinc-950 border border-zinc-800/80 mb-6" },
+                        react_1.default.createElement("button", { type: "button", onClick: () => {
+                                setMode('login');
+                                setErrorMsg(null);
+                            }, className: `flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-bold transition cursor-pointer ${mode === 'login'
+                                ? 'bg-gradient-to-r from-rose-800 to-red-900 text-white shadow-md'
+                                : 'text-zinc-400 hover:text-slate-200'}` },
+                            react_1.default.createElement(lucide_react_1.KeyRound, { className: "w-3.5 h-3.5" }),
+                            react_1.default.createElement("span", null, "Entrar na Facaria")),
+                        react_1.default.createElement("button", { type: "button", onClick: () => {
+                                setMode('register');
+                                setErrorMsg(null);
+                            }, className: `flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-bold transition cursor-pointer ${mode === 'register'
+                                ? 'bg-gradient-to-r from-rose-800 to-red-900 text-white shadow-md'
+                                : 'text-zinc-400 hover:text-slate-200'}` },
+                            react_1.default.createElement(lucide_react_1.UserPlus, { className: "w-3.5 h-3.5" }),
+                            react_1.default.createElement("span", null, "Cadastrar Nova Facaria"))),
+                    errorMsg && (react_1.default.createElement("div", { className: "mb-5 p-3.5 rounded-2xl bg-rose-950/60 border border-rose-700/60 text-rose-200 text-xs flex items-center gap-2.5" },
+                        react_1.default.createElement(lucide_react_1.AlertCircle, { className: "w-4 h-4 text-rose-400 shrink-0" }),
+                        react_1.default.createElement("span", null, errorMsg))),
+                    mode === 'login' ? (react_1.default.createElement("form", { onSubmit: handleLoginSubmit, className: "space-y-4" },
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("h3", { className: "text-base font-bold text-slate-50" }, "Acesse o painel da sua empresa"),
+                            react_1.default.createElement("p", { className: "text-xs text-zinc-400 mt-0.5" }, "Entre com seu e-mail corporativo e senha para carregar os dados exclusivos da sua facaria.")),
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1.5" }, "E-mail da Facaria"),
+                            react_1.default.createElement("div", { className: "relative" },
+                                react_1.default.createElement(lucide_react_1.Mail, { className: "w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2" }),
+                                react_1.default.createElement("input", { type: "email", required: true, value: email, onChange: (e) => setEmail(e.target.value), placeholder: "contato@suafacaria.com", className: "w-full pl-10 pr-4 py-3 rounded-2xl bg-zinc-950 border border-zinc-800 text-sm text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" }))),
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1.5" }, "Senha de Acesso"),
+                            react_1.default.createElement("div", { className: "relative" },
+                                react_1.default.createElement(lucide_react_1.Lock, { className: "w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2" }),
+                                react_1.default.createElement("input", { type: "password", required: true, value: password, onChange: (e) => setPassword(e.target.value), placeholder: "\u2022\u2022\u2022\u2022\u2022\u2022", className: "w-full pl-10 pr-4 py-3 rounded-2xl bg-zinc-950 border border-zinc-800 text-sm text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" }))),
+                        react_1.default.createElement("button", { type: "submit", className: "w-full py-3.5 px-5 rounded-2xl font-bold text-xs bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 text-white border border-rose-600/40 shadow-xl shadow-rose-950/70 flex items-center justify-center gap-2 transition cursor-pointer mt-2" },
+                            react_1.default.createElement("span", null, "Acessar Painel FacasFlow"),
+                            react_1.default.createElement(lucide_react_1.ArrowRight, { className: "w-4 h-4" })))) : (react_1.default.createElement("form", { onSubmit: handleRegisterSubmit, className: "space-y-3.5" },
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("h3", { className: "text-base font-bold text-slate-50" }, "Cadastrar Nova Facaria (Novo Tenant)"),
+                            react_1.default.createElement("p", { className: "text-xs text-zinc-400 mt-0.5" }, "Crie um banco de dados totalmente limpo e isolado para outra empresa.")),
+                        react_1.default.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 gap-3" },
+                            react_1.default.createElement("div", null,
+                                react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1" }, "Nome da Facaria / Empresa *"),
+                                react_1.default.createElement("input", { type: "text", required: true, value: companyName, onChange: (e) => setCompanyName(e.target.value), placeholder: "Ex: Facaria do Francisco", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" })),
+                            react_1.default.createElement("div", null,
+                                react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1" }, "Respons\u00E1vel / Gestor"),
+                                react_1.default.createElement("input", { type: "text", value: ownerName, onChange: (e) => setOwnerName(e.target.value), placeholder: "Ex: Francisco Silva", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" }))),
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1" }, "E-mail de Login *"),
+                            react_1.default.createElement("input", { type: "email", required: true, value: regEmail, onChange: (e) => setRegEmail(e.target.value), placeholder: "francisco@facaria.com", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" })),
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("label", { className: "block text-xs font-semibold text-zinc-300 mb-1" }, "Senha *"),
+                            react_1.default.createElement("input", { type: "password", required: true, value: regPassword, onChange: (e) => setRegPassword(e.target.value), placeholder: "Crie uma senha segura", className: "w-full px-3.5 py-2.5 rounded-2xl bg-zinc-950 border border-zinc-800 text-xs text-slate-100 placeholder-zinc-600 focus:border-rose-600 outline-none transition" })),
+                        react_1.default.createElement("button", { type: "submit", className: "w-full py-3.5 px-5 rounded-2xl font-bold text-xs bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 text-white border border-rose-600/40 shadow-xl shadow-rose-950/70 flex items-center justify-center gap-2 transition cursor-pointer mt-2" },
+                            react_1.default.createElement(lucide_react_1.UserPlus, { className: "w-4 h-4" }),
+                            react_1.default.createElement("span", null, "Criar Ambiente Isolado & Entrar"))))),
+                react_1.default.createElement("div", { className: "mt-6 pt-4 border-t border-zinc-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-500" },
+                    react_1.default.createElement("span", null, "FacasFlow SaaS \u2022 Multi-Tenant Engine"),
+                    react_1.default.createElement("span", null, "Qualifacas & Parceiros"))))));
+};
+exports.AuthLoginScreen = AuthLoginScreen;
+
+  },
+  { dir: "./components" }
 );
 
 __moduleFactories["./components/HeaderBar"] = Object.assign(
@@ -554,7 +951,7 @@ exports.NAV_SECTIONS = [
         icon: lucide_react_1.Wrench,
     },
 ];
-const HeaderBar = ({ activeSection, onSelectSection, searchQuery, onSearchChange, onOpenNewOrder, counts, }) => {
+const HeaderBar = ({ activeSection, onSelectSection, searchQuery, onSearchChange, onOpenNewOrder, tenantName, onLogout, counts, }) => {
     const getBadge = (id) => {
         if (id === 'empresas')
             return counts.companies;
@@ -584,7 +981,8 @@ const HeaderBar = ({ activeSection, onSelectSection, searchQuery, onSearchChange
                             ? 'bg-rose-500 text-white'
                             : 'bg-zinc-800 text-zinc-200 border border-zinc-700'}` }, badge))));
             })),
-            react_1.default.createElement("div", { className: "w-10 h-10" })),
+            react_1.default.createElement("button", { type: "button", onClick: onLogout, className: "w-10 h-10 rounded-2xl bg-zinc-800/70 hover:bg-rose-900/80 border border-zinc-700/60 hover:border-rose-600/50 flex items-center justify-center text-zinc-400 hover:text-white transition cursor-pointer", title: `Sair da conta (${tenantName})` },
+                react_1.default.createElement(lucide_react_1.LogOut, { className: "w-4 h-4 stroke-[2]" }))),
         react_1.default.createElement("header", { className: "sticky top-0 z-30 bg-zinc-950/85 backdrop-blur-xl border-b border-zinc-900" },
             react_1.default.createElement("div", { className: "max-w-[1520px] mx-auto lg:pl-24 px-4 sm:px-6 py-3.5 flex flex-col gap-3" },
                 react_1.default.createElement("div", { className: "flex items-center justify-between gap-4" },
@@ -593,7 +991,10 @@ const HeaderBar = ({ activeSection, onSelectSection, searchQuery, onSearchChange
                             react_1.default.createElement(lucide_react_1.Layers, { className: "w-4 h-4" })),
                         react_1.default.createElement("h1", { className: "text-xl font-bold tracking-tight text-slate-50" },
                             "Facas",
-                            react_1.default.createElement("span", { className: "text-rose-500" }, "Flow"))),
+                            react_1.default.createElement("span", { className: "text-rose-500" }, "Flow")),
+                        react_1.default.createElement("span", { className: "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-zinc-900 border border-zinc-800 text-[11px] font-semibold text-zinc-300" },
+                            react_1.default.createElement("span", { className: "w-1.5 h-1.5 rounded-full bg-emerald-400" }),
+                            tenantName)),
                     react_1.default.createElement("div", { className: "flex items-center gap-2.5" },
                         react_1.default.createElement("div", { className: "hidden md:block relative w-64" },
                             react_1.default.createElement(lucide_react_1.Search, { className: "w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" }),
@@ -601,7 +1002,10 @@ const HeaderBar = ({ activeSection, onSelectSection, searchQuery, onSearchChange
                             searchQuery && (react_1.default.createElement("button", { onClick: () => onSearchChange(''), className: "absolute right-3 top-1/2 -translate-y-1/2 text-xs text-zinc-500 hover:text-slate-200" }, "\u2715"))),
                         react_1.default.createElement("button", { onClick: onOpenNewOrder, className: "inline-flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-semibold bg-gradient-to-r from-rose-800 to-red-900 hover:from-rose-700 hover:to-red-800 text-slate-50 border border-rose-600/40 shadow-lg shadow-rose-950/60 transition cursor-pointer" },
                             react_1.default.createElement(lucide_react_1.Plus, { className: "w-4 h-4 stroke-[2.5]" }),
-                            react_1.default.createElement("span", null, "Nova OS")))),
+                            react_1.default.createElement("span", null, "Nova OS")),
+                        react_1.default.createElement("button", { type: "button", onClick: onLogout, className: "inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-2xl text-xs font-semibold bg-zinc-900 hover:bg-rose-950/80 text-zinc-300 hover:text-rose-200 border border-zinc-800 hover:border-rose-700/60 transition cursor-pointer", title: "Encerrar sess\u00E3o e trocar de empresa" },
+                            react_1.default.createElement(lucide_react_1.LogOut, { className: "w-3.5 h-3.5 stroke-[2.2]" }),
+                            react_1.default.createElement("span", null, "Sair")))),
                 react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2 pt-1" }, exports.NAV_SECTIONS.map((item) => {
                     const Icon = item.icon;
                     const isActive = activeSection === item.id;
@@ -1952,6 +2356,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.App = void 0;
 const react_1 = __importStar(require("react"));
 const lucide_react_1 = require("lucide-react");
+const AuthLoginScreen_1 = require("./components/AuthLoginScreen");
 const BentoOverviewSection_1 = require("./components/BentoOverviewSection");
 const CompaniesCrmSection_1 = require("./components/CompaniesCrmSection");
 const DeliveriesLogisticsSection_1 = require("./components/DeliveriesLogisticsSection");
@@ -1963,7 +2368,11 @@ const WarrantyReturnsSection_1 = require("./components/WarrantyReturnsSection");
 const storageAdapter_1 = require("./services/storageAdapter");
 const financeEngine_1 = require("./utils/financeEngine");
 const App = () => {
-    const [db, setDb] = (0, react_1.useState)(() => (0, storageAdapter_1.loadEnterpriseDatabase)());
+    const [session, setSession] = (0, react_1.useState)(() => (0, storageAdapter_1.getActiveSession)());
+    const [db, setDb] = (0, react_1.useState)(() => {
+        const active = (0, storageAdapter_1.getActiveSession)();
+        return (0, storageAdapter_1.loadEnterpriseDatabase)(active?.company_id || 'tenant_qualifacas');
+    });
     const [activeSection, setActiveSection] = (0, react_1.useState)('bento_home');
     const [searchQuery, setSearchQuery] = (0, react_1.useState)('');
     const [selectedCompanyId, setSelectedCompanyId] = (0, react_1.useState)(db.companies[0]?.id || null);
@@ -1976,8 +2385,27 @@ const App = () => {
             setToast((prev) => (prev === msg ? null : prev));
         }, 3500);
     };
+    const handleAuthenticated = (newSession) => {
+        const tenantDb = (0, storageAdapter_1.loadEnterpriseDatabase)(newSession.company_id);
+        setSession(newSession);
+        setDb(tenantDb);
+        setSelectedCompanyId(tenantDb.companies[0]?.id || null);
+        setActiveSection('bento_home');
+        setSearchQuery('');
+        showToast(`Bem-vindo(a) ao painel ${newSession.companyName}!`);
+    };
+    const handleLogout = () => {
+        (0, storageAdapter_1.clearActiveSession)();
+        setSession(null);
+        setSearchQuery('');
+        setIsNewModalOpen(false);
+    };
     const commitDb = (nextDb) => {
-        const saved = (0, storageAdapter_1.saveEnterpriseDatabase)(nextDb);
+        const activeTenantId = session?.company_id || nextDb.company_id || 'tenant_qualifacas';
+        const saved = (0, storageAdapter_1.saveEnterpriseDatabase)({
+            ...nextDb,
+            company_id: activeTenantId,
+        });
         setDb(saved);
     };
     // Search filtering
@@ -2001,8 +2429,18 @@ const App = () => {
     const nextOrderId = (0, react_1.useMemo)(() => (0, storageAdapter_1.getNextOrderId)(db), [db]);
     // Handlers
     const handleAddCompany = (newCompData) => {
-        const newId = `EMP-0${db.companies.length + 1}`;
-        const created = { id: newId, ...newCompData };
+        let maxNum = 0;
+        for (const c of db.companies) {
+            const n = parseInt(c.id.replace(/\D/g, ''), 10);
+            if (!Number.isNaN(n) && n > maxNum)
+                maxNum = n;
+        }
+        const newId = `EMP-${String(maxNum + 1).padStart(2, '0')}`;
+        const created = {
+            id: newId,
+            company_id: session?.company_id,
+            ...newCompData,
+        };
         commitDb({
             ...db,
             companies: [created, ...db.companies],
@@ -2187,8 +2625,11 @@ const App = () => {
         deliveries: db.deliveries.length,
         openReturns: db.returns.filter((r) => r.status !== 'liberado').length,
     };
+    if (!session) {
+        return react_1.default.createElement(AuthLoginScreen_1.AuthLoginScreen, { onAuthenticated: handleAuthenticated });
+    }
     return (react_1.default.createElement("div", { className: "min-h-screen bg-zinc-950 text-slate-100 pb-24 selection:bg-rose-800 selection:text-white" },
-        react_1.default.createElement(HeaderBar_1.HeaderBar, { activeSection: activeSection, onSelectSection: setActiveSection, searchQuery: searchQuery, onSearchChange: setSearchQuery, onOpenNewOrder: () => setIsNewModalOpen(true), counts: counts }),
+        react_1.default.createElement(HeaderBar_1.HeaderBar, { activeSection: activeSection, onSelectSection: setActiveSection, searchQuery: searchQuery, onSearchChange: setSearchQuery, onOpenNewOrder: () => setIsNewModalOpen(true), tenantName: session.companyName, onLogout: handleLogout, counts: counts }),
         toast && (react_1.default.createElement("div", { className: "fixed bottom-20 right-6 z-50 px-4 py-3 rounded-2xl bg-zinc-900 border border-rose-700/70 text-slate-50 text-xs font-semibold shadow-2xl flex items-center gap-2" },
             react_1.default.createElement(lucide_react_1.CheckCircle2, { className: "w-4 h-4 text-emerald-400 shrink-0" }),
             react_1.default.createElement("span", null, toast))),

@@ -4,6 +4,7 @@ import {
   Kanban,
   Layers,
   LayoutGrid,
+  LogOut,
   PieChart,
   Plus,
   Search,
@@ -18,6 +19,8 @@ interface HeaderBarProps {
   searchQuery: string;
   onSearchChange: (q: string) => void;
   onOpenNewOrder: () => void;
+  tenantName: string;
+  onLogout: () => void;
   counts: {
     companies: number;
     inProduction: number;
@@ -77,6 +80,8 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   searchQuery,
   onSearchChange,
   onOpenNewOrder,
+  tenantName,
+  onLogout,
   counts,
 }) => {
   const getBadge = (id: ActiveSection) => {
@@ -135,14 +140,22 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           })}
         </nav>
 
-        <div className="w-10 h-10" />
+        {/* Bottom Logout Icon in Desktop Rail */}
+        <button
+          type="button"
+          onClick={onLogout}
+          className="w-10 h-10 rounded-2xl bg-zinc-800/70 hover:bg-rose-900/80 border border-zinc-700/60 hover:border-rose-600/50 flex items-center justify-center text-zinc-400 hover:text-white transition cursor-pointer"
+          title={`Sair da conta (${tenantName})`}
+        >
+          <LogOut className="w-4 h-4 stroke-[2]" />
+        </button>
       </aside>
 
       {/* Top Navigation Header */}
       <header className="sticky top-0 z-30 bg-zinc-950/85 backdrop-blur-xl border-b border-zinc-900">
         <div className="max-w-[1520px] mx-auto lg:pl-24 px-4 sm:px-6 py-3.5 flex flex-col gap-3">
           <div className="flex items-center justify-between gap-4">
-            {/* Brand Title (Clean FacasFlow Logo Only) */}
+            {/* Brand Title + Active Tenant Pill */}
             <div className="flex items-center gap-3">
               <div className="lg:hidden w-9 h-9 rounded-2xl bg-gradient-to-br from-rose-700 to-red-950 border border-rose-500/30 flex items-center justify-center text-slate-50">
                 <Layers className="w-4 h-4" />
@@ -150,9 +163,13 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
               <h1 className="text-xl font-bold tracking-tight text-slate-50">
                 Facas<span className="text-rose-500">Flow</span>
               </h1>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-zinc-900 border border-zinc-800 text-[11px] font-semibold text-zinc-300">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                {tenantName}
+              </span>
             </div>
 
-            {/* Search + Primary Action */}
+            {/* Search + Primary Action + Logout Button */}
             <div className="flex items-center gap-2.5">
               <div className="hidden md:block relative w-64">
                 <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
@@ -179,6 +196,16 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
               >
                 <Plus className="w-4 h-4 stroke-[2.5]" />
                 <span>Nova OS</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={onLogout}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-2xl text-xs font-semibold bg-zinc-900 hover:bg-rose-950/80 text-zinc-300 hover:text-rose-200 border border-zinc-800 hover:border-rose-700/60 transition cursor-pointer"
+                title="Encerrar sessão e trocar de empresa"
+              >
+                <LogOut className="w-3.5 h-3.5 stroke-[2.2]" />
+                <span>Sair</span>
               </button>
             </div>
           </div>

@@ -31,9 +31,27 @@ export type ActiveSection =
   | 'entregas'
   | 'retornos';
 
+export interface TenantAccount {
+  company_id: string; // Identificador único Multi-tenant (ex: "tenant_qualifacas")
+  companyName: string; // Nome da Facaria (ex: "Qualifacas", "Facaria do Francisco")
+  ownerName: string;
+  email: string;
+  password: string;
+  createdAt: string;
+}
+
+export interface AuthSession {
+  company_id: string;
+  companyName: string;
+  ownerName: string;
+  email: string;
+  loggedInAt: string;
+}
+
 export interface Company {
   id: string;
-  corporateName: string; // Razão Social / Nome Fantasia
+  company_id?: string; // Tenant owner ID
+  corporateName: string; // Razão Social / Nome Fantasia do cliente da facaria
   cnpj: string;
   phone: string; // WhatsApp
   contactName: string;
@@ -46,7 +64,8 @@ export interface StageLog {
 }
 
 export interface DieOrder {
-  id: string; // e.g., "OS-308"
+  id: string; // e.g., "OS-001"
+  company_id?: string; // Tenant owner ID
   companyId: string;
   companyName: string;
   companyPhone: string;
@@ -65,22 +84,24 @@ export interface DieOrder {
 }
 
 export interface DeliveryRecord {
-  id: string; // e.g., "ENT-101"
+  id: string; // e.g., "ENT-001"
+  company_id?: string; // Tenant owner ID
   orderId: string;
   toolDescription: string;
   companyName: string;
   method: DeliveryMethod;
   carrierOrPersonName: string; // Nome do motorista / portador / quem retirou
-  dispatchedAt: string; // Data e Hora exata da saída (ex: "2026-11-09T16:40")
+  dispatchedAt: string; // Data e Hora exata da saída
   notes?: string;
 }
 
 export interface WarrantyReturnRecord {
-  id: string; // e.g., "RET-041"
+  id: string; // e.g., "RET-001"
+  company_id?: string; // Tenant owner ID
   orderId: string; // OS original
   companyName: string;
   toolDescription: string;
-  reason: string; // Motivo do Retorno (ex: Ajuste de vinco, Lâmina fora de esquadro...)
+  reason: string; // Motivo do Retorno
   technicalAction: string; // O que foi feito e ajustado
   adjustmentAmount: number; // R$ 0,00 se em garantia, ou novo valor
   status: ReturnStatus; // Em Análise | Em Ajuste de Bancada | Liberado Novamente
@@ -90,6 +111,7 @@ export interface WarrantyReturnRecord {
 
 export interface EnterpriseDatabase {
   version: number;
+  company_id: string; // Strict tenant isolation key
   companies: Company[];
   orders: DieOrder[];
   deliveries: DeliveryRecord[];

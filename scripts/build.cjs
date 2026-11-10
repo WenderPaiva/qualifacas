@@ -14,6 +14,7 @@ const MODULE_FILES = [
   'utils/financeEngine.ts',
   'data/seedOrders.ts',
   'services/storageAdapter.ts',
+  'components/AuthLoginScreen.tsx',
   'components/HeaderBar.tsx',
   'components/BentoOverviewSection.tsx',
   'components/CompaniesCrmSection.tsx',

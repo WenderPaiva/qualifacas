@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { CheckCircle2, Plus } from 'lucide-react';
+import { AuthLoginScreen } from './components/AuthLoginScreen';
 import { BentoOverviewSection } from './components/BentoOverviewSection';
 import { CompaniesCrmSection } from './components/CompaniesCrmSection';
 import { DeliveriesLogisticsSection } from './components/DeliveriesLogisticsSection';
@@ -8,8 +9,9 @@ import { FinanceAnalyticsSection } from './components/FinanceAnalyticsSection';
 import { HeaderBar } from './components/HeaderBar';
 import { ProductionKanban } from './components/ProductionKanban';
 import { WarrantyReturnsSection } from './components/WarrantyReturnsSection';
-import { createEnterpriseSeedDatabase } from './data/seedOrders';
 import {
+  clearActiveSession,
+  getActiveSession,
   getNextDeliveryId,
   getNextOrderId,
   getNextReturnId,
@@ -18,6 +20,7 @@ import {
 } from './services/storageAdapter';
 import {
   ActiveSection,
+  AuthSession,
   Company,
   DeliveryRecord,
   DieOrder,
@@ -38,9 +41,13 @@ import {
 } from './utils/financeEngine';
 
 export const App: React.FC = () => {
-  const [db, setDb] = useState<EnterpriseDatabase>(() =>
-    loadEnterpriseDatabase()
+  const [session, setSession] = useState<AuthSession | null>(() =>
+    getActiveSession()
   );
+  const [db, setDb] = useState<EnterpriseDatabase>(() => {
+    const active = getActiveSession();
+    return loadEnterpriseDatabase(active?.company_id || 'tenant_qualifacas');
+  });
   const [activeSection, setActiveSection] = useState<ActiveSection>('bento_home');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(
@@ -58,8 +65,29 @@ export const App: React.FC = () => {
     }, 3500);
   };
 
+  const handleAuthenticated = (newSession: AuthSession) => {
+    const tenantDb = loadEnterpriseDatabase(newSession.company_id);
+    setSession(newSession);
+    setDb(tenantDb);
+    setSelectedCompanyId(tenantDb.companies[0]?.id || null);
+    setActiveSection('bento_home');
+    setSearchQuery('');
+    showToast(`Bem-vindo(a) ao painel ${newSession.companyName}!`);
+  };
+
+  const handleLogout = () => {
+    clearActiveSession();
+    setSession(null);
+    setSearchQuery('');
+    setIsNewModalOpen(false);
+  };
+
   const commitDb = (nextDb: EnterpriseDatabase) => {
-    const saved = saveEnterpriseDatabase(nextDb);
+    const activeTenantId = session?.company_id || nextDb.company_id || 'tenant_qualifacas';
+    const saved = saveEnterpriseDatabase({
+      ...nextDb,
+      company_id: activeTenantId,
+    });
     setDb(saved);
   };
 
@@ -95,8 +123,17 @@ export const App: React.FC = () => {
 
   // Handlers
   const handleAddCompany = (newCompData: Omit<Company, 'id'>) => {
-    const newId = `EMP-0${db.companies.length + 1}`;
-    const created: Company = { id: newId, ...newCompData };
+    let maxNum = 0;
+    for (const c of db.companies) {
+      const n = parseInt(c.id.replace(/\D/g, ''), 10);
+      if (!Number.isNaN(n) && n > maxNum) maxNum = n;
+    }
+    const newId = `EMP-${String(maxNum + 1).padStart(2, '0')}`;
+    const created: Company = {
+      id: newId,
+      company_id: session?.company_id,
+      ...newCompData,
+    };
     commitDb({
       ...db,
       companies: [created, ...db.companies],
@@ -313,6 +350,10 @@ export const App: React.FC = () => {
     openReturns: db.returns.filter((r) => r.status !== 'liberado').length,
   };
 
+  if (!session) {
+    return <AuthLoginScreen onAuthenticated={handleAuthenticated} />;
+  }
+
   return (
     <div className="min-h-screen bg-zinc-950 text-slate-100 pb-24 selection:bg-rose-800 selection:text-white">
       {/* Navigation Shell */}
@@ -322,6 +363,8 @@ export const App: React.FC = () => {
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         onOpenNewOrder={() => setIsNewModalOpen(true)}
+        tenantName={session.companyName}
+        onLogout={handleLogout}
         counts={counts}
       />
 
