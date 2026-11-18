@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>FacasFlow — Liquid Glass OS &amp; Finance Engine</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['"Plus Jakarta Sans"', 'Inter', 'system-ui', '-apple-system', 'sans-serif'],
+              mono: ['JetBrains Mono', 'monospace'],
+            },
+            colors: {
+              brand: {
+                50: '#EEF2FF',
+                100: '#E0E7FF',
+                500: '#6366F1',
+                600: '#4F46E5',
+                700: '#4338CA',
+              },
+            },
+          },
+        },
+      };
+    </script>
+    <style data-purpose="liquid-glass-aesthetics">
+      /* Liquid Glass Canvas Background with Morphing Fluid Orbs */
+      html, body {
+        max-width: 100%;
+        overflow-x: hidden;
+      }
+
+      .liquid-canvas {
+        background: radial-gradient(circle at 15% 15%, #dbeafe 0%, #bfdbfe 30%, #c7d2fe 65%, #a5b4fc 100%);
+        min-height: 100vh;
+        min-height: 100dvh;
+        position: relative;
+        overflow-x: hidden;
+        padding-top: env(safe-area-inset-top);
+        padding-bottom: env(safe-area-inset-bottom);
+        padding-left: env(safe-area-inset-left);
+        padding-right: env(safe-area-inset-right);
+      }
+
+      @media screen {
+        input:not([type="checkbox"]):not([type="radio"]),
+        select,
+        textarea {
+          font-size: 16px !important;
+          min-height: 44px;
+        }
+        button,
+        a,
+        [role="button"] {
+          min-width: 44px;
+          min-height: 44px;
+        }
+        .icon-btn-44 {
+          min-width: 44px;
+          min-height: 44px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+        }
+      }
+
+      .fluid-title {
+        font-size: clamp(1.125rem, 2.2vw, 1.5rem);
+      }
+      .fluid-kpi {
+        font-size: clamp(1.25rem, 2.6vw, 1.875rem);
+      }
+
+      /* Ambient animated fluid glow blobs */
+      .blob {
+        position: fixed;
+        border-radius: 50%;
+        filter: blur(80px);
+        pointer-events: none;
+        opacity: 0.72;
+        mix-blend-mode: multiply;
+        will-change: transform;
+        z-index: 0;
+      }
+
+      .blob-1 {
+        top: -10%;
+        left: 10%;
+        width: 620px;
+        height: 620px;
+        background: radial-gradient(circle, #4f46e5 0%, #818cf8 60%, rgba(99, 102, 241, 0) 80%);
+        animation: morph-float-1 22s ease-in-out infinite alternate;
+      }
+
+      .blob-2 {
+        top: 35%;
+        right: -8%;
+        width: 680px;
+        height: 680px;
+        background: radial-gradient(circle, #06b6d4 0%, #38bdf8 50%, rgba(56, 189, 248, 0) 75%);
+        animation: morph-float-2 26s ease-in-out infinite alternate;
+      }
+
+      .blob-3 {
+        bottom: -10%;
+        left: 25%;
+        width: 700px;
+        height: 700px;
+        background: radial-gradient(circle, #9333ea 0%, #c084fc 50%, rgba(192, 132, 252, 0) 80%);
+        animation: morph-float-3 28s ease-in-out infinite alternate;
+      }
+
+      .blob-4 {
+        top: 50%;
+        left: 5%;
+        width: 480px;
+        height: 480px;
+        background: radial-gradient(circle, #2563eb 0%, #60a5fa 60%, rgba(37, 99, 235, 0) 80%);
+        animation: morph-float-1 30s ease-in-out infinite alternate-reverse;
+      }
+
+      .blob-5 {
+        top: 15%;
+        right: 32%;
+        width: 440px;
+        height: 440px;
+        background: radial-gradient(circle, #10b981 0%, #34d399 50%, rgba(52, 211, 153, 0) 75%);
+        opacity: 0.55;
+        animation: morph-float-2 20s ease-in-out infinite alternate-reverse;
+      }
+
+      @keyframes morph-float-1 {
+        0% { transform: translate(0px, 0px) scale(1) rotate(0deg); border-radius: 42% 58% 70% 30% / 45% 45% 55% 55%; }
+        50% { transform: translate(60px, 80px) scale(1.12) rotate(120deg); border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%; }
+        100% { transform: translate(-50px, 40px) scale(0.92) rotate(240deg); border-radius: 35% 65% 55% 45% / 50% 60% 40% 50%; }
+      }
+
+      @keyframes morph-float-2 {
+        0% { transform: translate(0px, 0px) scale(1.05) rotate(0deg); border-radius: 50% 50% 30% 70% / 55% 45% 55% 45%; }
+        50% { transform: translate(-70px, -60px) scale(0.95) rotate(-110deg); border-radius: 38% 62% 63% 37% / 41% 44% 56% 59%; }
+        100% { transform: translate(40px, 70px) scale(1.15) rotate(180deg); border-radius: 63% 37% 40% 60% / 70% 38% 62% 30%; }
+      }
+
+      @keyframes morph-float-3 {
+        0% { transform: translate(0px, 0px) scale(0.95); border-radius: 60% 40% 55% 45% / 40% 55% 45% 60%; }
+        50% { transform: translate(80px, -50px) scale(1.08); border-radius: 40% 60% 35% 65% / 60% 40% 60% 40%; }
+        100% { transform: translate(-60px, -30px) scale(1.02); border-radius: 52% 48% 63% 37% / 45% 55% 45% 55%; }
+      }
+
+      /* Apple "Liquid Glass" iOS 26 Material */
+      .liquid-glass {
+        position: relative;
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.34) 0%, rgba(255, 255, 255, 0.16) 100%);
+        backdrop-filter: blur(32px) saturate(200%) brightness(1.06);
+        -webkit-backdrop-filter: blur(32px) saturate(200%) brightness(1.06);
+        border: 1px solid rgba(255, 255, 255, 0.65);
+        box-shadow:
+          inset 0 1.5px 1px 0 rgba(255, 255, 255, 0.9),
+          inset 0 -1px 1.5px 0 rgba(255, 255, 255, 0.25),
+          inset 1px 0 2px 0 rgba(255, 255, 255, 0.35),
+          0 14px 34px -4px rgba(30, 41, 110, 0.14),
+          0 4px 16px rgba(15, 23, 42, 0.05);
+        transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+      }
+
+      .liquid-glass-subtle {
+        position: relative;
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.26) 0%, rgba(255, 255, 255, 0.12) 100%);
+        backdrop-filter: blur(24px) saturate(190%) brightness(1.05);
+        -webkit-backdrop-filter: blur(24px) saturate(190%) brightness(1.05);
+        border: 1px solid rgba(255, 255, 255, 0.52);
+        box-shadow:
+          inset 0 1px 1px 0 rgba(255, 255, 255, 0.8),
+          inset 0 -1px 1px 0 rgba(255, 255, 255, 0.15),
+          0 8px 24px -2px rgba(30, 41, 110, 0.1);
+      }
+
+      .liquid-glass-pill {
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.38) 0%, rgba(255, 255, 255, 0.18) 100%);
+        backdrop-filter: blur(24px) saturate(190%);
+        -webkit-backdrop-filter: blur(24px) saturate(190%);
+        border: 1px solid rgba(255, 255, 255, 0.72);
+        box-shadow:
+          inset 0 1px 1px rgba(255, 255, 255, 0.9),
+          0 4px 14px rgba(30, 41, 110, 0.09);
+        transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+      }
+
+      .liquid-glass-pill:hover {
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.48) 0%, rgba(255, 255, 255, 0.26) 100%);
+        border-color: rgba(255, 255, 255, 0.88);
+        box-shadow:
+          inset 0 1.5px 1.5px rgba(255, 255, 255, 0.95),
+          0 6px 20px rgba(79, 70, 229, 0.16);
+      }
+
+      /* Dynamic Specular Sheen on Hover */
+      .liquid-glass::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        background: radial-gradient(circle 220px at var(--mouse-x, 50%) var(--mouse-y, 50%), rgba(255, 255, 255, 0.36), transparent 70%);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.3s ease;
+        mix-blend-mode: overlay;
+      }
+
+      .liquid-glass:hover::after {
+        opacity: 1;
+      }
+
+      .frosted-text-depth {
+        text-shadow: 0 1px 1px rgba(255, 255, 255, 0.65);
+      }
+
+      body {
+        font-family: 'Plus Jakarta Sans', 'Inter', system-ui, -apple-system, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.55);
+        border-radius: 9999px;
+        border: 1px solid rgba(255, 255, 255, 0.65);
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: rgba(255, 255, 255, 0.8);
+      }
+
+      /* Canhoto Digital e Impressão 1/3 A4 (210mm x 99mm) */
+      .print-only-container {
+        display: none;
+      }
+
+      .canhoto-slip-screen {
+        aspect-ratio: 210 / 99;
+        width: 100%;
+        background: #ffffff;
+        color: #000000;
+        padding: 5mm;
+        box-sizing: border-box;
+        font-size: 9pt;
+        line-height: 1.25;
+      }
+
+      @page {
+        size: A4;
+        margin: 0;
+      }
+
+      @media print {
+        html, body {
+          margin: 0 !important;
+          padding: 0 !important;
+          background: #ffffff !important;
+          color: #000000 !important;
+          width: 210mm !important;
+          -webkit-print-color-adjust: exact;
+          print-color-adjust: exact;
+        }
+
+        .no-print,
+        .blob {
+          display: none !important;
+        }
+
+        .print-only-container {
+          display: block !important;
+          width: 210mm !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          background: #ffffff !important;
+        }
+
+        .canhoto-slip {
+          width: 210mm !important;
+          height: 99mm !important;
+          padding: 5mm !important;
+          box-sizing: border-box !important;
+          background: #ffffff !important;
+          color: #000000 !important;
+          font-size: 9pt !important;
+          line-height: 1.25 !important;
+          overflow: hidden !important;
+          page-break-inside: avoid;
+          break-inside: avoid;
+        }
+
+        .canhoto-slip:nth-child(3n):not(:last-child) {
+          page-break-after: always;
+          break-after: page;
+        }
+      }
+    </style>
+  </head>
+  <body class="liquid-canvas text-slate-900 font-sans antialiased selection:bg-indigo-500 selection:text-white">
+    <div id="root"></div>
+    <script>
+      document.addEventListener('mousemove', (e) => {
+        const target = e.target && e.target.closest ? e.target.closest('.liquid-glass') : null;
+        if (!target) return;
+        const rect = target.getBoundingClientRect();
+        target.style.setProperty('--mouse-x', `${e.clientX - rect.left}px`);
+        target.style.setProperty('--mouse-y', `${e.clientY - rect.top}px`);
+      });
+    </script>
+    <script type="module" src="./facasflow.bundle.js"></script>
+  </body>
+</html>

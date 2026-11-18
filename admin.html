@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>FacasFlow — Console Administrativo</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <style>
+      html, body {
+        max-width: 100%;
+        overflow-x: hidden;
+      }
+      .liquid-canvas {
+        background: radial-gradient(circle at 15% 15%, #dbeafe 0%, #bfdbfe 30%, #c7d2fe 65%, #a5b4fc 100%);
+        min-height: 100vh;
+        min-height: 100dvh;
+        padding-top: env(safe-area-inset-top);
+        padding-bottom: env(safe-area-inset-bottom);
+      }
+      @media screen {
+        input, select, textarea {
+          font-size: 16px !important;
+          min-height: 44px;
+        }
+        button, a {
+          min-height: 44px;
+        }
+      }
+      .liquid-glass {
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.34) 0%, rgba(255, 255, 255, 0.16) 100%);
+        backdrop-filter: blur(32px) saturate(200%);
+        border: 1px solid rgba(255, 255, 255, 0.65);
+      }
+      .liquid-glass-subtle {
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.26) 0%, rgba(255, 255, 255, 0.12) 100%);
+        border: 1px solid rgba(255, 255, 255, 0.52);
+      }
+      .liquid-glass-pill {
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.38) 0%, rgba(255, 255, 255, 0.18) 100%);
+        border: 1px solid rgba(255, 255, 255, 0.72);
+      }
+    </style>
+  </head>
+  <body class="liquid-canvas text-slate-900 font-sans antialiased">
+    <div id="admin-root"></div>
+    <script type="module" src="./admin.bundle.js"></script>
+  </body>
+</html>
