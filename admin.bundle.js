@@ -56,6 +56,7 @@ __moduleFactories["./utils/financeEngine"] = Object.assign(
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.RETURN_STATUS_META = exports.DELIVERY_METHOD_META = exports.INVESTMENT_TYPE_META = exports.EXPENSE_STATUS_META = exports.EXPENSE_PAYMENT_META = exports.EXPENSE_CATEGORY_MAP = exports.EXPENSE_CATEGORIES = exports.PAYMENT_MODALITY_META = exports.PRODUCTION_STAGES = void 0;
+exports.normalizeInvestmentType = normalizeInvestmentType;
 exports.createEmptyExpensesMap = createEmptyExpensesMap;
 exports.formatCurrencyMask = formatCurrencyMask;
 exports.parseCurrencyMask = parseCurrencyMask;
@@ -196,6 +197,8 @@ exports.EXPENSE_CATEGORIES = [
     { key: 'madeira', label: 'Madeira', colorHex: '#d97706', badgeClass: 'bg-amber-500/15 text-amber-900 border-amber-300/60' },
     { key: 'seguros', label: 'Seguros', colorHex: '#2563eb', badgeClass: 'bg-blue-500/15 text-blue-800 border-blue-300/60' },
     { key: 'impostos', label: 'Impostos', colorHex: '#dc2626', badgeClass: 'bg-rose-500/15 text-rose-800 border-rose-300/60' },
+    { key: 'flow_dashboard', label: 'Flow Dashboard', colorHex: '#4338ca', badgeClass: 'bg-indigo-500/15 text-indigo-900 border-indigo-400/60' },
+    { key: 'taxas_bancarias', label: 'Taxas Bancárias', colorHex: '#0f766e', badgeClass: 'bg-teal-500/15 text-teal-900 border-teal-400/60' },
     { key: 'outros', label: 'Outros', colorHex: '#71717a', badgeClass: 'bg-zinc-500/15 text-zinc-800 border-zinc-300/60' },
 ];
 exports.EXPENSE_CATEGORY_MAP = Object.fromEntries(exports.EXPENSE_CATEGORIES.map((c) => [c.key, c]));
@@ -230,11 +233,26 @@ exports.EXPENSE_STATUS_META = {
     },
 };
 exports.INVESTMENT_TYPE_META = {
-    renda_fixa: { label: 'Renda Fixa' },
-    acoes: { label: 'Ações' },
-    fii: { label: 'Fundos Imobiliários' },
-    outro: { label: 'Outro' },
+    aplicacao: {
+        label: 'Aplicação',
+        badgeClass: 'bg-indigo-500/15 text-indigo-800 border-indigo-300/60',
+    },
+    consorcio: {
+        label: 'Consórcio',
+        badgeClass: 'bg-emerald-500/15 text-emerald-800 border-emerald-300/60',
+    },
+    outros: {
+        label: 'Outros',
+        badgeClass: 'bg-slate-500/15 text-slate-800 border-slate-300/60',
+    },
 };
+function normalizeInvestmentType(raw) {
+    if (raw === 'consorcio')
+        return 'consorcio';
+    if (raw === 'outros' || raw === 'outro')
+        return 'outros';
+    return 'aplicacao';
+}
 function createEmptyExpensesMap() {
     return {
         aluguel: 0,
@@ -251,6 +269,8 @@ function createEmptyExpensesMap() {
         madeira: 0,
         seguros: 0,
         impostos: 0,
+        flow_dashboard: 0,
+        taxas_bancarias: 0,
         outros: 0,
     };
 }
@@ -591,11 +611,16 @@ function normalizeOrderPaymentStatus(order) {
     const migratedStatus = String(order.paymentStatus || '').toLowerCase() === 'cortesia'
         ? 'nao_pago'
         : order.paymentStatus;
-    if (migratedModality === 'nao_pago') {
-        return { ...order, paymentModality: migratedModality, paymentStatus: 'nao_pago' };
-    }
-    if (migratedStatus === 'pago' || migratedStatus === 'sem_nota') {
-        return { ...order, paymentModality: migratedModality, paymentStatus: migratedStatus };
+    // Regra 5.1: pedidos pagos permanecem pagos; pedidos marcados como nao_pago permanecem nao_pago
+    // independentemente da forma de pagamento escolhida até o usuário clicar em "Marcar como pago".
+    if (migratedStatus === 'pago' ||
+        migratedStatus === 'nao_pago' ||
+        migratedStatus === 'sem_nota') {
+        return {
+            ...order,
+            paymentModality: migratedModality,
+            paymentStatus: migratedStatus,
+        };
     }
     const diff = getDaysDiff(order.dueDate);
     const nextStatus = diff < 0 ? 'vencido' : 'a_receber';
@@ -608,6 +633,8 @@ function normalizeOrderPaymentStatus(order) {
 function computeFinancialBreakdown(orders) {
     let receivable30d = 0;
     let receivableCount = 0;
+    let unpaidTotal = 0;
+    let unpaidCount = 0;
     let overdueTotal = 0;
     let overdueCount = 0;
     let unbilledTotal = 0;
@@ -634,6 +661,12 @@ function computeFinancialBreakdown(orders) {
             case 'pago':
                 paidTotal += val;
                 paidCount += 1;
+                break;
+            case 'nao_pago':
+                unpaidTotal += val;
+                unpaidCount += 1;
+                receivable30d += val;
+                receivableCount += 1;
                 break;
             case 'vencido':
                 overdueTotal += val;
@@ -665,6 +698,8 @@ function computeFinancialBreakdown(orders) {
     return {
         receivable30d,
         receivableCount,
+        unpaidTotal,
+        unpaidCount,
         overdueTotal,
         overdueCount,
         unbilledTotal,

@@ -60,6 +60,7 @@ __moduleFactories["./utils/financeEngine"] = Object.assign(
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.RETURN_STATUS_META = exports.DELIVERY_METHOD_META = exports.INVESTMENT_TYPE_META = exports.EXPENSE_STATUS_META = exports.EXPENSE_PAYMENT_META = exports.EXPENSE_CATEGORY_MAP = exports.EXPENSE_CATEGORIES = exports.PAYMENT_MODALITY_META = exports.PRODUCTION_STAGES = void 0;
+exports.normalizeInvestmentType = normalizeInvestmentType;
 exports.createEmptyExpensesMap = createEmptyExpensesMap;
 exports.formatCurrencyMask = formatCurrencyMask;
 exports.parseCurrencyMask = parseCurrencyMask;
@@ -200,6 +201,8 @@ exports.EXPENSE_CATEGORIES = [
     { key: 'madeira', label: 'Madeira', colorHex: '#d97706', badgeClass: 'bg-amber-500/15 text-amber-900 border-amber-300/60' },
     { key: 'seguros', label: 'Seguros', colorHex: '#2563eb', badgeClass: 'bg-blue-500/15 text-blue-800 border-blue-300/60' },
     { key: 'impostos', label: 'Impostos', colorHex: '#dc2626', badgeClass: 'bg-rose-500/15 text-rose-800 border-rose-300/60' },
+    { key: 'flow_dashboard', label: 'Flow Dashboard', colorHex: '#4338ca', badgeClass: 'bg-indigo-500/15 text-indigo-900 border-indigo-400/60' },
+    { key: 'taxas_bancarias', label: 'Taxas Bancárias', colorHex: '#0f766e', badgeClass: 'bg-teal-500/15 text-teal-900 border-teal-400/60' },
     { key: 'outros', label: 'Outros', colorHex: '#71717a', badgeClass: 'bg-zinc-500/15 text-zinc-800 border-zinc-300/60' },
 ];
 exports.EXPENSE_CATEGORY_MAP = Object.fromEntries(exports.EXPENSE_CATEGORIES.map((c) => [c.key, c]));
@@ -234,11 +237,26 @@ exports.EXPENSE_STATUS_META = {
     },
 };
 exports.INVESTMENT_TYPE_META = {
-    renda_fixa: { label: 'Renda Fixa' },
-    acoes: { label: 'Ações' },
-    fii: { label: 'Fundos Imobiliários' },
-    outro: { label: 'Outro' },
+    aplicacao: {
+        label: 'Aplicação',
+        badgeClass: 'bg-indigo-500/15 text-indigo-800 border-indigo-300/60',
+    },
+    consorcio: {
+        label: 'Consórcio',
+        badgeClass: 'bg-emerald-500/15 text-emerald-800 border-emerald-300/60',
+    },
+    outros: {
+        label: 'Outros',
+        badgeClass: 'bg-slate-500/15 text-slate-800 border-slate-300/60',
+    },
 };
+function normalizeInvestmentType(raw) {
+    if (raw === 'consorcio')
+        return 'consorcio';
+    if (raw === 'outros' || raw === 'outro')
+        return 'outros';
+    return 'aplicacao';
+}
 function createEmptyExpensesMap() {
     return {
         aluguel: 0,
@@ -255,6 +273,8 @@ function createEmptyExpensesMap() {
         madeira: 0,
         seguros: 0,
         impostos: 0,
+        flow_dashboard: 0,
+        taxas_bancarias: 0,
         outros: 0,
     };
 }
@@ -595,11 +615,16 @@ function normalizeOrderPaymentStatus(order) {
     const migratedStatus = String(order.paymentStatus || '').toLowerCase() === 'cortesia'
         ? 'nao_pago'
         : order.paymentStatus;
-    if (migratedModality === 'nao_pago') {
-        return { ...order, paymentModality: migratedModality, paymentStatus: 'nao_pago' };
-    }
-    if (migratedStatus === 'pago' || migratedStatus === 'sem_nota') {
-        return { ...order, paymentModality: migratedModality, paymentStatus: migratedStatus };
+    // Regra 5.1: pedidos pagos permanecem pagos; pedidos marcados como nao_pago permanecem nao_pago
+    // independentemente da forma de pagamento escolhida até o usuário clicar em "Marcar como pago".
+    if (migratedStatus === 'pago' ||
+        migratedStatus === 'nao_pago' ||
+        migratedStatus === 'sem_nota') {
+        return {
+            ...order,
+            paymentModality: migratedModality,
+            paymentStatus: migratedStatus,
+        };
     }
     const diff = getDaysDiff(order.dueDate);
     const nextStatus = diff < 0 ? 'vencido' : 'a_receber';
@@ -612,6 +637,8 @@ function normalizeOrderPaymentStatus(order) {
 function computeFinancialBreakdown(orders) {
     let receivable30d = 0;
     let receivableCount = 0;
+    let unpaidTotal = 0;
+    let unpaidCount = 0;
     let overdueTotal = 0;
     let overdueCount = 0;
     let unbilledTotal = 0;
@@ -638,6 +665,12 @@ function computeFinancialBreakdown(orders) {
             case 'pago':
                 paidTotal += val;
                 paidCount += 1;
+                break;
+            case 'nao_pago':
+                unpaidTotal += val;
+                unpaidCount += 1;
+                receivable30d += val;
+                receivableCount += 1;
                 break;
             case 'vencido':
                 overdueTotal += val;
@@ -669,6 +702,8 @@ function computeFinancialBreakdown(orders) {
     return {
         receivable30d,
         receivableCount,
+        unpaidTotal,
+        unpaidCount,
         overdueTotal,
         overdueCount,
         unbilledTotal,
@@ -969,6 +1004,8 @@ exports.dbSoftDeleteReturn = dbSoftDeleteReturn;
 exports.dbCreateStockItem = dbCreateStockItem;
 exports.dbUpdateStockItem = dbUpdateStockItem;
 exports.dbSoftDeleteStockItem = dbSoftDeleteStockItem;
+exports.dbRegisterStockMovement = dbRegisterStockMovement;
+exports.dbRevertStockMovement = dbRevertStockMovement;
 exports.dbSaveNote = dbSaveNote;
 exports.dbUpdateNoteStatus = dbUpdateNoteStatus;
 exports.dbSoftDeleteNote = dbSoftDeleteNote;
@@ -1018,7 +1055,7 @@ async function resolveProfileSession(userId, email) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
     const { data: perfil, error: pErr } = await sb
         .from('perfis')
-        .select('id, empresa_id, nome, email, role, cargo, ativo, deleted_at')
+        .select('id, empresa_id, nome, email, role, cargo, ativo, deleted_at, is_super_admin')
         .eq('id', userId)
         .is('deleted_at', null)
         .eq('ativo', true)
@@ -1032,6 +1069,9 @@ async function resolveProfileSession(userId, email) {
         .eq('id', perfil.empresa_id)
         .is('deleted_at', null)
         .maybeSingle();
+    const resolvedEmail = String(perfil.email || email).trim().toLowerCase();
+    const isSuperAdmin = Boolean(perfil.is_super_admin) &&
+        resolvedEmail === 'wenderautomation@gmail.com';
     return {
         userId: perfil.id,
         company_id: perfil.empresa_id,
@@ -1044,6 +1084,7 @@ async function resolveProfileSession(userId, email) {
             : perfil.role === 'cliente'
                 ? 'cliente'
                 : 'admin',
+        isSuperAdmin,
         jobTitle: perfil.cargo || undefined,
         loggedInAt: new Date().toISOString(),
     };
@@ -1147,7 +1188,7 @@ async function signOutSupabase() {
 }
 async function loadCompanyDatabaseFromSupabase(empresaId, role) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
-    const [companiesRes, ordersRes, deliveriesRes, returnsRes, stockRes, notasRes, notaItensRes, despesasRes, providersRes, payrollRes, investmentsRes, perfisRes,] = await Promise.all([
+    const [companiesRes, ordersRes, deliveriesRes, returnsRes, stockRes, stockMovRes, notasRes, notaItensRes, despesasRes, providersRes, payrollRes, investmentsRes, perfisRes,] = await Promise.all([
         sb
             .from('clientes_empresas')
             .select('*')
@@ -1179,6 +1220,15 @@ async function loadCompanyDatabaseFromSupabase(empresaId, role) {
                 .eq('empresa_id', empresaId)
                 .is('deleted_at', null)
                 .order('created_at', { ascending: false })
+            : Promise.resolve({ data: [], error: null }),
+        role !== 'cliente'
+            ? sb
+                .from('estoque_movimentacoes')
+                .select('*')
+                .eq('empresa_id', empresaId)
+                .is('deleted_at', null)
+                .order('created_at', { ascending: false })
+                .limit(100)
             : Promise.resolve({ data: [], error: null }),
         role !== 'cliente'
             ? sb
@@ -1330,6 +1380,23 @@ async function loadCompanyDatabaseFromSupabase(empresaId, role) {
         entryDate: String(s.data_entrada || '').slice(0, 10),
         updatedAt: String(s.updated_at || ''),
     }));
+    const stockMovements = (stockMovRes.data || []).map((m) => ({
+        id: m.id,
+        empresa_id: m.empresa_id,
+        stockItemUuid: m.estoque_item_id,
+        itemCode: m.item_codigo || '',
+        itemName: m.item_nome,
+        category: m.categoria === 'laminas' ? 'laminas' : 'madeiras',
+        unit: m.unidade || 'un',
+        type: m.tipo,
+        quantity: Number(m.quantidade) || 0,
+        previousBalance: Number(m.saldo_anterior) || 0,
+        newBalance: Number(m.saldo_posterior) || 0,
+        actorName: m.responsavel_nome || 'Equipe',
+        note: m.observacao || undefined,
+        revertedAt: m.estornado_em || null,
+        createdAt: m.created_at || '',
+    }));
     const itemsByNota = new Map();
     for (const row of notaItensRes.data || []) {
         const arr = itemsByNota.get(row.nota_id) || [];
@@ -1408,7 +1475,8 @@ async function loadCompanyDatabaseFromSupabase(empresaId, role) {
         dbUuid: i.id,
         company_id: i.empresa_id,
         assetName: i.nome_ativo,
-        assetType: i.tipo_ativo,
+        description: i.descricao || undefined,
+        assetType: (0, financeEngine_1.normalizeInvestmentType)(i.categoria || i.tipo_ativo),
         appliedDate: String(i.data_aplicacao || '').slice(0, 10),
         investedAmount: Number(i.valor_aplicado) || 0,
         currentAmount: Number(i.valor_atual) || 0,
@@ -1434,6 +1502,7 @@ async function loadCompanyDatabaseFromSupabase(empresaId, role) {
         deliveries,
         returns,
         stock,
+        stockMovements,
         notas,
         noteSequence,
         despesas,
@@ -1491,14 +1560,11 @@ async function dbCreateOrder(empresaId, numeroOs, payload) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
     const today = (0, financeEngine_1.toISODate)();
     const days = financeEngine_1.PAYMENT_MODALITY_META[payload.paymentModality]?.defaultDays ?? 30;
-    let payStatus = 'a_receber';
-    if (payload.paymentModality === 'nao_pago')
-        payStatus = 'nao_pago';
-    else if (payload.paymentModality === 'pix' || payload.paymentModality === 'dinheiro') {
-        payStatus = 'pago';
-    }
+    // Regra 5.1: Toda OS nasce obrigatoriamente como "Não Pago", independentemente
+    // da forma de pagamento selecionada. Só muda para "Pago" ao clicar em "Marcar como pago".
+    const payStatus = 'nao_pago';
     const dueDate = (0, financeEngine_1.addDays)(today, days);
-    const paidAt = payStatus === 'pago' ? today : null;
+    const paidAt = null;
     const hist = [{ stage: payload.stage, timestamp: payload.stageUpdatedAt }];
     const { data, error } = await sb
         .from('ordens_servico')
@@ -1768,6 +1834,163 @@ async function dbSoftDeleteStockItem(empresaId, dbUuid) {
         .eq('empresa_id', empresaId);
     if (error)
         throw new Error(error.message);
+}
+async function dbRegisterStockMovement(empresaId, item, delta, actorName, note) {
+    if (!item.dbUuid) {
+        throw new Error('Item de estoque sem identificador no Supabase.');
+    }
+    const sb = (0, supabaseClient_1.getSupabaseClient)();
+    const previousBalance = Number(item.quantity) || 0;
+    const nextBalance = Math.max(0, Number((previousBalance + delta).toFixed(2)));
+    const movedQty = Math.abs(Number((nextBalance - previousBalance).toFixed(2)));
+    if (movedQty <= 0) {
+        throw new Error('Saldo já está zerado para este insumo.');
+    }
+    const movementType = delta < 0 ? 'consumo' : 'reposicao';
+    const { data: stockRow, error: upErr } = await sb
+        .from('estoque_itens')
+        .update({ quantidade: nextBalance })
+        .eq('id', item.dbUuid)
+        .eq('empresa_id', empresaId)
+        .select('*')
+        .single();
+    if (upErr)
+        throw new Error(upErr.message);
+    const { data: movRow, error: movErr } = await sb
+        .from('estoque_movimentacoes')
+        .insert({
+        id: generateUuid(),
+        empresa_id: empresaId,
+        estoque_item_id: item.dbUuid,
+        item_codigo: item.id,
+        item_nome: item.name,
+        categoria: item.category,
+        unidade: item.unit,
+        tipo: movementType,
+        quantidade: movedQty,
+        saldo_anterior: previousBalance,
+        saldo_posterior: nextBalance,
+        responsavel_nome: actorName,
+        observacao: note || null,
+    })
+        .select('*')
+        .single();
+    if (movErr)
+        throw new Error(movErr.message);
+    return {
+        updatedItem: {
+            id: stockRow.codigo_legado || stockRow.id,
+            dbUuid: stockRow.id,
+            company_id: stockRow.empresa_id,
+            category: stockRow.categoria === 'laminas' ? 'laminas' : 'madeiras',
+            name: stockRow.nome,
+            quantity: Number(stockRow.quantidade) || 0,
+            unit: stockRow.unidade,
+            minStock: Number(stockRow.estoque_minimo) || 0,
+            supplier: stockRow.fornecedor,
+            unitCost: Number(stockRow.custo_unitario) || 0,
+            entryDate: String(stockRow.data_entrada || '').slice(0, 10),
+            updatedAt: stockRow.updated_at,
+        },
+        movement: {
+            id: movRow.id,
+            empresa_id: movRow.empresa_id,
+            stockItemUuid: movRow.estoque_item_id,
+            itemCode: movRow.item_codigo || item.id,
+            itemName: movRow.item_nome,
+            category: (movRow.categoria === 'laminas' ? 'laminas' : 'madeiras'),
+            unit: movRow.unidade,
+            type: movRow.tipo,
+            quantity: Number(movRow.quantidade) || movedQty,
+            previousBalance: Number(movRow.saldo_anterior) || previousBalance,
+            newBalance: Number(movRow.saldo_posterior) || nextBalance,
+            actorName: movRow.responsavel_nome || actorName,
+            note: movRow.observacao || undefined,
+            revertedAt: movRow.estornado_em || null,
+            createdAt: movRow.created_at,
+        },
+    };
+}
+async function dbRevertStockMovement(empresaId, movement, currentItem, actorName) {
+    if (!currentItem.dbUuid) {
+        throw new Error('Item de estoque não localizado para estorno.');
+    }
+    const sb = (0, supabaseClient_1.getSupabaseClient)();
+    const prevBalance = Number(currentItem.quantity) || 0;
+    const reverseDelta = movement.type === 'consumo' ? movement.quantity : -movement.quantity;
+    const nextBalance = Math.max(0, Number((prevBalance + reverseDelta).toFixed(2)));
+    const nowIso = new Date().toISOString();
+    const { data: stockRow, error: upErr } = await sb
+        .from('estoque_itens')
+        .update({ quantidade: nextBalance })
+        .eq('id', currentItem.dbUuid)
+        .eq('empresa_id', empresaId)
+        .select('*')
+        .single();
+    if (upErr)
+        throw new Error(upErr.message);
+    const { error: markErr } = await sb
+        .from('estoque_movimentacoes')
+        .update({ estornado_em: nowIso })
+        .eq('id', movement.id)
+        .eq('empresa_id', empresaId);
+    if (markErr)
+        throw new Error(markErr.message);
+    const { data: estRow, error: estErr } = await sb
+        .from('estoque_movimentacoes')
+        .insert({
+        id: generateUuid(),
+        empresa_id: empresaId,
+        estoque_item_id: currentItem.dbUuid,
+        item_codigo: currentItem.id,
+        item_nome: currentItem.name,
+        categoria: currentItem.category,
+        unidade: currentItem.unit,
+        tipo: 'estorno',
+        quantidade: movement.quantity,
+        saldo_anterior: prevBalance,
+        saldo_posterior: nextBalance,
+        responsavel_nome: actorName,
+        observacao: `Estorno de ${movement.type === 'consumo' ? 'baixa' : 'reposição'}`,
+    })
+        .select('*')
+        .single();
+    if (estErr)
+        throw new Error(estErr.message);
+    return {
+        updatedItem: {
+            id: stockRow.codigo_legado || stockRow.id,
+            dbUuid: stockRow.id,
+            company_id: stockRow.empresa_id,
+            category: stockRow.categoria === 'laminas' ? 'laminas' : 'madeiras',
+            name: stockRow.nome,
+            quantity: Number(stockRow.quantidade) || 0,
+            unit: stockRow.unidade,
+            minStock: Number(stockRow.estoque_minimo) || 0,
+            supplier: stockRow.fornecedor,
+            unitCost: Number(stockRow.custo_unitario) || 0,
+            entryDate: String(stockRow.data_entrada || '').slice(0, 10),
+            updatedAt: stockRow.updated_at,
+        },
+        revertedAt: nowIso,
+        estornoMovement: {
+            id: estRow.id,
+            empresa_id: estRow.empresa_id,
+            stockItemUuid: estRow.estoque_item_id,
+            itemCode: estRow.item_codigo || currentItem.id,
+            itemName: estRow.item_nome,
+            category: (estRow.categoria === 'laminas' ? 'laminas' : 'madeiras'),
+            unit: estRow.unidade,
+            type: 'estorno',
+            quantity: Number(estRow.quantidade) || movement.quantity,
+            previousBalance: Number(estRow.saldo_anterior) || prevBalance,
+            newBalance: Number(estRow.saldo_posterior) || nextBalance,
+            actorName: estRow.responsavel_nome || actorName,
+            note: estRow.observacao || undefined,
+            revertedAt: null,
+            createdAt: estRow.created_at,
+        },
+    };
 }
 // NOTAS (server-side total + soft delete)
 async function dbSaveNote(empresaId, actorName, payload, editingId) {
@@ -2118,6 +2341,9 @@ async function dbSoftDeletePayrollEmployee(empresaId, dbUuid) {
 }
 async function dbCreateInvestment(empresaId, codigoLegado, payload) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
+    const normalizedCat = (0, financeEngine_1.normalizeInvestmentType)(payload.assetType);
+    const appliedVal = (0, financeEngine_1.roundCurrencyBRL)(payload.investedAmount);
+    const currentVal = (0, financeEngine_1.roundCurrencyBRL)(payload.currentAmount > 0 ? payload.currentAmount : payload.investedAmount);
     const { data, error } = await sb
         .from('investimentos')
         .insert({
@@ -2125,10 +2351,12 @@ async function dbCreateInvestment(empresaId, codigoLegado, payload) {
         empresa_id: empresaId,
         codigo_legado: codigoLegado,
         nome_ativo: payload.assetName,
-        tipo_ativo: payload.assetType,
+        descricao: payload.description?.trim() || null,
+        tipo_ativo: 'outro',
+        categoria: normalizedCat,
         data_aplicacao: payload.appliedDate || (0, financeEngine_1.toISODate)(),
-        valor_aplicado: (0, financeEngine_1.roundCurrencyBRL)(payload.investedAmount),
-        valor_atual: (0, financeEngine_1.roundCurrencyBRL)(payload.currentAmount),
+        valor_aplicado: appliedVal,
+        valor_atual: currentVal,
     })
         .select('*')
         .single();
@@ -2139,7 +2367,8 @@ async function dbCreateInvestment(empresaId, codigoLegado, payload) {
         dbUuid: data.id,
         company_id: data.empresa_id,
         assetName: data.nome_ativo,
-        assetType: data.tipo_ativo,
+        description: data.descricao || undefined,
+        assetType: (0, financeEngine_1.normalizeInvestmentType)(data.categoria || data.tipo_ativo),
         appliedDate: String(data.data_aplicacao).slice(0, 10),
         investedAmount: Number(data.valor_aplicado),
         currentAmount: Number(data.valor_atual),
@@ -2148,14 +2377,19 @@ async function dbCreateInvestment(empresaId, codigoLegado, payload) {
 }
 async function dbUpdateInvestment(empresaId, dbUuid, payload) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
+    const normalizedCat = (0, financeEngine_1.normalizeInvestmentType)(payload.assetType);
+    const appliedVal = (0, financeEngine_1.roundCurrencyBRL)(payload.investedAmount);
+    const currentVal = (0, financeEngine_1.roundCurrencyBRL)(payload.currentAmount > 0 ? payload.currentAmount : payload.investedAmount);
     const { data, error } = await sb
         .from('investimentos')
         .update({
         nome_ativo: payload.assetName,
-        tipo_ativo: payload.assetType,
+        descricao: payload.description?.trim() || null,
+        tipo_ativo: 'outro',
+        categoria: normalizedCat,
         data_aplicacao: payload.appliedDate || (0, financeEngine_1.toISODate)(),
-        valor_aplicado: (0, financeEngine_1.roundCurrencyBRL)(payload.investedAmount),
-        valor_atual: (0, financeEngine_1.roundCurrencyBRL)(payload.currentAmount),
+        valor_aplicado: appliedVal,
+        valor_atual: currentVal,
     })
         .eq('id', dbUuid)
         .eq('empresa_id', empresaId)
@@ -2168,7 +2402,8 @@ async function dbUpdateInvestment(empresaId, dbUuid, payload) {
         dbUuid: data.id,
         company_id: data.empresa_id,
         assetName: data.nome_ativo,
-        assetType: data.tipo_ativo,
+        description: data.descricao || undefined,
+        assetType: (0, financeEngine_1.normalizeInvestmentType)(data.categoria || data.tipo_ativo),
         appliedDate: String(data.data_aplicacao).slice(0, 10),
         investedAmount: Number(data.valor_aplicado),
         currentAmount: Number(data.valor_atual),
@@ -3760,6 +3995,7 @@ exports.NAV_SECTIONS = [
         shortLabel: 'Configurações',
         group: 'gestao',
         roles: ['admin'],
+        superAdminOnly: true,
         icon: lucide_react_1.Settings,
     },
 ];
@@ -3785,8 +4021,8 @@ function getBadgeCount(id, counts) {
     }
     return undefined;
 }
-const SidebarBody = ({ activeSection, onSelectSection, tenantName, userRole, userName, onLogout, counts, onCloseMobile, }) => {
-    const visibleSections = exports.NAV_SECTIONS.filter((item) => item.roles.includes(userRole));
+const SidebarBody = ({ activeSection, onSelectSection, tenantName, userRole, isSuperAdmin = false, userName, onLogout, counts, onCloseMobile, }) => {
+    const visibleSections = exports.NAV_SECTIONS.filter((item) => item.roles.includes(userRole) && (!item.superAdminOnly || isSuperAdmin));
     const primaryItem = visibleSections.find((s) => s.group === 'primary');
     const operacaoItems = visibleSections.filter((s) => s.group === 'operacao');
     const gestaoItems = visibleSections.filter((s) => s.group === 'gestao');
@@ -3858,7 +4094,7 @@ const LiquidSidebar = (props) => {
         react_1.default.createElement(SidebarBody, { ...props })));
 };
 exports.LiquidSidebar = LiquidSidebar;
-const HeaderBar = ({ activeSection, onSelectSection, searchQuery, onSearchChange, onOpenNewOrder, tenantName, userRole, userName, onLogout, counts, }) => {
+const HeaderBar = ({ activeSection, onSelectSection, searchQuery, onSearchChange, onOpenNewOrder, tenantName, userRole, isSuperAdmin = false, userName, onLogout, counts, }) => {
     const [drawerOpen, setDrawerOpen] = (0, react_1.useState)(false);
     (0, react_1.useEffect)(() => {
         if (typeof window === 'undefined' || !window.matchMedia)
@@ -3895,7 +4131,7 @@ const HeaderBar = ({ activeSection, onSelectSection, searchQuery, onSearchChange
         drawerOpen && (react_1.default.createElement("div", { className: "fixed inset-0 z-[70] lg:hidden flex", role: "dialog", "aria-modal": "true", "aria-label": "Menu de navega\u00E7\u00E3o" },
             react_1.default.createElement("div", { onClick: () => setDrawerOpen(false), className: "fixed inset-0 bg-slate-900/45 backdrop-blur-sm" }),
             react_1.default.createElement("div", { className: "relative z-10 w-[280px] max-w-[85vw] h-[100dvh] liquid-glass p-5 rounded-r-[28px] shadow-2xl border-r border-white/75 pt-[calc(1.25rem+env(safe-area-inset-top))] pb-[calc(1.25rem+env(safe-area-inset-bottom))]" },
-                react_1.default.createElement(SidebarBody, { activeSection: activeSection, onSelectSection: onSelectSection, tenantName: tenantName, userRole: userRole, userName: userName, onLogout: onLogout, counts: counts, onCloseMobile: () => setDrawerOpen(false) }))))));
+                react_1.default.createElement(SidebarBody, { activeSection: activeSection, onSelectSection: onSelectSection, tenantName: tenantName, userRole: userRole, isSuperAdmin: isSuperAdmin, userName: userName, onLogout: onLogout, counts: counts, onCloseMobile: () => setDrawerOpen(false) }))))));
 };
 exports.HeaderBar = HeaderBar;
 
@@ -4323,7 +4559,7 @@ const CompaniesCrmSection = ({ companies, orders, selectedCompanyId, onSelectCom
                             react_1.default.createElement("button", { type: "button", onClick: (e) => {
                                     e.stopPropagation();
                                     onDeleteCompany(comp.id);
-                                }, className: "p-2 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 transition cursor-pointer", title: "Apagar empresa e facas vinculadas" },
+                                }, className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir empresa e facas vinculadas", "aria-label": "Excluir empresa" },
                                 react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" })))),
                     react_1.default.createElement("div", { className: "mt-4 pt-3 border-t border-white/55 flex items-center justify-between text-xs text-slate-700" },
                         react_1.default.createElement("div", { className: "flex items-center gap-3" },
@@ -4351,7 +4587,7 @@ const CompaniesCrmSection = ({ companies, orders, selectedCompanyId, onSelectCom
                         react_1.default.createElement("div", { className: "p-3.5 rounded-2xl liquid-glass-subtle text-right" },
                             react_1.default.createElement("span", { className: "text-[10px] font-bold uppercase text-slate-600 block" }, "Volume Total Cadastrado"),
                             react_1.default.createElement("span", { className: "text-xl font-black text-emerald-700 font-mono" }, (0, financeEngine_1.formatBRL)(companyTotalValue))),
-                        react_1.default.createElement("button", { type: "button", onClick: () => onDeleteCompany(activeCompany.id), className: "p-3.5 rounded-2xl liquid-glass-pill text-slate-600 hover:text-rose-700 transition cursor-pointer", title: "Apagar esta empresa" },
+                        react_1.default.createElement("button", { type: "button", onClick: () => onDeleteCompany(activeCompany.id), className: "btn-compact w-10 h-10 rounded-2xl liquid-glass-pill text-slate-600 hover:text-rose-700 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir esta empresa", "aria-label": "Excluir empresa" },
                             react_1.default.createElement(lucide_react_1.Trash2, { className: "w-4 h-4" })))),
                 react_1.default.createElement("form", { onSubmit: handleCreateDieInCompany, className: "p-4 rounded-2xl liquid-glass-subtle space-y-3" },
                     react_1.default.createElement("div", { className: "flex items-center justify-between" },
@@ -4402,8 +4638,8 @@ const CompaniesCrmSection = ({ companies, orders, selectedCompanyId, onSelectCom
                                     react_1.default.createElement("span", { className: "text-[10px] font-medium text-slate-600" },
                                         "Atualizado: ",
                                         order.stageUpdatedAt)),
-                                react_1.default.createElement("button", { type: "button", onClick: () => onDeleteOrder(order.id), className: "p-2 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 transition cursor-pointer", title: "Apagar esta OS / Faca" },
-                                    react_1.default.createElement(lucide_react_1.Trash2, { className: "w-4 h-4" })))));
+                                react_1.default.createElement("button", { type: "button", onClick: () => onDeleteOrder(order.id), className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir esta OS / Faca", "aria-label": "Excluir ordem de servi\u00E7o" },
+                                    react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" })))));
                     })))))))));
 };
 exports.CompaniesCrmSection = CompaniesCrmSection;
@@ -4453,22 +4689,25 @@ exports.ProductionKanban = void 0;
 const react_1 = __importStar(require("react"));
 const lucide_react_1 = require("lucide-react");
 const financeEngine_1 = require("../utils/financeEngine");
+const ACTIVE_PRODUCTION_STAGES = financeEngine_1.PRODUCTION_STAGES.filter((s) => s.id !== 'faca_pronta');
 const OrderKanbanCard = react_1.default.memo(({ order, isPending, isExpanded, onToggleExpand, onDragStart, onDragEnd, onMoveStage, onQuickRegisterDelivery, onDeleteOrder, }) => {
     const prevStage = (0, financeEngine_1.getPrevStage)(order.stage);
     const nextStage = (0, financeEngine_1.getNextStage)(order.stage);
     const modMeta = financeEngine_1.PAYMENT_MODALITY_META[order.paymentModality];
-    return (react_1.default.createElement("div", { draggable: !isPending, onDragStart: () => onDragStart(order.id), onDragEnd: onDragEnd, className: `rounded-2xl p-3.5 liquid-glass-subtle hover:bg-white/45 transition-colors cursor-grab active:cursor-grabbing flex flex-col gap-2.5 ${isPending ? 'opacity-75 ring-1 ring-indigo-400/70' : ''}` },
-        react_1.default.createElement("div", { className: "flex items-center justify-between gap-1.5" },
-            react_1.default.createElement("span", { className: "px-2 py-0.5 rounded-lg bg-indigo-500/15 border border-indigo-300/60 font-mono text-[11px] font-bold text-indigo-800" }, order.id),
-            react_1.default.createElement("div", { className: "flex items-center gap-1" },
-                react_1.default.createElement("span", { className: `px-2 py-0.5 rounded-full text-[10px] font-bold border ${modMeta?.badgeClass}` }, modMeta?.short),
-                react_1.default.createElement("button", { type: "button", onClick: () => onToggleExpand(order.id), className: "p-1 rounded-lg bg-white/60 hover:bg-white/90 text-slate-600 border border-white/70 transition-colors cursor-pointer", title: "Detalhes da OS" }, isExpanded ? (react_1.default.createElement(lucide_react_1.ChevronUp, { className: "w-3 h-3" })) : (react_1.default.createElement(lucide_react_1.ChevronDown, { className: "w-3 h-3" }))),
-                react_1.default.createElement("button", { type: "button", onClick: () => onDeleteOrder(order.id), className: "p-1 rounded-lg bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/70 transition-colors cursor-pointer", title: "Apagar esta OS" },
+    const isFinalizingStep = nextStage === 'faca_pronta';
+    return (react_1.default.createElement("div", { draggable: !isPending, onDragStart: () => onDragStart(order.id), onDragEnd: onDragEnd, className: `rounded-2xl p-3 liquid-glass-subtle hover:bg-white/45 transition-colors cursor-grab active:cursor-grabbing flex flex-col gap-2 overflow-hidden min-w-0 ${isPending ? 'opacity-75 ring-1 ring-indigo-400/70' : ''}` },
+        react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-1 min-w-0" },
+            react_1.default.createElement("div", { className: "flex items-center gap-1 min-w-0 flex-wrap" },
+                react_1.default.createElement("span", { className: "px-1.5 py-0.5 rounded-md bg-indigo-500/15 border border-indigo-300/60 font-mono text-[10px] font-bold text-indigo-800 shrink-0" }, order.id),
+                react_1.default.createElement("span", { className: `px-1.5 py-0.5 rounded-full text-[9px] font-bold border truncate max-w-[92px] ${modMeta?.badgeClass}`, title: modMeta?.label }, modMeta?.short)),
+            react_1.default.createElement("div", { className: "flex items-center gap-1 shrink-0" },
+                react_1.default.createElement("button", { type: "button", onClick: () => onToggleExpand(order.id), className: "btn-compact w-6 h-6 rounded-lg bg-white/65 hover:bg-white/95 text-slate-600 hover:text-indigo-700 border border-white/80 flex items-center justify-center transition-colors cursor-pointer shrink-0", title: isExpanded ? 'Recolher detalhes' : 'Exibir mais detalhes', "aria-label": isExpanded ? 'Recolher detalhes' : 'Exibir mais detalhes' }, isExpanded ? (react_1.default.createElement(lucide_react_1.ChevronUp, { className: "w-3 h-3" })) : (react_1.default.createElement(lucide_react_1.ChevronDown, { className: "w-3 h-3" }))),
+                react_1.default.createElement("button", { type: "button", onClick: () => onDeleteOrder(order.id), className: "btn-compact w-6 h-6 rounded-lg bg-white/65 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/80 flex items-center justify-center transition-colors cursor-pointer shrink-0", title: "Excluir esta OS", "aria-label": "Excluir esta OS" },
                     react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3 h-3" })))),
-        react_1.default.createElement("div", null,
+        react_1.default.createElement("div", { className: "min-w-0" },
             react_1.default.createElement("span", { className: "text-[11px] font-bold text-slate-600 block truncate" }, order.companyName),
-            react_1.default.createElement("h4", { className: "text-xs font-extrabold text-slate-900 leading-snug mt-0.5" }, order.toolDescription)),
-        isExpanded && (react_1.default.createElement("div", { className: "p-2.5 rounded-xl bg-white/55 border border-white/75 text-[11px] space-y-1 text-slate-700" },
+            react_1.default.createElement("h4", { className: "text-xs font-extrabold text-slate-900 leading-snug mt-0.5 break-words" }, order.toolDescription)),
+        isExpanded && (react_1.default.createElement("div", { className: "p-2 rounded-xl bg-white/60 border border-white/80 text-[10px] space-y-1 text-slate-700" },
             react_1.default.createElement("div", null,
                 react_1.default.createElement("strong", null, "Vencimento:"),
                 " ",
@@ -4478,28 +4717,36 @@ const OrderKanbanCard = react_1.default.memo(({ order, isPending, isExpanded, on
                 " ",
                 order.companyPhone || 'Não informado'),
             react_1.default.createElement("div", null,
-                react_1.default.createElement("strong", null, "Vers\u00E3o:"),
-                " v",
-                order.version || 1))),
-        react_1.default.createElement("div", { className: "flex items-center justify-between text-[10px] text-slate-700 bg-white/55 px-2.5 py-1.5 rounded-xl border border-white/70" },
-            react_1.default.createElement("span", { className: "flex items-center gap-1 font-semibold" },
+                react_1.default.createElement("strong", null, "Pagamento:"),
+                ' ',
+                order.paymentStatus === 'pago' ? 'Pago' : 'Não Pago'))),
+        react_1.default.createElement("div", { className: "flex items-center justify-between gap-1 text-[10px] text-slate-700 bg-white/55 px-2 py-1.5 rounded-xl border border-white/70 min-w-0" },
+            react_1.default.createElement("span", { className: "flex items-center gap-1 font-semibold truncate min-w-0" },
                 react_1.default.createElement(lucide_react_1.Clock, { className: "w-3 h-3 text-indigo-600 shrink-0" }),
-                react_1.default.createElement("span", null, isPending ? 'Salvando...' : order.stageUpdatedAt)),
-            react_1.default.createElement("span", { className: "font-mono font-extrabold text-emerald-700" }, (0, financeEngine_1.formatBRL)(order.amount))),
-        react_1.default.createElement("div", { className: "flex items-center gap-1.5 pt-1" },
-            prevStage && (react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onMoveStage(order.id, prevStage), className: "p-1.5 rounded-xl bg-white/65 hover:bg-white/90 disabled:opacity-50 text-slate-700 border border-white/80 transition-colors cursor-pointer", title: "Voltar etapa anterior" },
+                react_1.default.createElement("span", { className: "truncate" }, isPending ? 'Salvando...' : order.stageUpdatedAt)),
+            react_1.default.createElement("span", { className: "font-mono font-extrabold text-emerald-700 shrink-0" }, (0, financeEngine_1.formatBRL)(order.amount))),
+        react_1.default.createElement("div", { className: "flex items-center gap-1 pt-0.5 min-w-0" },
+            prevStage && (react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onMoveStage(order.id, prevStage), className: "btn-compact w-7 h-7 rounded-xl bg-white/65 hover:bg-white/95 disabled:opacity-50 text-slate-700 border border-white/80 flex items-center justify-center transition-colors cursor-pointer shrink-0", title: "Voltar etapa anterior", "aria-label": "Voltar etapa anterior" },
                 react_1.default.createElement(lucide_react_1.ArrowLeft, { className: "w-3.5 h-3.5" }))),
-            nextStage ? (react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onMoveStage(order.id, nextStage), className: "flex-1 py-1.5 px-2.5 rounded-xl text-[11px] font-bold bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 disabled:opacity-50 text-white border border-white/40 shadow-sm flex items-center justify-center gap-1 transition-colors cursor-pointer" },
-                react_1.default.createElement("span", null, "Avan\u00E7ar Etapa"),
-                react_1.default.createElement(lucide_react_1.ArrowRight, { className: "w-3 h-3 stroke-[2.2]" }))) : (react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onQuickRegisterDelivery(order), className: "flex-1 py-1.5 px-2.5 rounded-xl text-[11px] font-bold bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white border border-white/40 shadow-sm flex items-center justify-center gap-1.5 transition-colors cursor-pointer" },
-                react_1.default.createElement(lucide_react_1.Truck, { className: "w-3.5 h-3.5" }),
-                react_1.default.createElement("span", null, "Despachar / Sa\u00EDda"))))));
+            nextStage ? (react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onMoveStage(order.id, nextStage), className: `btn-compact flex-1 min-w-0 py-1.5 px-2 rounded-xl text-[10px] font-bold disabled:opacity-50 text-white border border-white/40 shadow-sm flex items-center justify-center gap-1 transition-colors cursor-pointer ${isFinalizingStep
+                    ? 'bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-500 hover:to-emerald-600'
+                    : 'bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600'}`, title: isFinalizingStep
+                    ? 'Concluir e mover para Facas Prontas'
+                    : 'Avançar para a próxima etapa' },
+                react_1.default.createElement("span", { className: "truncate" }, isFinalizingStep ? 'Concluir Faca' : 'Avançar'),
+                isFinalizingStep ? (react_1.default.createElement(lucide_react_1.CheckCircle2, { className: "w-3 h-3 shrink-0" })) : (react_1.default.createElement(lucide_react_1.ArrowRight, { className: "w-3 h-3 stroke-[2.2] shrink-0" })))) : (react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onQuickRegisterDelivery(order), className: "btn-compact flex-1 min-w-0 py-1.5 px-2 rounded-xl text-[10px] font-bold bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white border border-white/40 shadow-sm flex items-center justify-center gap-1 transition-colors cursor-pointer" },
+                react_1.default.createElement(lucide_react_1.Truck, { className: "w-3 h-3 shrink-0" }),
+                react_1.default.createElement("span", { className: "truncate" }, "Despachar"))))));
 });
 const ProductionKanban = ({ orders, pendingOrderIds = [], moveError, onMoveStage, onQuickRegisterDelivery, onDeleteOrder, }) => {
+    const [activeView, setActiveView] = (0, react_1.useState)('producao');
     const [draggedId, setDraggedId] = (0, react_1.useState)(null);
     const [dragOverStage, setDragOverStage] = (0, react_1.useState)(null);
     const [expandedOrderIds, setExpandedOrderIds] = (0, react_1.useState)(() => new Set());
     const pendingSet = new Set(pendingOrderIds);
+    const activeOrders = (0, react_1.useMemo)(() => orders.filter((o) => o.stage !== 'faca_pronta'), [orders]);
+    const readyOrders = (0, react_1.useMemo)(() => orders.filter((o) => o.stage === 'faca_pronta'), [orders]);
+    const readyTotalVolume = (0, react_1.useMemo)(() => readyOrders.reduce((acc, o) => acc + (o.amount || 0), 0), [readyOrders]);
     const handleToggleExpand = (orderId) => {
         setExpandedOrderIds((prev) => {
             const next = new Set(prev);
@@ -4510,14 +4757,50 @@ const ProductionKanban = ({ orders, pendingOrderIds = [], moveError, onMoveStage
             return next;
         });
     };
-    return (react_1.default.createElement("div", { className: "space-y-5" },
-        react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-2" },
+    return (react_1.default.createElement("div", { className: "space-y-5 min-w-0" },
+        react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-3" },
             react_1.default.createElement("div", null,
-                react_1.default.createElement("h2", { className: "text-lg font-extrabold text-slate-900 tracking-tight frosted-text-depth" }, "Esteira F\u00EDsica de Produ\u00E7\u00E3o"),
-                react_1.default.createElement("p", { className: "text-xs font-medium text-slate-700" }, "Arraste os cart\u00F5es ou clique em avan\u00E7ar. Cada mudan\u00E7a grava a data e hora da etapa.")),
-            moveError && (react_1.default.createElement("div", { className: "px-3.5 py-2 rounded-full bg-rose-500/15 border border-rose-300/70 text-xs font-bold text-rose-800" }, moveError))),
-        react_1.default.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-4 items-start" }, financeEngine_1.PRODUCTION_STAGES.map((stage) => {
-            const colOrders = orders.filter((o) => o.stage === stage.id);
+                react_1.default.createElement("h2", { className: "text-lg font-extrabold text-slate-900 tracking-tight frosted-text-depth" }, "Esteira de Produ\u00E7\u00E3o"),
+                react_1.default.createElement("p", { className: "text-xs font-medium text-slate-700" }, "Arraste os cart\u00F5es ou avance etapas. Facas finalizadas v\u00E3o automaticamente para a aba Facas Prontas.")),
+            react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
+                react_1.default.createElement("button", { type: "button", onClick: () => setActiveView('producao'), className: `min-h-[40px] px-4 py-2 rounded-full text-xs font-bold inline-flex items-center gap-2 transition cursor-pointer ${activeView === 'producao'
+                        ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md border border-white/40'
+                        : 'liquid-glass-pill text-slate-700'}` },
+                    react_1.default.createElement(lucide_react_1.Kanban, { className: "w-3.5 h-3.5" }),
+                    react_1.default.createElement("span", null, "Em Produ\u00E7\u00E3o"),
+                    react_1.default.createElement("span", { className: `px-2 py-0.5 rounded-full text-[10px] font-extrabold ${activeView === 'producao'
+                            ? 'bg-white/25 text-white'
+                            : 'bg-white/65 text-slate-800'}` }, activeOrders.length)),
+                react_1.default.createElement("button", { type: "button", onClick: () => setActiveView('prontas'), onDragOver: (e) => {
+                        e.preventDefault();
+                        if (dragOverStage !== 'faca_pronta') {
+                            setDragOverStage('faca_pronta');
+                        }
+                    }, onDragLeave: () => setDragOverStage(null), onDrop: (e) => {
+                        e.preventDefault();
+                        setDragOverStage(null);
+                        if (draggedId) {
+                            const draggedOrder = orders.find((o) => o.id === draggedId);
+                            if (draggedOrder && draggedOrder.stage !== 'faca_pronta') {
+                                onMoveStage(draggedId, 'faca_pronta');
+                            }
+                            setDraggedId(null);
+                        }
+                    }, className: `min-h-[40px] px-4 py-2 rounded-full text-xs font-bold inline-flex items-center gap-2 transition cursor-pointer ${activeView === 'prontas'
+                        ? 'bg-gradient-to-r from-emerald-600 to-emerald-700 text-white shadow-md border border-white/40'
+                        : dragOverStage === 'faca_pronta'
+                            ? 'bg-emerald-500/25 text-emerald-900 ring-2 ring-emerald-500 border border-emerald-400'
+                            : 'liquid-glass-pill text-slate-700'}`, title: "Clique para abrir ou arraste uma faca aqui para concluir" },
+                    react_1.default.createElement(lucide_react_1.CheckCircle2, { className: "w-3.5 h-3.5" }),
+                    react_1.default.createElement("span", null, "Facas Prontas"),
+                    react_1.default.createElement("span", { className: `px-2 py-0.5 rounded-full text-[10px] font-extrabold ${activeView === 'prontas'
+                            ? 'bg-white/25 text-white'
+                            : 'bg-emerald-500/15 text-emerald-800 border border-emerald-300/60'}` }, readyOrders.length)))),
+        moveError && (react_1.default.createElement("div", { className: "px-4 py-2.5 rounded-2xl bg-rose-500/15 border border-rose-300/70 text-xs font-bold text-rose-800" }, moveError)),
+        activeView === 'producao' ? (
+        /* 5-Column Active Production Kanban (keeps active flow clean) */
+        react_1.default.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5 gap-4 items-start" }, ACTIVE_PRODUCTION_STAGES.map((stage) => {
+            const colOrders = activeOrders.filter((o) => o.stage === stage.id);
             const colTotal = colOrders.reduce((acc, o) => acc + (o.amount || 0), 0);
             const isOver = dragOverStage === stage.id;
             return (react_1.default.createElement("div", { key: stage.id, onDragOver: (e) => {
@@ -4535,7 +4818,7 @@ const ProductionKanban = ({ orders, pendingOrderIds = [], moveError, onMoveStage
                         }
                         setDraggedId(null);
                     }
-                }, className: `liquid-glass rounded-[26px] p-4 transition-colors min-h-[480px] flex flex-col gap-3 ${isOver ? 'ring-2 ring-indigo-500/70' : ''}` },
+                }, className: `liquid-glass rounded-[26px] p-3.5 transition-colors min-h-[460px] flex flex-col gap-3 min-w-0 ${isOver ? 'ring-2 ring-indigo-500/70' : ''}` },
                 react_1.default.createElement("div", { className: "pb-3 border-b border-white/60" },
                     react_1.default.createElement("div", { className: "flex items-center justify-between gap-2" },
                         react_1.default.createElement("div", { className: "flex items-center gap-2" },
@@ -4549,13 +4832,79 @@ const ProductionKanban = ({ orders, pendingOrderIds = [], moveError, onMoveStage
                     react_1.default.createElement("div", { className: "mt-2 pt-2 border-t border-white/45 flex items-center justify-between text-[11px] font-mono" },
                         react_1.default.createElement("span", { className: "text-slate-600 font-semibold" }, "Volume:"),
                         react_1.default.createElement("span", { className: "font-extrabold text-emerald-700" }, (0, financeEngine_1.formatBRL)(colTotal)))),
-                react_1.default.createElement("div", { className: "space-y-3 flex-1" }, colOrders.length === 0 ? (react_1.default.createElement("div", { className: "h-32 rounded-2xl border border-dashed border-white/75 bg-white/20 flex items-center justify-center text-xs font-medium text-slate-600 text-center px-2" },
+                react_1.default.createElement("div", { className: "space-y-2.5 flex-1 min-w-0" }, colOrders.length === 0 ? (react_1.default.createElement("div", { className: "h-32 rounded-2xl border border-dashed border-white/75 bg-white/20 flex items-center justify-center text-xs font-medium text-slate-600 text-center px-2" },
                     "Sem facas em ",
                     stage.label)) : (colOrders.map((order) => (react_1.default.createElement(OrderKanbanCard, { key: order.id, order: order, isPending: pendingSet.has(order.id), isExpanded: expandedOrderIds.has(order.id), onToggleExpand: handleToggleExpand, onDragStart: setDraggedId, onDragEnd: () => {
                         setDraggedId(null);
                         setDragOverStage(null);
                     }, onMoveStage: onMoveStage, onQuickRegisterDelivery: onQuickRegisterDelivery, onDeleteOrder: onDeleteOrder })))))));
-        }))));
+        }))) : (
+        /* Subseção Dedicada: Facas Prontas / Concluídas */
+        react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-5 sm:p-6 space-y-4 min-w-0" },
+            react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-white/60" },
+                react_1.default.createElement("div", { className: "flex items-center gap-2.5" },
+                    react_1.default.createElement("div", { className: "w-10 h-10 rounded-2xl bg-emerald-500/15 border border-emerald-300/60 flex items-center justify-center text-emerald-700 shrink-0" },
+                        react_1.default.createElement(lucide_react_1.CheckCircle2, { className: "w-5 h-5" })),
+                    react_1.default.createElement("div", null,
+                        react_1.default.createElement("h3", { className: "text-base font-extrabold text-slate-900" },
+                            "Facas Prontas / Conclu\u00EDdas (",
+                            readyOrders.length,
+                            ")"),
+                        react_1.default.createElement("p", { className: "text-xs font-medium text-slate-600" }, "Ferramentas finalizadas e liberadas para retirada ou despacho log\u00EDstico."))),
+                react_1.default.createElement("div", { className: "liquid-glass-pill px-4 py-2 rounded-full text-xs font-bold text-slate-800" },
+                    "Volume Conclu\u00EDdo:",
+                    ' ',
+                    react_1.default.createElement("strong", { className: "font-mono text-emerald-700" }, (0, financeEngine_1.formatBRL)(readyTotalVolume)))),
+            readyOrders.length === 0 ? (react_1.default.createElement("div", { className: "p-10 rounded-2xl border border-dashed border-white/75 bg-white/20 text-center space-y-1" },
+                react_1.default.createElement("p", { className: "text-sm font-bold text-slate-700" }, "Nenhuma faca conclu\u00EDda ainda."),
+                react_1.default.createElement("p", { className: "text-xs text-slate-600" }, "Ao clicar em \"Concluir Faca\" na etapa Faca Ajustada, o pedido aparecer\u00E1 automaticamente aqui."))) : (react_1.default.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4" }, readyOrders.map((order) => {
+                const modMeta = financeEngine_1.PAYMENT_MODALITY_META[order.paymentModality];
+                const isPending = pendingSet.has(order.id);
+                const isExpanded = expandedOrderIds.has(order.id);
+                return (react_1.default.createElement("div", { key: order.id, className: `rounded-2xl p-4 liquid-glass-subtle hover:bg-white/45 transition flex flex-col justify-between gap-3 overflow-hidden min-w-0 ${isPending ? 'opacity-75 ring-1 ring-emerald-400/70' : ''}` },
+                    react_1.default.createElement("div", { className: "space-y-2.5 min-w-0" },
+                        react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-1.5 min-w-0" },
+                            react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-1.5 min-w-0" },
+                                react_1.default.createElement("span", { className: "px-2 py-0.5 rounded-lg bg-emerald-500/15 border border-emerald-300/60 font-mono text-[11px] font-bold text-emerald-800 shrink-0" }, order.id),
+                                react_1.default.createElement("span", { className: `px-2 py-0.5 rounded-full text-[10px] font-bold border ${modMeta?.badgeClass}` }, modMeta?.short),
+                                react_1.default.createElement("span", { className: `px-2 py-0.5 rounded-full text-[10px] font-bold border ${order.paymentStatus === 'pago'
+                                        ? 'bg-emerald-500/15 text-emerald-800 border-emerald-300/60'
+                                        : 'bg-white/70 text-slate-700 border-white/80'}` }, order.paymentStatus === 'pago' ? 'Pago' : 'Não Pago')),
+                            react_1.default.createElement("div", { className: "flex items-center gap-1 shrink-0" },
+                                react_1.default.createElement("button", { type: "button", onClick: () => handleToggleExpand(order.id), className: "btn-compact w-7 h-7 rounded-lg bg-white/65 hover:bg-white/95 text-slate-600 hover:text-indigo-700 border border-white/80 flex items-center justify-center transition cursor-pointer shrink-0", title: isExpanded ? 'Recolher detalhes' : 'Exibir mais detalhes', "aria-label": isExpanded ? 'Recolher detalhes' : 'Exibir mais detalhes' }, isExpanded ? (react_1.default.createElement(lucide_react_1.ChevronUp, { className: "w-3.5 h-3.5" })) : (react_1.default.createElement(lucide_react_1.ChevronDown, { className: "w-3.5 h-3.5" }))),
+                                react_1.default.createElement("button", { type: "button", onClick: () => onDeleteOrder(order.id), className: "btn-compact w-7 h-7 rounded-lg bg-white/65 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/80 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir esta OS", "aria-label": "Excluir esta OS" },
+                                    react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" })))),
+                        react_1.default.createElement("div", { className: "min-w-0" },
+                            react_1.default.createElement("span", { className: "text-xs font-bold text-slate-600 block truncate" }, order.companyName),
+                            react_1.default.createElement("h4", { className: "text-sm font-extrabold text-slate-900 leading-snug mt-0.5 break-words" }, order.toolDescription)),
+                        isExpanded && (react_1.default.createElement("div", { className: "p-2.5 rounded-xl bg-white/60 border border-white/80 text-[11px] space-y-1 text-slate-700" },
+                            react_1.default.createElement("div", null,
+                                react_1.default.createElement("strong", null, "Cadastro:"),
+                                " ",
+                                (0, financeEngine_1.formatDateBR)(order.createdAt)),
+                            react_1.default.createElement("div", null,
+                                react_1.default.createElement("strong", null, "Vencimento:"),
+                                " ",
+                                (0, financeEngine_1.formatDateBR)(order.dueDate)),
+                            react_1.default.createElement("div", null,
+                                react_1.default.createElement("strong", null, "Telefone:"),
+                                " ",
+                                order.companyPhone || 'Não informado'))),
+                        react_1.default.createElement("div", { className: "flex items-center justify-between text-[11px] text-slate-700 bg-white/55 px-2.5 py-1.5 rounded-xl border border-white/70" },
+                            react_1.default.createElement("span", { className: "flex items-center gap-1 font-semibold truncate" },
+                                react_1.default.createElement(lucide_react_1.Clock, { className: "w-3.5 h-3.5 text-emerald-600 shrink-0" }),
+                                react_1.default.createElement("span", { className: "truncate" },
+                                    "Conclu\u00EDda: ",
+                                    order.stageUpdatedAt)),
+                            react_1.default.createElement("span", { className: "font-mono font-extrabold text-emerald-700 shrink-0" }, (0, financeEngine_1.formatBRL)(order.amount)))),
+                    react_1.default.createElement("div", { className: "flex items-center gap-2 pt-1" },
+                        react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onMoveStage(order.id, 'faca_ajustada'), className: "btn-compact px-3 py-2 rounded-xl text-[11px] font-bold bg-white/70 hover:bg-white text-slate-700 border border-white/80 inline-flex items-center justify-center gap-1 transition cursor-pointer shrink-0", title: "Retornar para Faca Ajustada" },
+                            react_1.default.createElement(lucide_react_1.RotateCcw, { className: "w-3.5 h-3.5" }),
+                            react_1.default.createElement("span", null, "Reabrir")),
+                        react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onQuickRegisterDelivery(order), className: "btn-compact flex-1 py-2 px-3 rounded-xl text-[11px] font-bold bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white border border-white/40 shadow-sm inline-flex items-center justify-center gap-1.5 transition cursor-pointer" },
+                            react_1.default.createElement(lucide_react_1.Truck, { className: "w-3.5 h-3.5 shrink-0" }),
+                            react_1.default.createElement("span", null, "Despachar / Sa\u00EDda")))));
+            })))))));
 };
 exports.ProductionKanban = ProductionKanban;
 
@@ -5571,13 +5920,13 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
                                     setProvModality(p.paymentModality);
                                     setProvDueDate(p.dueDate);
                                     setProvStatus(p.status);
-                                }, className: "p-2 rounded-full bg-white/60 hover:bg-indigo-500/20 text-slate-600 hover:text-indigo-700 border border-white/75 cursor-pointer", title: "Editar prestador" },
+                                }, className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-indigo-500/20 text-slate-600 hover:text-indigo-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Editar prestador", "aria-label": "Editar prestador" },
                                 react_1.default.createElement(lucide_react_1.Edit3, { className: "w-3.5 h-3.5" })),
                             react_1.default.createElement("button", { type: "button", onClick: () => {
                                     if (editProvId === p.id)
                                         resetProviderForm();
                                     onDeleteProvider(p.id);
-                                }, className: "p-2 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 cursor-pointer", title: "Remover prestador" },
+                                }, className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir prestador", "aria-label": "Excluir prestador" },
                                 react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" })))));
                 }))))) : (react_1.default.createElement("div", { className: "grid grid-cols-1 lg:grid-cols-12 gap-5 items-start" },
             react_1.default.createElement("form", { onSubmit: handleEmployeeSubmit, className: "lg:col-span-5 liquid-glass rounded-[28px] p-6 space-y-3.5" },
@@ -5622,13 +5971,13 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
                                 setEmpRoleTitle(emp.roleTitle);
                                 setEmpSalary(emp.salary);
                                 setEmpAdmissionDate(emp.admissionDate);
-                            }, className: "p-2 rounded-full bg-white/60 hover:bg-indigo-500/20 text-slate-600 hover:text-indigo-700 border border-white/75 cursor-pointer", title: "Editar funcion\u00E1rio" },
+                            }, className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-indigo-500/20 text-slate-600 hover:text-indigo-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Editar funcion\u00E1rio", "aria-label": "Editar funcion\u00E1rio" },
                             react_1.default.createElement(lucide_react_1.Edit3, { className: "w-3.5 h-3.5" })),
                         react_1.default.createElement("button", { type: "button", onClick: () => {
                                 if (editEmpId === emp.id)
                                     resetEmployeeForm();
                                 onDeletePayrollEmployee(emp.id);
-                            }, className: "p-2 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 cursor-pointer", title: "Remover funcion\u00E1rio" },
+                            }, className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir funcion\u00E1rio", "aria-label": "Excluir funcion\u00E1rio" },
                             react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" }))))))))))));
 };
 exports.CollaboratorsSubsection = CollaboratorsSubsection;
@@ -5678,35 +6027,62 @@ exports.InvestmentsSubsection = void 0;
 const react_1 = __importStar(require("react"));
 const lucide_react_1 = require("lucide-react");
 const financeEngine_1 = require("../utils/financeEngine");
+const INVESTMENT_CATEGORIES = [
+    'aplicacao',
+    'consorcio',
+    'outros',
+];
 const InvestmentsSubsection = ({ investments, onAddInvestment, onUpdateInvestment, onDeleteInvestment, }) => {
+    const [categoryFilter, setCategoryFilter] = (0, react_1.useState)('todos');
     const [editId, setEditId] = (0, react_1.useState)(null);
     const [assetName, setAssetName] = (0, react_1.useState)('');
-    const [assetType, setAssetType] = (0, react_1.useState)('renda_fixa');
+    const [description, setDescription] = (0, react_1.useState)('');
+    const [assetType, setAssetType] = (0, react_1.useState)('aplicacao');
     const [appliedDate, setAppliedDate] = (0, react_1.useState)(() => (0, financeEngine_1.toISODate)());
     const [investedAmount, setInvestedAmount] = (0, react_1.useState)(0);
     const [currentAmount, setCurrentAmount] = (0, react_1.useState)(0);
+    const [customCurrentTouched, setCustomCurrentTouched] = (0, react_1.useState)(false);
+    const filteredInvestments = (0, react_1.useMemo)(() => {
+        if (categoryFilter === 'todos')
+            return investments;
+        return investments.filter((inv) => inv.assetType === categoryFilter);
+    }, [investments, categoryFilter]);
     const totalInvested = investments.reduce((sum, inv) => sum + (inv.investedAmount || 0), 0);
-    const totalCurrent = investments.reduce((sum, inv) => sum + (inv.currentAmount || 0), 0);
-    const totalYieldBRL = totalCurrent - totalInvested;
-    const totalYieldPct = totalInvested > 0 ? (totalYieldBRL / totalInvested) * 100 : 0;
+    const totalsByCategory = (0, react_1.useMemo)(() => {
+        return {
+            aplicacao: investments
+                .filter((i) => i.assetType === 'aplicacao')
+                .reduce((s, i) => s + (i.investedAmount || 0), 0),
+            consorcio: investments
+                .filter((i) => i.assetType === 'consorcio')
+                .reduce((s, i) => s + (i.investedAmount || 0), 0),
+            outros: investments
+                .filter((i) => i.assetType === 'outros')
+                .reduce((s, i) => s + (i.investedAmount || 0), 0),
+        };
+    }, [investments]);
     const resetForm = () => {
         setEditId(null);
         setAssetName('');
-        setAssetType('renda_fixa');
+        setDescription('');
+        setAssetType('aplicacao');
         setAppliedDate((0, financeEngine_1.toISODate)());
         setInvestedAmount(0);
         setCurrentAmount(0);
+        setCustomCurrentTouched(false);
     };
     const handleSubmit = (e) => {
         e.preventDefault();
-        if (!assetName.trim())
+        if (!assetName.trim() || investedAmount <= 0)
             return;
+        const resolvedCurrent = customCurrentTouched && currentAmount > 0 ? currentAmount : investedAmount;
         const payload = {
             assetName: assetName.trim(),
+            description: description.trim() || undefined,
             assetType,
             appliedDate: appliedDate || (0, financeEngine_1.toISODate)(),
             investedAmount,
-            currentAmount,
+            currentAmount: resolvedCurrent,
         };
         if (editId) {
             onUpdateInvestment(editId, payload);
@@ -5718,100 +6094,553 @@ const InvestmentsSubsection = ({ investments, onAddInvestment, onUpdateInvestmen
     };
     const inputClass = 'liquid-glass-pill w-full min-h-[44px] px-3.5 py-2.5 text-base rounded-2xl text-slate-900 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500/50 outline-none transition';
     return (react_1.default.createElement("div", { className: "space-y-5" },
-        react_1.default.createElement("div", { className: "grid grid-cols-1 md:grid-cols-3 gap-5" },
-            react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-6" },
-                react_1.default.createElement("span", { className: "text-xs font-bold uppercase tracking-wider text-slate-600 block" }, "Total Investido"),
-                react_1.default.createElement("p", { className: "text-3xl font-black text-slate-900 font-mono mt-2" }, (0, financeEngine_1.formatBRL)(totalInvested))),
-            react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-6" },
-                react_1.default.createElement("span", { className: "text-xs font-bold uppercase tracking-wider text-slate-600 block" }, "Saldo Atual"),
-                react_1.default.createElement("p", { className: "text-3xl font-black text-indigo-700 font-mono mt-2" }, (0, financeEngine_1.formatBRL)(totalCurrent))),
-            react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-6" },
-                react_1.default.createElement("span", { className: "text-xs font-bold uppercase tracking-wider text-slate-600 block" }, "Rendimento Total"),
-                react_1.default.createElement("p", { className: `text-3xl font-black font-mono mt-2 ${totalYieldBRL >= 0 ? 'text-emerald-700' : 'text-rose-700'}` },
-                    totalYieldBRL >= 0 ? '+' : '',
-                    (0, financeEngine_1.formatBRL)(totalYieldBRL)),
-                react_1.default.createElement("span", { className: "text-xs font-bold text-slate-700 font-mono" },
-                    totalYieldPct >= 0 ? '+' : '',
-                    totalYieldPct.toFixed(2),
-                    "%"))),
+        react_1.default.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" },
+            react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-5" },
+                react_1.default.createElement("span", { className: "text-[11px] font-bold uppercase tracking-wider text-slate-600 block" }, "Total em Investimentos"),
+                react_1.default.createElement("p", { className: "text-2xl font-black text-slate-900 font-mono mt-1.5" }, (0, financeEngine_1.formatBRL)(totalInvested)),
+                react_1.default.createElement("span", { className: "text-xs font-semibold text-slate-600 mt-0.5 block" },
+                    investments.length,
+                    " lan\u00E7amento(s)")),
+            react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-5" },
+                react_1.default.createElement("span", { className: "text-[11px] font-bold uppercase tracking-wider text-indigo-700 block" }, "Aplica\u00E7\u00E3o"),
+                react_1.default.createElement("p", { className: "text-2xl font-black text-indigo-700 font-mono mt-1.5" }, (0, financeEngine_1.formatBRL)(totalsByCategory.aplicacao))),
+            react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-5" },
+                react_1.default.createElement("span", { className: "text-[11px] font-bold uppercase tracking-wider text-emerald-700 block" }, "Cons\u00F3rcio"),
+                react_1.default.createElement("p", { className: "text-2xl font-black text-emerald-700 font-mono mt-1.5" }, (0, financeEngine_1.formatBRL)(totalsByCategory.consorcio))),
+            react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-5" },
+                react_1.default.createElement("span", { className: "text-[11px] font-bold uppercase tracking-wider text-slate-600 block" }, "Outros"),
+                react_1.default.createElement("p", { className: "text-2xl font-black text-slate-800 font-mono mt-1.5" }, (0, financeEngine_1.formatBRL)(totalsByCategory.outros)))),
         react_1.default.createElement("div", { className: "grid grid-cols-1 lg:grid-cols-12 gap-5 items-start" },
-            react_1.default.createElement("form", { onSubmit: handleSubmit, className: "lg:col-span-5 liquid-glass rounded-[28px] p-6 space-y-3.5" },
+            react_1.default.createElement("form", { onSubmit: handleSubmit, className: "lg:col-span-5 liquid-glass rounded-[28px] p-6 space-y-4" },
                 react_1.default.createElement("div", { className: "flex items-center justify-between pb-3 border-b border-white/60" },
                     react_1.default.createElement("div", { className: "flex items-center gap-2" },
                         react_1.default.createElement(lucide_react_1.TrendingUp, { className: "w-4 h-4 text-indigo-600" }),
-                        react_1.default.createElement("h3", { className: "text-sm font-extrabold text-slate-900" }, editId ? `Editar Ativo ${editId}` : 'Cadastrar Investimento')),
-                    editId && (react_1.default.createElement("button", { type: "button", onClick: resetForm, className: "p-1.5 rounded-full liquid-glass-pill text-slate-600 cursor-pointer" },
+                        react_1.default.createElement("h3", { className: "text-sm font-extrabold text-slate-900" }, editId ? `Editar Lançamento (${editId})` : 'Novo Lançamento de Investimento')),
+                    editId && (react_1.default.createElement("button", { type: "button", onClick: resetForm, className: "btn-compact w-8 h-8 rounded-full liquid-glass-pill text-slate-600 flex items-center justify-center cursor-pointer", title: "Cancelar edi\u00E7\u00E3o", "aria-label": "Cancelar edi\u00E7\u00E3o" },
                         react_1.default.createElement(lucide_react_1.X, { className: "w-4 h-4" })))),
                 react_1.default.createElement("div", null,
-                    react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Nome do Ativo"),
-                    react_1.default.createElement("input", { type: "text", required: true, value: assetName, onChange: (e) => setAssetName(e.target.value), placeholder: "Ex: CDB Liquidez Di\u00E1ria, Tesouro Selic, HGLG11", className: inputClass })),
-                react_1.default.createElement("div", { className: "grid grid-cols-2 gap-3" },
+                    react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "Categoria *"),
+                    react_1.default.createElement("div", { className: "grid grid-cols-3 gap-2" }, INVESTMENT_CATEGORIES.map((cat) => {
+                        const active = assetType === cat;
+                        return (react_1.default.createElement("button", { key: cat, type: "button", onClick: () => setAssetType(cat), className: `min-h-[42px] px-3 py-2 rounded-2xl text-xs font-bold border transition cursor-pointer ${active
+                                ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white border-white/40 shadow-md'
+                                : 'liquid-glass-pill text-slate-700'}` }, financeEngine_1.INVESTMENT_TYPE_META[cat].label));
+                    }))),
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Descri\u00E7\u00E3o do Lan\u00E7amento *"),
+                    react_1.default.createElement("input", { type: "text", required: true, value: assetName, onChange: (e) => setAssetName(e.target.value), placeholder: "Ex: CDB Reserva de Caixa, Parcela Cons\u00F3rcio Laser, Aporte Extra", className: inputClass })),
+                react_1.default.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 gap-3" },
                     react_1.default.createElement("div", null,
-                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Tipo"),
-                        react_1.default.createElement("select", { value: assetType, onChange: (e) => setAssetType(e.target.value), className: inputClass }, Object.entries(financeEngine_1.INVESTMENT_TYPE_META).map(([k, v]) => (react_1.default.createElement("option", { key: k, value: k }, v.label))))),
+                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Valor (R$) *"),
+                        react_1.default.createElement("div", { className: "relative" },
+                            react_1.default.createElement("span", { className: "absolute left-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-600" }, "R$"),
+                            react_1.default.createElement("input", { type: "text", inputMode: "numeric", required: true, value: (0, financeEngine_1.formatCurrencyMask)(investedAmount), onChange: (e) => {
+                                    const parsed = (0, financeEngine_1.parseCurrencyMask)(e.target.value);
+                                    setInvestedAmount(parsed);
+                                    if (!customCurrentTouched) {
+                                        setCurrentAmount(parsed);
+                                    }
+                                }, className: `${inputClass} pl-9 text-right font-mono font-bold` }))),
                     react_1.default.createElement("div", null,
-                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Data de Aplica\u00E7\u00E3o"),
+                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Data *"),
                         react_1.default.createElement("input", { type: "date", required: true, value: appliedDate, onChange: (e) => setAppliedDate(e.target.value), className: `${inputClass} font-mono` }))),
-                react_1.default.createElement("div", { className: "grid grid-cols-2 gap-3" },
-                    react_1.default.createElement("div", null,
-                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Valor Aplicado em R$"),
-                        react_1.default.createElement("div", { className: "relative" },
-                            react_1.default.createElement("span", { className: "absolute left-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-600" }, "R$"),
-                            react_1.default.createElement("input", { type: "text", inputMode: "numeric", required: true, value: (0, financeEngine_1.formatCurrencyMask)(investedAmount), onChange: (e) => setInvestedAmount((0, financeEngine_1.parseCurrencyMask)(e.target.value)), className: `${inputClass} pl-9 text-right font-mono font-bold` }))),
-                    react_1.default.createElement("div", null,
-                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Valor Atual em R$"),
-                        react_1.default.createElement("div", { className: "relative" },
-                            react_1.default.createElement("span", { className: "absolute left-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-600" }, "R$"),
-                            react_1.default.createElement("input", { type: "text", inputMode: "numeric", required: true, value: (0, financeEngine_1.formatCurrencyMask)(currentAmount), onChange: (e) => setCurrentAmount((0, financeEngine_1.parseCurrencyMask)(e.target.value)), className: `${inputClass} pl-9 text-right font-mono font-bold` })))),
-                react_1.default.createElement("button", { type: "submit", className: "w-full py-3 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 to-indigo-700 text-white border border-white/40 shadow-md flex items-center justify-center gap-2 cursor-pointer" },
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" },
+                        "Saldo Atualizado (R$)",
+                        ' ',
+                        react_1.default.createElement("span", { className: "font-medium text-slate-500" }, "(opcional)")),
+                    react_1.default.createElement("div", { className: "relative" },
+                        react_1.default.createElement("span", { className: "absolute left-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-600" }, "R$"),
+                        react_1.default.createElement("input", { type: "text", inputMode: "numeric", value: (0, financeEngine_1.formatCurrencyMask)(currentAmount), onChange: (e) => {
+                                setCustomCurrentTouched(true);
+                                setCurrentAmount((0, financeEngine_1.parseCurrencyMask)(e.target.value));
+                            }, className: `${inputClass} pl-9 text-right font-mono font-bold` }))),
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" },
+                        "Observa\u00E7\u00F5es",
+                        ' ',
+                        react_1.default.createElement("span", { className: "font-medium text-slate-500" }, "(opcional)")),
+                    react_1.default.createElement("input", { type: "text", value: description, onChange: (e) => setDescription(e.target.value), placeholder: "Detalhes adicionais, banco, cota ou refer\u00EAncia...", className: inputClass })),
+                react_1.default.createElement("button", { type: "submit", className: "w-full min-h-[44px] py-3 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white border border-white/40 shadow-md flex items-center justify-center gap-2 cursor-pointer" },
                     react_1.default.createElement(lucide_react_1.Check, { className: "w-4 h-4" }),
-                    react_1.default.createElement("span", null, editId ? 'Salvar Investimento' : 'Adicionar Investimento'))),
-            react_1.default.createElement("div", { className: "lg:col-span-7 liquid-glass rounded-[28px] p-6 space-y-3" },
-                react_1.default.createElement("h3", { className: "text-sm font-extrabold text-slate-900 pb-2 border-b border-white/60" }, "Carteira de Investimentos"),
-                investments.length === 0 ? (react_1.default.createElement("div", { className: "p-8 rounded-2xl border border-dashed border-white/70 text-center text-xs font-medium text-slate-600" }, "Nenhum investimento registrado ainda.")) : (investments.map((inv) => {
-                    const yieldBRL = inv.currentAmount - inv.investedAmount;
-                    const yieldPct = inv.investedAmount > 0
-                        ? (yieldBRL / inv.investedAmount) * 100
-                        : 0;
+                    react_1.default.createElement("span", null, editId ? 'Salvar Alterações' : 'Registrar Investimento'))),
+            react_1.default.createElement("div", { className: "lg:col-span-7 liquid-glass rounded-[28px] p-6 space-y-4" },
+                react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-white/60" },
+                    react_1.default.createElement("h3", { className: "text-sm font-extrabold text-slate-900" },
+                        "Lan\u00E7amentos de Investimentos (",
+                        filteredInvestments.length,
+                        ")"),
+                    react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-1.5" }, ['todos', ...INVESTMENT_CATEGORIES].map((cat) => (react_1.default.createElement("button", { key: cat, type: "button", onClick: () => setCategoryFilter(cat), className: `btn-compact px-3 py-1.5 rounded-full text-[11px] font-bold transition cursor-pointer ${categoryFilter === cat
+                            ? 'bg-indigo-600 text-white shadow-sm'
+                            : 'liquid-glass-pill text-slate-700'}` }, cat === 'todos' ? 'Todos' : financeEngine_1.INVESTMENT_TYPE_META[cat].label))))),
+                filteredInvestments.length === 0 ? (react_1.default.createElement("div", { className: "p-8 rounded-2xl border border-dashed border-white/70 text-center text-xs font-medium text-slate-600" }, "Nenhum lan\u00E7amento de investimento nesta categoria.")) : (react_1.default.createElement("div", { className: "space-y-3" }, filteredInvestments.map((inv) => {
+                    const catMeta = financeEngine_1.INVESTMENT_TYPE_META[inv.assetType];
+                    const diffBRL = inv.currentAmount - inv.investedAmount;
                     return (react_1.default.createElement("div", { key: inv.id, className: "p-4 rounded-2xl liquid-glass-subtle flex flex-wrap items-center justify-between gap-3" },
-                        react_1.default.createElement("div", { className: "space-y-1" },
+                        react_1.default.createElement("div", { className: "space-y-1 min-w-0" },
                             react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
                                 react_1.default.createElement("span", { className: "text-sm font-extrabold text-slate-900" }, inv.assetName),
-                                react_1.default.createElement("span", { className: "px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/15 text-indigo-800 border border-indigo-300/60" }, financeEngine_1.INVESTMENT_TYPE_META[inv.assetType]?.label)),
+                                react_1.default.createElement("span", { className: `px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${catMeta?.badgeClass}` }, catMeta?.label)),
                             react_1.default.createElement("p", { className: "text-xs font-medium text-slate-700" },
-                                "Aplicado em ",
-                                (0, financeEngine_1.formatDateBR)(inv.appliedDate),
-                                " \u2022 Base",
-                                ' ',
-                                react_1.default.createElement("span", { className: "font-mono font-bold" }, (0, financeEngine_1.formatBRL)(inv.investedAmount)))),
-                        react_1.default.createElement("div", { className: "flex items-center gap-3" },
-                            react_1.default.createElement("div", { className: "text-right font-mono" },
-                                react_1.default.createElement("span", { className: "text-sm font-black text-slate-900 block" }, (0, financeEngine_1.formatBRL)(inv.currentAmount)),
-                                react_1.default.createElement("span", { className: `text-[11px] font-extrabold ${yieldBRL >= 0 ? 'text-emerald-700' : 'text-rose-700'}` },
-                                    yieldBRL >= 0 ? '+' : '',
-                                    (0, financeEngine_1.formatBRL)(yieldBRL),
+                                "Data: ",
+                                react_1.default.createElement("span", { className: "font-mono" }, (0, financeEngine_1.formatDateBR)(inv.appliedDate)),
+                                inv.description && react_1.default.createElement(react_1.default.Fragment, null,
                                     " \u2022 ",
-                                    yieldPct >= 0 ? '+' : '',
-                                    yieldPct.toFixed(2),
-                                    "%")),
+                                    inv.description))),
+                        react_1.default.createElement("div", { className: "flex items-center gap-2.5 shrink-0" },
+                            react_1.default.createElement("div", { className: "text-right font-mono" },
+                                react_1.default.createElement("span", { className: "text-sm font-black text-slate-900 block" }, (0, financeEngine_1.formatBRL)(inv.investedAmount)),
+                                Math.abs(diffBRL) > 0.01 && (react_1.default.createElement("span", { className: `text-[10px] font-extrabold ${diffBRL >= 0 ? 'text-emerald-700' : 'text-rose-700'}` },
+                                    "Atual: ",
+                                    (0, financeEngine_1.formatBRL)(inv.currentAmount)))),
                             react_1.default.createElement("button", { type: "button", onClick: () => {
                                     setEditId(inv.id);
                                     setAssetName(inv.assetName);
+                                    setDescription(inv.description || '');
                                     setAssetType(inv.assetType);
                                     setAppliedDate(inv.appliedDate);
                                     setInvestedAmount(inv.investedAmount);
                                     setCurrentAmount(inv.currentAmount);
-                                }, className: "p-2 rounded-full bg-white/60 hover:bg-indigo-500/20 text-slate-600 hover:text-indigo-700 border border-white/75 cursor-pointer", title: "Editar investimento" },
+                                    setCustomCurrentTouched(Math.abs(inv.currentAmount - inv.investedAmount) > 0.01);
+                                }, className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-indigo-500/20 text-slate-600 hover:text-indigo-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Editar investimento", "aria-label": "Editar investimento" },
                                 react_1.default.createElement(lucide_react_1.Edit3, { className: "w-3.5 h-3.5" })),
                             react_1.default.createElement("button", { type: "button", onClick: () => {
                                     if (editId === inv.id)
                                         resetForm();
                                     onDeleteInvestment(inv.id);
-                                }, className: "p-2 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 cursor-pointer", title: "Remover investimento" },
+                                }, className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir investimento", "aria-label": "Excluir investimento" },
                                 react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" })))));
-                }))))));
+                })))))));
 };
 exports.InvestmentsSubsection = InvestmentsSubsection;
+
+  },
+  { dir: "./components" }
+);
+
+__moduleFactories["./components/MonthlyReportSubsection"] = Object.assign(
+  function(module, exports, require) {
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.MonthlyReportSubsection = void 0;
+const react_1 = __importStar(require("react"));
+const lucide_react_1 = require("lucide-react");
+const financeEngine_1 = require("../utils/financeEngine");
+const MONTH_NAMES = [
+    'Janeiro',
+    'Fevereiro',
+    'Março',
+    'Abril',
+    'Maio',
+    'Junho',
+    'Julho',
+    'Agosto',
+    'Setembro',
+    'Outubro',
+    'Novembro',
+    'Dezembro',
+];
+function getMonthKey(year, monthIndex0) {
+    return `${year}-${String(monthIndex0 + 1).padStart(2, '0')}`;
+}
+const MonthlyReportSubsection = ({ orders, despesas, serviceProviders, payrollEmployees, investments, }) => {
+    const todayIso = (0, financeEngine_1.getTodayGoiasISO)();
+    const initialYear = Number(todayIso.slice(0, 4)) || new Date().getFullYear();
+    const initialMonth = Math.max(0, Math.min(11, (Number(todayIso.slice(5, 7)) || 1) - 1));
+    const [selectedYear, setSelectedYear] = (0, react_1.useState)(initialYear);
+    const [selectedMonth, setSelectedMonth] = (0, react_1.useState)(initialMonth);
+    const selectedMonthKey = getMonthKey(selectedYear, selectedMonth);
+    const selectedMonthEnd = `${selectedMonthKey}-31`;
+    const availableYears = (0, react_1.useMemo)(() => {
+        const years = new Set([initialYear - 1, initialYear, initialYear + 1]);
+        orders.forEach((o) => {
+            const y = Number((o.paidAt || o.createdAt || '').slice(0, 4));
+            if (y > 2000)
+                years.add(y);
+        });
+        despesas.forEach((d) => {
+            const y = Number((d.data_competencia || '').slice(0, 4));
+            if (y > 2000)
+                years.add(y);
+        });
+        return Array.from(years).sort((a, b) => b - a);
+    }, [orders, despesas, initialYear]);
+    const computeMonthTotals = (monthKey) => {
+        const monthEnd = `${monthKey}-31`;
+        // Entradas efetivamente pagas no mês
+        const paidOrders = orders.filter((o) => {
+            if (o.paymentStatus !== 'pago')
+                return false;
+            const refDate = (o.paidAt || o.createdAt || '').slice(0, 7);
+            return refDate === monthKey;
+        });
+        const unpaidOrdersInMonth = orders.filter((o) => {
+            if (o.paymentStatus === 'pago')
+                return false;
+            const refDate = (o.createdAt || '').slice(0, 7);
+            return refDate === monthKey;
+        });
+        const totalEntradas = (0, financeEngine_1.roundCurrencyBRL)(paidOrders.reduce((sum, o) => sum + (Number(o.amount) || 0), 0));
+        const totalNaoPagoMes = (0, financeEngine_1.roundCurrencyBRL)(unpaidOrdersInMonth.reduce((sum, o) => sum + (Number(o.amount) || 0), 0));
+        // Saídas: Despesas ativas (não canceladas) do mês
+        const monthExpenses = despesas.filter((d) => !d.deleted_at &&
+            d.status !== 'cancelado' &&
+            (d.data_competencia || '').slice(0, 7) === monthKey);
+        const totalDespesas = (0, financeEngine_1.roundCurrencyBRL)(monthExpenses.reduce((sum, d) => sum + (Number(d.valor) || 0), 0));
+        // Saídas: Prestadores de Serviço com vencimento no mês
+        const monthProviders = serviceProviders.filter((p) => (p.dueDate || '').slice(0, 7) === monthKey);
+        const totalPrestadores = (0, financeEngine_1.roundCurrencyBRL)(monthProviders.reduce((sum, p) => sum + (Number(p.amount) || 0), 0));
+        // Saídas: Folha de funcionários admitidos até o mês selecionado
+        const activePayroll = payrollEmployees.filter((emp) => !emp.admissionDate || emp.admissionDate.slice(0, 10) <= monthEnd);
+        const totalFolha = (0, financeEngine_1.roundCurrencyBRL)(activePayroll.reduce((sum, emp) => sum + (Number(emp.salary) || 0), 0));
+        // Investimentos lançados no mês (informativo + detalhamento)
+        const monthInvestments = investments.filter((inv) => (inv.appliedDate || '').slice(0, 7) === monthKey);
+        const totalInvestimentos = (0, financeEngine_1.roundCurrencyBRL)(monthInvestments.reduce((sum, inv) => sum + (Number(inv.investedAmount) || 0), 0));
+        const totalSaidas = (0, financeEngine_1.roundCurrencyBRL)(totalDespesas + totalPrestadores + totalFolha);
+        const saldoLiquido = Math.round((totalEntradas - totalSaidas) * 100) / 100;
+        return {
+            paidOrders,
+            unpaidOrdersInMonth,
+            totalEntradas,
+            totalNaoPagoMes,
+            monthExpenses,
+            totalDespesas,
+            monthProviders,
+            totalPrestadores,
+            activePayroll,
+            totalFolha,
+            monthInvestments,
+            totalInvestimentos,
+            totalSaidas,
+            saldoLiquido,
+        };
+    };
+    const report = (0, react_1.useMemo)(() => computeMonthTotals(selectedMonthKey), [
+        selectedMonthKey,
+        selectedMonthEnd,
+        orders,
+        despesas,
+        serviceProviders,
+        payrollEmployees,
+        investments,
+    ]);
+    // Últimos 6 meses comparativos
+    const last6Months = (0, react_1.useMemo)(() => {
+        const list = [];
+        for (let offset = 5; offset >= 0; offset -= 1) {
+            const dt = new Date(selectedYear, selectedMonth - offset, 1);
+            const key = getMonthKey(dt.getFullYear(), dt.getMonth());
+            const calc = computeMonthTotals(key);
+            list.push({
+                key,
+                label: `${MONTH_NAMES[dt.getMonth()].slice(0, 3)}/${String(dt.getFullYear()).slice(-2)}`,
+                entradas: calc.totalEntradas,
+                saidas: calc.totalSaidas,
+                saldo: calc.saldoLiquido,
+            });
+        }
+        return list;
+    }, [
+        selectedYear,
+        selectedMonth,
+        orders,
+        despesas,
+        serviceProviders,
+        payrollEmployees,
+        investments,
+    ]);
+    const maxBarValue = (0, react_1.useMemo)(() => {
+        const m = last6Months.reduce((acc, row) => Math.max(acc, row.entradas, row.saidas), 0);
+        return m > 0 ? m : 1;
+    }, [last6Months]);
+    const expensesByCategory = (0, react_1.useMemo)(() => {
+        const map = new Map();
+        for (const exp of report.monthExpenses) {
+            const meta = financeEngine_1.EXPENSE_CATEGORY_MAP[exp.categoria];
+            const key = exp.categoria;
+            const cur = map.get(key) || {
+                label: meta?.label || key,
+                colorHex: meta?.colorHex || '#6366f1',
+                total: 0,
+                count: 0,
+            };
+            cur.total = (0, financeEngine_1.roundCurrencyBRL)(cur.total + (Number(exp.valor) || 0));
+            cur.count += 1;
+            map.set(key, cur);
+        }
+        return Array.from(map.values()).sort((a, b) => b.total - a.total);
+    }, [report.monthExpenses]);
+    const handleShiftMonth = (delta) => {
+        const dt = new Date(selectedYear, selectedMonth + delta, 1);
+        setSelectedYear(dt.getFullYear());
+        setSelectedMonth(dt.getMonth());
+    };
+    const handleExportCsv = () => {
+        const esc = (raw) => `"${String(raw ?? '').replace(/"/g, '""')}"`;
+        const lines = [
+            `Fechamento Mensal de Caixa;${MONTH_NAMES[selectedMonth]}/${selectedYear}`,
+            '',
+            'RESUMO CONSOLIDADO;VALOR (R$)',
+            `Total de Entradas (OS Pagas);${esc((0, financeEngine_1.formatDecimalBR)(report.totalEntradas))}`,
+            `Despesas Operacionais;${esc((0, financeEngine_1.formatDecimalBR)(report.totalDespesas))}`,
+            `Prestadores de Serviço;${esc((0, financeEngine_1.formatDecimalBR)(report.totalPrestadores))}`,
+            `Folha de Funcionários;${esc((0, financeEngine_1.formatDecimalBR)(report.totalFolha))}`,
+            `Total de Saídas;${esc((0, financeEngine_1.formatDecimalBR)(report.totalSaidas))}`,
+            `Saldo Líquido;${esc((0, financeEngine_1.formatDecimalBR)(report.saldoLiquido))}`,
+            `Aportes em Investimentos (Informativo);${esc((0, financeEngine_1.formatDecimalBR)(report.totalInvestimentos))}`,
+            `OS em Aberto no Mês (Não Pago);${esc((0, financeEngine_1.formatDecimalBR)(report.totalNaoPagoMes))}`,
+            '',
+            'ENTRADAS REALIZADAS (OS PAGAS)',
+            'OS;Cliente;Ferramenta;Forma Pagamento;Data Pagamento;Valor (R$)',
+            ...report.paidOrders.map((o) => [
+                esc(o.id),
+                esc(o.companyName),
+                esc(o.toolDescription),
+                esc(financeEngine_1.PAYMENT_MODALITY_META[o.paymentModality]?.label || o.paymentModality),
+                esc((0, financeEngine_1.formatDateBR)(o.paidAt || o.createdAt)),
+                esc((0, financeEngine_1.formatDecimalBR)(o.amount)),
+            ].join(';')),
+            '',
+            'SAÍDAS — DESPESAS DO MÊS',
+            'Data;Categoria;Descrição;Fornecedor;Status;Valor (R$)',
+            ...report.monthExpenses.map((d) => [
+                esc((0, financeEngine_1.formatDateBR)(d.data_competencia)),
+                esc(financeEngine_1.EXPENSE_CATEGORY_MAP[d.categoria]?.label || d.categoria),
+                esc(d.descricao || ''),
+                esc(d.fornecedor || ''),
+                esc(d.status),
+                esc((0, financeEngine_1.formatDecimalBR)(d.valor)),
+            ].join(';')),
+        ];
+        const csv = '\uFEFF' + lines.join('\r\n');
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `relatorio_mensal_${selectedMonthKey}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    };
+    const marginPct = report.totalEntradas > 0
+        ? (report.saldoLiquido / report.totalEntradas) * 100
+        : 0;
+    return (react_1.default.createElement("div", { className: "space-y-5 min-w-0" },
+        react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-5 sm:p-6 flex flex-col lg:flex-row lg:items-center justify-between gap-4" },
+            react_1.default.createElement("div", null,
+                react_1.default.createElement("div", { className: "flex items-center gap-2 text-indigo-700 mb-1" },
+                    react_1.default.createElement(lucide_react_1.Calendar, { className: "w-4 h-4 shrink-0" }),
+                    react_1.default.createElement("span", { className: "text-[11px] font-extrabold uppercase tracking-wider" }, "Fechamento de Caixa Mensal")),
+                react_1.default.createElement("h3", { className: "text-lg font-extrabold text-slate-900" },
+                    "Relat\u00F3rio Mensal \u2014 ",
+                    MONTH_NAMES[selectedMonth],
+                    " de ",
+                    selectedYear),
+                react_1.default.createElement("p", { className: "text-xs font-medium text-slate-600 mt-0.5" }, "Consolida\u00E7\u00E3o autom\u00E1tica de entradas liquidadas, sa\u00EDdas operacionais e saldo l\u00EDquido do per\u00EDodo.")),
+            react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
+                react_1.default.createElement("button", { type: "button", onClick: () => handleShiftMonth(-1), "aria-label": "M\u00EAs anterior", className: "btn-compact w-10 h-10 rounded-full liquid-glass-pill text-slate-700 hover:text-indigo-700 flex items-center justify-center cursor-pointer" },
+                    react_1.default.createElement(lucide_react_1.ChevronLeft, { className: "w-4 h-4" })),
+                react_1.default.createElement("select", { value: selectedMonth, onChange: (e) => setSelectedMonth(Number(e.target.value)), "aria-label": "Selecionar m\u00EAs", className: "liquid-glass-pill min-h-[40px] px-3.5 py-2 rounded-full text-xs font-bold text-slate-900 outline-none" }, MONTH_NAMES.map((name, idx) => (react_1.default.createElement("option", { key: name, value: idx }, name)))),
+                react_1.default.createElement("select", { value: selectedYear, onChange: (e) => setSelectedYear(Number(e.target.value)), "aria-label": "Selecionar ano", className: "liquid-glass-pill min-h-[40px] px-3.5 py-2 rounded-full text-xs font-bold font-mono text-slate-900 outline-none" }, availableYears.map((yr) => (react_1.default.createElement("option", { key: yr, value: yr }, yr)))),
+                react_1.default.createElement("button", { type: "button", onClick: () => handleShiftMonth(1), "aria-label": "Pr\u00F3ximo m\u00EAs", className: "btn-compact w-10 h-10 rounded-full liquid-glass-pill text-slate-700 hover:text-indigo-700 flex items-center justify-center cursor-pointer" },
+                    react_1.default.createElement(lucide_react_1.ChevronRight, { className: "w-4 h-4" })),
+                react_1.default.createElement("button", { type: "button", onClick: handleExportCsv, className: "min-h-[40px] px-4 py-2 rounded-full bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white text-xs font-bold shadow-md inline-flex items-center gap-1.5 cursor-pointer" },
+                    react_1.default.createElement(lucide_react_1.Download, { className: "w-4 h-4" }),
+                    react_1.default.createElement("span", null, "Exportar CSV")))),
+        react_1.default.createElement("div", { className: "grid grid-cols-1 md:grid-cols-3 gap-5" },
+            react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-6" },
+                react_1.default.createElement("div", { className: "flex items-center justify-between" },
+                    react_1.default.createElement("span", { className: "text-xs font-bold uppercase tracking-wider text-slate-600" }, "Total de Entradas"),
+                    react_1.default.createElement("span", { className: "w-9 h-9 rounded-2xl bg-emerald-500/15 text-emerald-700 border border-emerald-300/60 flex items-center justify-center" },
+                        react_1.default.createElement(lucide_react_1.ArrowUpCircle, { className: "w-5 h-5" }))),
+                react_1.default.createElement("p", { className: "text-3xl font-black text-emerald-700 font-mono mt-3" }, (0, financeEngine_1.formatBRL)(report.totalEntradas)),
+                react_1.default.createElement("p", { className: "text-xs font-semibold text-slate-600 mt-1" },
+                    report.paidOrders.length,
+                    " OS paga(s) no m\u00EAs",
+                    report.totalNaoPagoMes > 0 && (react_1.default.createElement(react_1.default.Fragment, null,
+                        ' ',
+                        "\u2022",
+                        ' ',
+                        react_1.default.createElement("span", { className: "text-amber-800" },
+                            (0, financeEngine_1.formatBRL)(report.totalNaoPagoMes),
+                            " em aberto"))))),
+            react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-6" },
+                react_1.default.createElement("div", { className: "flex items-center justify-between" },
+                    react_1.default.createElement("span", { className: "text-xs font-bold uppercase tracking-wider text-slate-600" }, "Total de Sa\u00EDdas"),
+                    react_1.default.createElement("span", { className: "w-9 h-9 rounded-2xl bg-rose-500/15 text-rose-700 border border-rose-300/60 flex items-center justify-center" },
+                        react_1.default.createElement(lucide_react_1.ArrowDownCircle, { className: "w-5 h-5" }))),
+                react_1.default.createElement("p", { className: "text-3xl font-black text-rose-700 font-mono mt-3" }, (0, financeEngine_1.formatBRL)(report.totalSaidas)),
+                react_1.default.createElement("p", { className: "text-xs font-semibold text-slate-600 mt-1" },
+                    "Despesas ",
+                    (0, financeEngine_1.formatBRL)(report.totalDespesas),
+                    " \u2022 Equipe/Prest.",
+                    ' ',
+                    (0, financeEngine_1.formatBRL)(report.totalFolha + report.totalPrestadores))),
+            react_1.default.createElement("div", { className: `rounded-[28px] p-6 border ${report.saldoLiquido >= 0
+                    ? 'liquid-glass ring-1 ring-emerald-400/60'
+                    : 'bg-rose-500/15 border-rose-400/70'}` },
+                react_1.default.createElement("div", { className: "flex items-center justify-between" },
+                    react_1.default.createElement("span", { className: "text-xs font-bold uppercase tracking-wider text-slate-700" }, "Saldo L\u00EDquido"),
+                    react_1.default.createElement("span", { className: `w-9 h-9 rounded-2xl border flex items-center justify-center ${report.saldoLiquido >= 0
+                            ? 'bg-indigo-500/15 text-indigo-700 border-indigo-300/60'
+                            : 'bg-rose-500/20 text-rose-700 border-rose-400/60'}` },
+                        react_1.default.createElement(lucide_react_1.Scale, { className: "w-5 h-5" }))),
+                react_1.default.createElement("p", { className: `text-3xl font-black font-mono mt-3 ${report.saldoLiquido >= 0 ? 'text-slate-900' : 'text-rose-800'}` },
+                    report.saldoLiquido >= 0 ? '+' : '',
+                    (0, financeEngine_1.formatBRL)(report.saldoLiquido)),
+                react_1.default.createElement("p", { className: "text-xs font-semibold text-slate-600 mt-1" },
+                    report.totalEntradas > 0
+                        ? `Margem líquida: ${marginPct.toFixed(1)}%`
+                        : 'Sem entradas realizadas no período',
+                    report.totalInvestimentos > 0 && (react_1.default.createElement(react_1.default.Fragment, null,
+                        ' ',
+                        "\u2022 Investido:",
+                        ' ',
+                        react_1.default.createElement("strong", { className: "text-indigo-700" }, (0, financeEngine_1.formatBRL)(report.totalInvestimentos))))))),
+        react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-5 sm:p-6 space-y-4" },
+            react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-2" },
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("h4", { className: "text-sm font-extrabold text-slate-900" }, "Comparativo dos \u00DAltimos 6 Meses (Entradas \u00D7 Sa\u00EDdas)"),
+                    react_1.default.createElement("p", { className: "text-xs font-medium text-slate-600" }, "Clique em um m\u00EAs para visualizar o detalhamento completo do fechamento.")),
+                react_1.default.createElement("div", { className: "flex items-center gap-3 text-[11px] font-bold" },
+                    react_1.default.createElement("span", { className: "inline-flex items-center gap-1.5 text-emerald-800" },
+                        react_1.default.createElement("span", { className: "w-2.5 h-2.5 rounded-sm bg-emerald-500" }),
+                        "Entradas"),
+                    react_1.default.createElement("span", { className: "inline-flex items-center gap-1.5 text-rose-800" },
+                        react_1.default.createElement("span", { className: "w-2.5 h-2.5 rounded-sm bg-rose-500" }),
+                        "Sa\u00EDdas"))),
+            react_1.default.createElement("div", { className: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3" }, last6Months.map((item) => {
+                const isSelected = item.key === selectedMonthKey;
+                const inPct = Math.round((item.entradas / maxBarValue) * 100);
+                const outPct = Math.round((item.saidas / maxBarValue) * 100);
+                const [yrStr, moStr] = item.key.split('-');
+                return (react_1.default.createElement("button", { key: item.key, type: "button", onClick: () => {
+                        setSelectedYear(Number(yrStr));
+                        setSelectedMonth(Number(moStr) - 1);
+                    }, className: `p-3.5 rounded-2xl text-left transition cursor-pointer flex flex-col justify-between gap-2.5 ${isSelected
+                        ? 'bg-white/75 ring-2 ring-indigo-500/80 shadow-md'
+                        : 'liquid-glass-subtle hover:bg-white/55'}` },
+                    react_1.default.createElement("div", { className: "flex items-center justify-between" },
+                        react_1.default.createElement("span", { className: "text-xs font-extrabold text-slate-900" }, item.label),
+                        react_1.default.createElement("span", { className: `text-[10px] font-mono font-bold ${item.saldo >= 0 ? 'text-emerald-700' : 'text-rose-700'}` },
+                            item.saldo >= 0 ? '+' : '',
+                            (0, financeEngine_1.formatBRL)(item.saldo))),
+                    react_1.default.createElement("div", { className: "h-20 flex items-end gap-2 pt-2" },
+                        react_1.default.createElement("div", { className: "flex-1 h-full bg-white/50 rounded-xl flex items-end p-0.5" },
+                            react_1.default.createElement("div", { style: { height: `${Math.max(item.entradas > 0 ? 10 : 0, inPct)}%` }, className: "w-full rounded-lg bg-emerald-500 transition-all duration-300", title: `Entradas: ${(0, financeEngine_1.formatBRL)(item.entradas)}` })),
+                        react_1.default.createElement("div", { className: "flex-1 h-full bg-white/50 rounded-xl flex items-end p-0.5" },
+                            react_1.default.createElement("div", { style: { height: `${Math.max(item.saidas > 0 ? 10 : 0, outPct)}%` }, className: "w-full rounded-lg bg-rose-500 transition-all duration-300", title: `Saídas: ${(0, financeEngine_1.formatBRL)(item.saidas)}` }))),
+                    react_1.default.createElement("div", { className: "text-[10px] font-mono text-slate-600 space-y-0.5" },
+                        react_1.default.createElement("div", { className: "truncate text-emerald-700 font-bold" },
+                            "E: ",
+                            (0, financeEngine_1.formatBRL)(item.entradas)),
+                        react_1.default.createElement("div", { className: "truncate text-rose-700 font-bold" },
+                            "S: ",
+                            (0, financeEngine_1.formatBRL)(item.saidas)))));
+            }))),
+        react_1.default.createElement("div", { className: "grid grid-cols-1 lg:grid-cols-2 gap-5 items-start" },
+            react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-5 sm:p-6 space-y-3.5" },
+                react_1.default.createElement("div", { className: "flex items-center justify-between pb-3 border-b border-white/60" },
+                    react_1.default.createElement("h4", { className: "text-sm font-extrabold text-slate-900" },
+                        "Entradas Realizadas (",
+                        report.paidOrders.length,
+                        ")"),
+                    react_1.default.createElement("span", { className: "font-mono text-sm font-black text-emerald-700" }, (0, financeEngine_1.formatBRL)(report.totalEntradas))),
+                report.paidOrders.length === 0 ? (react_1.default.createElement("div", { className: "p-6 rounded-2xl border border-dashed border-white/75 text-center text-xs font-medium text-slate-600" }, "Nenhuma entrada marcada como paga neste m\u00EAs.")) : (react_1.default.createElement("div", { className: "space-y-2 max-h-[380px] overflow-y-auto pr-1" }, report.paidOrders.map((order) => (react_1.default.createElement("div", { key: order.id, className: "p-3 rounded-2xl liquid-glass-subtle flex items-center justify-between gap-3 text-xs" },
+                    react_1.default.createElement("div", { className: "min-w-0" },
+                        react_1.default.createElement("div", { className: "flex items-center gap-1.5" },
+                            react_1.default.createElement("span", { className: "font-mono font-bold text-indigo-700" }, order.id),
+                            react_1.default.createElement("span", { className: "font-bold text-slate-900 truncate" }, order.companyName)),
+                        react_1.default.createElement("p", { className: "text-[11px] text-slate-600 truncate mt-0.5" },
+                            order.toolDescription,
+                            " \u2022 Pago em",
+                            ' ',
+                            (0, financeEngine_1.formatDateBR)(order.paidAt || order.createdAt))),
+                    react_1.default.createElement("span", { className: "font-mono font-extrabold text-emerald-700 shrink-0" },
+                        "+",
+                        (0, financeEngine_1.formatBRL)(order.amount)))))))),
+            react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-5 sm:p-6 space-y-3.5" },
+                react_1.default.createElement("div", { className: "flex items-center justify-between pb-3 border-b border-white/60" },
+                    react_1.default.createElement("h4", { className: "text-sm font-extrabold text-slate-900" }, "Composi\u00E7\u00E3o das Sa\u00EDdas"),
+                    react_1.default.createElement("span", { className: "font-mono text-sm font-black text-rose-700" }, (0, financeEngine_1.formatBRL)(report.totalSaidas))),
+                react_1.default.createElement("div", { className: "space-y-2.5 text-xs" },
+                    expensesByCategory.map((cat) => (react_1.default.createElement("div", { key: cat.label, className: "p-3 rounded-2xl liquid-glass-subtle flex items-center justify-between gap-2" },
+                        react_1.default.createElement("div", { className: "flex items-center gap-2 min-w-0" },
+                            react_1.default.createElement("span", { className: "w-2.5 h-2.5 rounded-full shrink-0", style: { backgroundColor: cat.colorHex } }),
+                            react_1.default.createElement("span", { className: "font-bold text-slate-900 truncate" }, cat.label),
+                            react_1.default.createElement("span", { className: "text-[10px] font-semibold text-slate-500" },
+                                "(",
+                                cat.count,
+                                " lan\u00E7.)")),
+                        react_1.default.createElement("span", { className: "font-mono font-extrabold text-rose-700 shrink-0" },
+                            "-",
+                            (0, financeEngine_1.formatBRL)(cat.total))))),
+                    report.totalPrestadores > 0 && (react_1.default.createElement("div", { className: "p-3 rounded-2xl liquid-glass-subtle flex items-center justify-between gap-2" },
+                        react_1.default.createElement("span", { className: "font-bold text-slate-900" },
+                            "Prestadores de Servi\u00E7o (",
+                            report.monthProviders.length,
+                            ")"),
+                        react_1.default.createElement("span", { className: "font-mono font-extrabold text-rose-700 shrink-0" },
+                            "-",
+                            (0, financeEngine_1.formatBRL)(report.totalPrestadores)))),
+                    report.totalFolha > 0 && (react_1.default.createElement("div", { className: "p-3 rounded-2xl liquid-glass-subtle flex items-center justify-between gap-2" },
+                        react_1.default.createElement("span", { className: "font-bold text-slate-900" },
+                            "Folha de Funcion\u00E1rios (",
+                            report.activePayroll.length,
+                            ")"),
+                        react_1.default.createElement("span", { className: "font-mono font-extrabold text-rose-700 shrink-0" },
+                            "-",
+                            (0, financeEngine_1.formatBRL)(report.totalFolha)))),
+                    report.totalSaidas === 0 && (react_1.default.createElement("div", { className: "p-6 rounded-2xl border border-dashed border-white/75 text-center text-xs font-medium text-slate-600" }, "Nenhuma sa\u00EDda registrada para este m\u00EAs.")),
+                    report.monthInvestments.length > 0 && (react_1.default.createElement("div", { className: "pt-2 mt-2 border-t border-white/60 space-y-2" },
+                        react_1.default.createElement("div", { className: "flex items-center justify-between text-[11px] font-extrabold uppercase tracking-wider text-indigo-700" },
+                            react_1.default.createElement("span", { className: "inline-flex items-center gap-1.5" },
+                                react_1.default.createElement(lucide_react_1.TrendingUp, { className: "w-3.5 h-3.5" }),
+                                "Aportes em Investimentos no M\u00EAs"),
+                            react_1.default.createElement("span", { className: "font-mono" }, (0, financeEngine_1.formatBRL)(report.totalInvestimentos))),
+                        report.monthInvestments.map((inv) => (react_1.default.createElement("div", { key: inv.id, className: "p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-300/50 flex items-center justify-between gap-2 text-[11px]" },
+                            react_1.default.createElement("span", { className: "font-bold text-slate-800 truncate" },
+                                inv.assetName,
+                                " (",
+                                financeEngine_1.INVESTMENT_TYPE_META[inv.assetType]?.label,
+                                ")"),
+                            react_1.default.createElement("span", { className: "font-mono font-extrabold text-indigo-800 shrink-0" }, (0, financeEngine_1.formatBRL)(inv.investedAmount))))))))))));
+};
+exports.MonthlyReportSubsection = MonthlyReportSubsection;
 
   },
   { dir: "./components" }
@@ -5861,6 +6690,7 @@ const financeEngine_1 = require("../utils/financeEngine");
 const CollaboratorsSubsection_1 = require("./CollaboratorsSubsection");
 const ExpensesSection_1 = require("./ExpensesSection");
 const InvestmentsSubsection_1 = require("./InvestmentsSubsection");
+const MonthlyReportSubsection_1 = require("./MonthlyReportSubsection");
 const FinanceAnalyticsSection = ({ orders, financials, despesas, canEditDespesas, serviceProviders, payrollEmployees, investments, onTogglePaid, onEmitBilling30d, onDeleteOrder, onCreateExpense, onUpdateExpense, onDeleteExpense, onAddProvider, onUpdateProvider, onDeleteProvider, onAddPayrollEmployee, onUpdatePayrollEmployee, onDeletePayrollEmployee, onAddInvestment, onUpdateInvestment, onDeleteInvestment, }) => {
     const [activeTab, setActiveTab] = (0, react_1.useState)('visao');
     const [statusFilter, setStatusFilter] = (0, react_1.useState)('todos');
@@ -5915,6 +6745,7 @@ const FinanceAnalyticsSection = ({ orders, financials, despesas, canEditDespesas
                 { id: 'despesas', label: 'Despesas', icon: lucide_react_1.Receipt },
                 { id: 'colaboradores', label: 'Colaboradores', icon: lucide_react_1.Users },
                 { id: 'investimentos', label: 'Investimentos', icon: lucide_react_1.TrendingUp },
+                { id: 'relatorio_mensal', label: 'Relatório Mensal', icon: lucide_react_1.BarChart3 },
             ].map((tab) => {
                 const Icon = tab.icon;
                 const active = activeTab === tab.id;
@@ -5924,6 +6755,7 @@ const FinanceAnalyticsSection = ({ orders, financials, despesas, canEditDespesas
                     react_1.default.createElement(Icon, { className: "w-3.5 h-3.5" }),
                     react_1.default.createElement("span", null, tab.label)));
             }))),
+        activeTab === 'relatorio_mensal' && (react_1.default.createElement(MonthlyReportSubsection_1.MonthlyReportSubsection, { orders: orders, despesas: despesas, serviceProviders: serviceProviders, payrollEmployees: payrollEmployees, investments: investments })),
         activeTab === 'despesas' && (react_1.default.createElement(ExpensesSection_1.ExpensesSection, { expenses: despesas, canEdit: canEditDespesas, onCreateExpense: onCreateExpense, onUpdateExpense: onUpdateExpense, onDeleteExpense: onDeleteExpense })),
         activeTab === 'colaboradores' && (react_1.default.createElement(CollaboratorsSubsection_1.CollaboratorsSubsection, { providers: serviceProviders, payrollEmployees: payrollEmployees, onAddProvider: onAddProvider, onUpdateProvider: onUpdateProvider, onDeleteProvider: onDeleteProvider, onAddPayrollEmployee: onAddPayrollEmployee, onUpdatePayrollEmployee: onUpdatePayrollEmployee, onDeletePayrollEmployee: onDeletePayrollEmployee })),
         activeTab === 'investimentos' && (react_1.default.createElement(InvestmentsSubsection_1.InvestmentsSubsection, { investments: investments, onAddInvestment: onAddInvestment, onUpdateInvestment: onUpdateInvestment, onDeleteInvestment: onDeleteInvestment })),
@@ -6061,16 +6893,17 @@ const FinanceAnalyticsSection = ({ orders, financials, despesas, canEditDespesas
                             react_1.default.createElement("a", { href: (0, financeEngine_1.buildWhatsAppBillingUrl)(order), target: "_blank", rel: "noopener noreferrer", className: "liquid-glass-pill min-h-[44px] px-3.5 py-2 rounded-full text-xs font-bold text-slate-800 inline-flex items-center gap-1.5" },
                                 react_1.default.createElement(lucide_react_1.MessageCircle, { className: "w-4 h-4 text-emerald-600" }),
                                 react_1.default.createElement("span", null, "WhatsApp")),
-                            order.paymentStatus === 'sem_nota' ? (react_1.default.createElement("button", { type: "button", onClick: () => onEmitBilling30d(order.id), className: "min-h-[44px] px-3.5 py-2 rounded-full text-xs font-bold bg-amber-500 text-white inline-flex items-center gap-1 cursor-pointer" },
+                            order.paymentStatus === 'sem_nota' && (react_1.default.createElement("button", { type: "button", onClick: () => onEmitBilling30d(order.id), className: "min-h-[44px] px-3.5 py-2 rounded-full text-xs font-bold bg-amber-500 text-white inline-flex items-center gap-1 cursor-pointer" },
                                 react_1.default.createElement(lucide_react_1.Sparkles, { className: "w-4 h-4" }),
-                                react_1.default.createElement("span", null, "Gerar 30d"))) : order.paymentStatus !== 'nao_pago' ? (react_1.default.createElement("button", { type: "button", onClick: () => onTogglePaid(order.id), className: `min-h-[44px] px-3.5 py-2 rounded-full text-xs font-bold inline-flex items-center gap-1 cursor-pointer ${order.paymentStatus === 'pago'
+                                react_1.default.createElement("span", null, "Gerar 30d"))),
+                            react_1.default.createElement("button", { type: "button", onClick: () => onTogglePaid(order.id), className: `min-h-[44px] px-3.5 py-2 rounded-full text-xs font-bold inline-flex items-center gap-1 cursor-pointer ${order.paymentStatus === 'pago'
                                     ? 'liquid-glass-pill text-slate-700'
-                                    : 'bg-emerald-600 text-white'}` }, order.paymentStatus === 'pago' ? (react_1.default.createElement(react_1.default.Fragment, null,
+                                    : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm'}` }, order.paymentStatus === 'pago' ? (react_1.default.createElement(react_1.default.Fragment, null,
                                 react_1.default.createElement(lucide_react_1.RotateCcw, { className: "w-4 h-4" }),
                                 react_1.default.createElement("span", null, "Reabrir"))) : (react_1.default.createElement(react_1.default.Fragment, null,
                                 react_1.default.createElement(lucide_react_1.Check, { className: "w-4 h-4" }),
-                                react_1.default.createElement("span", null, "Marcar Pago"))))) : null,
-                            react_1.default.createElement("button", { type: "button", onClick: () => onDeleteOrder(order.id), "aria-label": "Apagar esta OS", className: "min-h-[44px] min-w-[44px] rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 inline-flex items-center justify-center cursor-pointer" },
+                                react_1.default.createElement("span", null, "Marcar como pago")))),
+                            react_1.default.createElement("button", { type: "button", onClick: () => onDeleteOrder(order.id), "aria-label": "Excluir esta OS", className: "btn-compact w-9 h-9 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0" },
                                 react_1.default.createElement(lucide_react_1.Trash2, { className: "w-4 h-4" })))));
                 }))),
                 react_1.default.createElement("div", { className: "hidden md:block overflow-x-auto" },
@@ -6125,16 +6958,17 @@ const FinanceAnalyticsSection = ({ orders, financials, despesas, canEditDespesas
                                         react_1.default.createElement("a", { href: (0, financeEngine_1.buildWhatsAppBillingUrl)(order), target: "_blank", rel: "noopener noreferrer", className: "liquid-glass-pill px-3 py-1.5 rounded-full text-xs font-bold text-slate-800 hover:text-emerald-700 flex items-center gap-1.5 transition" },
                                             react_1.default.createElement(lucide_react_1.MessageCircle, { className: "w-3.5 h-3.5 text-emerald-600" }),
                                             react_1.default.createElement("span", null, "Cobrar no WhatsApp")),
-                                        order.paymentStatus === 'sem_nota' ? (react_1.default.createElement("button", { type: "button", onClick: () => onEmitBilling30d(order.id), className: "px-3 py-1.5 rounded-full text-xs font-bold bg-amber-500 hover:bg-amber-400 text-white shadow-sm flex items-center gap-1 transition cursor-pointer" },
+                                        order.paymentStatus === 'sem_nota' && (react_1.default.createElement("button", { type: "button", onClick: () => onEmitBilling30d(order.id), className: "px-3 py-1.5 rounded-full text-xs font-bold bg-amber-500 hover:bg-amber-400 text-white shadow-sm flex items-center gap-1 transition cursor-pointer" },
                                             react_1.default.createElement(lucide_react_1.Sparkles, { className: "w-3.5 h-3.5" }),
-                                            react_1.default.createElement("span", null, "Gerar 30d"))) : order.paymentStatus !== 'nao_pago' ? (react_1.default.createElement("button", { type: "button", onClick: () => onTogglePaid(order.id), className: `px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1 transition cursor-pointer ${order.paymentStatus === 'pago'
+                                            react_1.default.createElement("span", null, "Gerar 30d"))),
+                                        react_1.default.createElement("button", { type: "button", onClick: () => onTogglePaid(order.id), className: `px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1 transition cursor-pointer ${order.paymentStatus === 'pago'
                                                 ? 'liquid-glass-pill text-slate-700'
                                                 : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm'}` }, order.paymentStatus === 'pago' ? (react_1.default.createElement(react_1.default.Fragment, null,
                                             react_1.default.createElement(lucide_react_1.RotateCcw, { className: "w-3 h-3" }),
                                             react_1.default.createElement("span", null, "Reabrir"))) : (react_1.default.createElement(react_1.default.Fragment, null,
                                             react_1.default.createElement(lucide_react_1.Check, { className: "w-3.5 h-3.5 stroke-[2.5]" }),
-                                            react_1.default.createElement("span", null, "Marcar Pago"))))) : null,
-                                        react_1.default.createElement("button", { type: "button", onClick: () => onDeleteOrder(order.id), className: "p-1.5 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 transition cursor-pointer", title: "Apagar esta OS" },
+                                            react_1.default.createElement("span", null, "Marcar como pago")))),
+                                        react_1.default.createElement("button", { type: "button", onClick: () => onDeleteOrder(order.id), className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir esta OS", "aria-label": "Excluir esta OS" },
                                             react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" }))))));
                         }))))))))));
 };
@@ -6291,7 +7125,7 @@ const DeliveriesLogisticsSection = ({ orders, deliveries, prefillOrder, onAddDel
                                 react_1.default.createElement("span", { className: "text-xs font-extrabold text-emerald-700 flex items-center sm:justify-end gap-1 mt-0.5" },
                                     react_1.default.createElement(lucide_react_1.Clock, { className: "w-3 h-3" }),
                                     del.dispatchedAt)),
-                            react_1.default.createElement("button", { type: "button", onClick: () => onDeleteDelivery(del.id), className: "p-2.5 rounded-2xl bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 transition cursor-pointer", title: "Apagar registro de entrega" },
+                            react_1.default.createElement("button", { type: "button", onClick: () => onDeleteDelivery(del.id), className: "btn-compact w-9 h-9 rounded-2xl bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir registro de entrega", "aria-label": "Excluir registro de entrega" },
                                 react_1.default.createElement(lucide_react_1.Trash2, { className: "w-4 h-4" })))));
                 })))))));
 };
@@ -6439,8 +7273,8 @@ const WarrantyReturnsSection = ({ orders, returns, onAddReturn, onUpdateReturnSt
                                     react_1.default.createElement("span", { className: "text-[10px] font-medium text-slate-600" },
                                         "Atualizado: ",
                                         ret.updatedAt)),
-                                react_1.default.createElement("button", { type: "button", onClick: () => onDeleteReturn(ret.id), className: "p-2 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 transition cursor-pointer", title: "Apagar registro de retorno" },
-                                    react_1.default.createElement(lucide_react_1.Trash2, { className: "w-4 h-4" })))),
+                                react_1.default.createElement("button", { type: "button", onClick: () => onDeleteReturn(ret.id), className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir registro de retorno", "aria-label": "Excluir registro de retorno" },
+                                    react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" })))),
                         react_1.default.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-3 text-xs" },
                             react_1.default.createElement("div", { className: "p-3 rounded-2xl bg-white/55 border border-white/75" },
                                 react_1.default.createElement("span", { className: "text-[10px] font-extrabold uppercase text-indigo-700 block mb-0.5" }, "Motivo do Retorno:"),
@@ -6519,15 +7353,23 @@ const CATEGORY_META = {
         label: '2. Lâminas',
         shortLabel: 'Lâminas',
         description: 'Lâminas de corte, vinco, picote e serrilha',
-        defaultUnit: 'm',
-        unitPresets: ['m', 'rolo', 'un', 'cx'],
+        defaultUnit: 'cx',
+        unitPresets: ['cx', 'm', 'rolo', 'un'],
         badgeClass: 'bg-indigo-500/15 text-indigo-800 border-indigo-300/60',
     },
 };
-const StockSection = ({ items, globalSearchQuery, onAddItem, onUpdateItem, onDeleteItem, }) => {
+const StockSection = ({ userRole, items, movements, globalSearchQuery, onAddItem, onUpdateItem, onDeleteItem, onQuickConsume, onQuickReplenish, onRevertMovement, }) => {
+    const isOperator = userRole === 'operador';
     const [categoryFilter, setCategoryFilter] = (0, react_1.useState)('todos');
     const [onlyLowStock, setOnlyLowStock] = (0, react_1.useState)(false);
     const [localSearch, setLocalSearch] = (0, react_1.useState)('');
+    // Quick Consumption State
+    const [selectedConsumeId, setSelectedConsumeId] = (0, react_1.useState)('');
+    const [customConsumeQty, setCustomConsumeQty] = (0, react_1.useState)('1');
+    const [consumeNote, setConsumeNote] = (0, react_1.useState)('');
+    const [busyItemId, setBusyItemId] = (0, react_1.useState)(null);
+    const [busyMoveId, setBusyMoveId] = (0, react_1.useState)(null);
+    const [showFullHistory, setShowFullHistory] = (0, react_1.useState)(false);
     // Form state (Create / Edit)
     const [editingId, setEditingId] = (0, react_1.useState)(null);
     const [category, setCategory] = (0, react_1.useState)('madeiras');
@@ -6588,19 +7430,65 @@ const StockSection = ({ items, globalSearchQuery, onAddItem, onUpdateItem, onDel
         }
         resetForm(category);
     };
-    const handleQuickAdjustQuantity = (item, delta) => {
-        const nextQty = Math.max(0, Number((item.quantity + delta).toFixed(2)));
-        onUpdateItem(item.id, {
-            category: item.category,
-            name: item.name,
-            quantity: nextQty,
-            unit: item.unit,
-            minStock: item.minStock,
-            supplier: item.supplier,
-            unitCost: item.unitCost,
-            entryDate: item.entryDate,
-        });
+    const handleTriggerConsume = async (item, qty, note) => {
+        if (busyItemId || qty <= 0 || item.quantity <= 0)
+            return;
+        setBusyItemId(item.id);
+        try {
+            await onQuickConsume(item, qty, note);
+        }
+        finally {
+            setBusyItemId(null);
+        }
     };
+    const handleTriggerReplenish = async (item, qty) => {
+        if (busyItemId || qty <= 0)
+            return;
+        setBusyItemId(item.id);
+        try {
+            await onQuickReplenish(item, qty, 'Reposição rápida');
+        }
+        finally {
+            setBusyItemId(null);
+        }
+    };
+    const handleCustomConsumeSubmit = async (e) => {
+        e.preventDefault();
+        const targetItem = items.find((i) => i.id === selectedConsumeId) || items[0];
+        if (!targetItem)
+            return;
+        const qty = Math.max(0.01, parseFloat(customConsumeQty.replace(',', '.')) || 1);
+        await handleTriggerConsume(targetItem, qty, consumeNote.trim() || undefined);
+        setCustomConsumeQty('1');
+        setConsumeNote('');
+    };
+    const handleUndo = async (mov) => {
+        if (busyMoveId || mov.revertedAt || mov.type === 'estorno')
+            return;
+        setBusyMoveId(mov.id);
+        try {
+            await onRevertMovement(mov);
+        }
+        finally {
+            setBusyMoveId(null);
+        }
+    };
+    // Highlighted quick-action items: prioritize primary Madeira & primary Lâmina first, then up to 6 total
+    const quickActionItems = (0, react_1.useMemo)(() => {
+        const madeiras = items.filter((i) => i.category === 'madeiras');
+        const laminas = items.filter((i) => i.category === 'laminas');
+        const ordered = [];
+        if (madeiras[0])
+            ordered.push(madeiras[0]);
+        if (laminas[0])
+            ordered.push(laminas[0]);
+        for (const item of [...madeiras.slice(1), ...laminas.slice(1)]) {
+            if (ordered.length >= 6)
+                break;
+            ordered.push(item);
+        }
+        return ordered;
+    }, [items]);
     const combinedQuery = (localSearch || globalSearchQuery).trim().toLowerCase();
     const filteredItems = (0, react_1.useMemo)(() => {
         return items.filter((item) => {
@@ -6628,6 +7516,7 @@ const StockSection = ({ items, globalSearchQuery, onAddItem, onUpdateItem, onDel
     const lowMadeirasCount = items.filter((i) => i.category === 'madeiras' && i.quantity <= i.minStock).length;
     const lowLaminasCount = items.filter((i) => i.category === 'laminas' && i.quantity <= i.minStock).length;
     const totalStockValue = items.reduce((sum, item) => sum + (item.quantity || 0) * (item.unitCost || 0), 0);
+    const visibleMovements = showFullHistory ? movements : movements.slice(0, 6);
     const inputClass = 'liquid-glass-pill w-full px-3.5 py-2.5 text-xs rounded-2xl text-slate-900 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500/50 outline-none transition';
     const renderCategoryBlock = (catKey, catItems) => {
         const meta = CATEGORY_META[catKey];
@@ -6654,6 +7543,7 @@ const StockSection = ({ items, globalSearchQuery, onAddItem, onUpdateItem, onDel
                 const isLow = item.quantity <= item.minStock;
                 const isBeingEdited = editingId === item.id;
                 const totalValue = item.quantity * item.unitCost;
+                const isBusy = busyItemId === item.id;
                 return (react_1.default.createElement("div", { key: item.id, className: `p-4 rounded-2xl liquid-glass-subtle transition flex flex-col gap-3 ${isLow
                         ? 'ring-2 ring-amber-400/80 bg-amber-500/10'
                         : ''} ${isBeingEdited ? 'ring-2 ring-indigo-500/80' : ''}` },
@@ -6690,8 +7580,8 @@ const StockSection = ({ items, globalSearchQuery, onAddItem, onUpdateItem, onDel
                                         item.unit)))),
                         react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2 shrink-0" },
                             react_1.default.createElement("div", { className: "flex items-center gap-1.5 bg-white/60 border border-white/80 rounded-2xl px-2.5 py-1.5" },
-                                react_1.default.createElement("button", { type: "button", onClick: () => handleQuickAdjustQuantity(item, -1), className: "w-6 h-6 rounded-full bg-white/80 hover:bg-indigo-600 text-slate-700 hover:text-white flex items-center justify-center transition cursor-pointer", title: "Baixar 1 unidade" },
-                                    react_1.default.createElement(lucide_react_1.Minus, { className: "w-3 h-3" })),
+                                react_1.default.createElement("button", { type: "button", disabled: isBusy || item.quantity <= 0, onClick: () => handleTriggerConsume(item, 1, 'Baixa rápida na lista'), className: "btn-compact w-7 h-7 rounded-full bg-white/85 hover:bg-rose-600 disabled:opacity-40 text-slate-700 hover:text-white flex items-center justify-center transition cursor-pointer", title: "Dar baixa de 1 unidade", "aria-label": "Dar baixa de 1 unidade" },
+                                    react_1.default.createElement(lucide_react_1.Minus, { className: "w-3.5 h-3.5" })),
                                 react_1.default.createElement("div", { className: "px-2 text-center min-w-[68px]" },
                                     react_1.default.createElement("span", { className: `text-sm font-black font-mono block leading-none ${isLow ? 'text-amber-800' : 'text-slate-900'}` },
                                         item.quantity,
@@ -6700,18 +7590,18 @@ const StockSection = ({ items, globalSearchQuery, onAddItem, onUpdateItem, onDel
                                     react_1.default.createElement("span", { className: "text-[10px] font-semibold text-slate-600" },
                                         "M\u00EDn: ",
                                         item.minStock)),
-                                react_1.default.createElement("button", { type: "button", onClick: () => handleQuickAdjustQuantity(item, 1), className: "w-6 h-6 rounded-full bg-white/80 hover:bg-indigo-600 text-slate-700 hover:text-white flex items-center justify-center transition cursor-pointer", title: "Adicionar 1 unidade" },
-                                    react_1.default.createElement(lucide_react_1.Plus, { className: "w-3 h-3" }))),
+                                react_1.default.createElement("button", { type: "button", disabled: isBusy, onClick: () => handleTriggerReplenish(item, 1), className: "btn-compact w-7 h-7 rounded-full bg-white/85 hover:bg-emerald-600 disabled:opacity-40 text-slate-700 hover:text-white flex items-center justify-center transition cursor-pointer", title: "Adicionar 1 unidade", "aria-label": "Adicionar 1 unidade" },
+                                    react_1.default.createElement(lucide_react_1.Plus, { className: "w-3.5 h-3.5" }))),
                             react_1.default.createElement("div", { className: "text-right font-mono px-2" },
                                 react_1.default.createElement("span", { className: "text-[10px] font-bold uppercase text-slate-600 block" }, "Subtotal"),
                                 react_1.default.createElement("span", { className: "text-xs font-extrabold text-slate-900" }, (0, financeEngine_1.formatBRL)(totalValue))),
-                            react_1.default.createElement("button", { type: "button", onClick: () => handleStartEdit(item), className: "p-2 rounded-full bg-white/60 hover:bg-indigo-500/20 text-slate-600 hover:text-indigo-700 border border-white/75 transition cursor-pointer", title: "Editar item" },
+                            react_1.default.createElement("button", { type: "button", onClick: () => handleStartEdit(item), className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-indigo-500/20 text-slate-600 hover:text-indigo-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Editar item", "aria-label": "Editar item" },
                                 react_1.default.createElement(lucide_react_1.Edit3, { className: "w-3.5 h-3.5" })),
                             react_1.default.createElement("button", { type: "button", onClick: () => {
                                     if (editingId === item.id)
                                         resetForm(category);
                                     onDeleteItem(item.id);
-                                }, className: "p-2 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 transition cursor-pointer", title: "Excluir item" },
+                                }, className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir item", "aria-label": "Excluir item" },
                                 react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" }))))));
             })))));
     };
@@ -6719,8 +7609,10 @@ const StockSection = ({ items, globalSearchQuery, onAddItem, onUpdateItem, onDel
         react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-3" },
             react_1.default.createElement("div", null,
                 react_1.default.createElement("h2", { className: "text-lg font-extrabold text-slate-900 tracking-tight frosted-text-depth" }, "Estoque de Madeiras e L\u00E2minas"),
-                react_1.default.createElement("p", { className: "text-xs font-medium text-slate-700" }, "Controle de insumos da oficina com alertas de estoque m\u00EDnimo, fornecedores e custo unit\u00E1rio.")),
-            react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
+                react_1.default.createElement("p", { className: "text-xs font-medium text-slate-700" }, isOperator
+                    ? 'Registre rapidamente o consumo de insumos na produção e acompanhe o histórico recente.'
+                    : 'Controle de insumos com baixa rápida de consumo, histórico auditável e alertas de estoque mínimo.')),
+            !isOperator && (react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
                 react_1.default.createElement("span", { className: "liquid-glass-pill px-3.5 py-2 rounded-full text-xs font-bold text-slate-800" },
                     "Itens: ",
                     react_1.default.createElement("strong", { className: "text-indigo-700" }, items.length)),
@@ -6728,99 +7620,207 @@ const StockSection = ({ items, globalSearchQuery, onAddItem, onUpdateItem, onDel
                     "Valor em Estoque:",
                     ' ',
                     react_1.default.createElement("strong", { className: "text-emerald-700 font-mono" }, (0, financeEngine_1.formatBRL)(totalStockValue))),
-                (lowMadeirasCount + lowLaminasCount > 0) && (react_1.default.createElement("span", { className: "px-3.5 py-2 rounded-full text-xs font-extrabold bg-amber-500/20 text-amber-900 border border-amber-400/70 inline-flex items-center gap-1.5" },
+                lowMadeirasCount + lowLaminasCount > 0 && (react_1.default.createElement("span", { className: "px-3.5 py-2 rounded-full text-xs font-extrabold bg-amber-500/20 text-amber-900 border border-amber-400/70 inline-flex items-center gap-1.5" },
                     react_1.default.createElement(lucide_react_1.AlertTriangle, { className: "w-3.5 h-3.5 text-amber-700" }),
                     lowMadeirasCount + lowLaminasCount,
-                    " em alerta")))),
-        react_1.default.createElement("div", { className: "liquid-glass rounded-[24px] p-4 flex flex-wrap items-center justify-between gap-3" },
-            react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
-                react_1.default.createElement("button", { type: "button", onClick: () => setCategoryFilter('todos'), className: `px-4 py-2 rounded-full text-xs font-bold transition cursor-pointer ${categoryFilter === 'todos'
-                        ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md border border-white/40'
-                        : 'liquid-glass-pill text-slate-700'}` },
-                    "Todas (",
-                    items.length,
-                    ")"),
-                react_1.default.createElement("button", { type: "button", onClick: () => setCategoryFilter('madeiras'), className: `px-4 py-2 rounded-full text-xs font-bold transition cursor-pointer ${categoryFilter === 'madeiras'
-                        ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md border border-white/40'
-                        : 'liquid-glass-pill text-slate-700'}` },
-                    "1. Madeiras (",
-                    totalMadeirasCount,
-                    ")"),
-                react_1.default.createElement("button", { type: "button", onClick: () => setCategoryFilter('laminas'), className: `px-4 py-2 rounded-full text-xs font-bold transition cursor-pointer ${categoryFilter === 'laminas'
-                        ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md border border-white/40'
-                        : 'liquid-glass-pill text-slate-700'}` },
-                    "2. L\u00E2minas (",
-                    totalLaminasCount,
-                    ")"),
-                react_1.default.createElement("button", { type: "button", onClick: () => setOnlyLowStock((prev) => !prev), className: `px-3.5 py-2 rounded-full text-xs font-bold border transition cursor-pointer inline-flex items-center gap-1.5 ${onlyLowStock
-                        ? 'bg-amber-500 text-white border-white/40 shadow-md'
-                        : 'liquid-glass-pill text-amber-800'}` },
-                    react_1.default.createElement(lucide_react_1.AlertTriangle, { className: "w-3.5 h-3.5" }),
-                    react_1.default.createElement("span", null,
-                        "Em falta (",
-                        lowMadeirasCount + lowLaminasCount,
-                        ")"))),
-            react_1.default.createElement("div", { className: "relative w-full sm:w-72" },
-                react_1.default.createElement(lucide_react_1.Search, { className: "w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" }),
-                react_1.default.createElement("input", { type: "text", value: localSearch, onChange: (e) => setLocalSearch(e.target.value), placeholder: "Filtrar insumo, fornecedor...", className: "liquid-glass-pill w-full pl-10 pr-8 py-2 rounded-full text-xs text-slate-900 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500/50 outline-none" }),
-                localSearch && (react_1.default.createElement("button", { type: "button", onClick: () => setLocalSearch(''), className: "absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-500 hover:text-slate-900 cursor-pointer" }, "\u2715")))),
-        react_1.default.createElement("div", { className: "grid grid-cols-1 lg:grid-cols-12 gap-5 items-start" },
-            react_1.default.createElement("form", { onSubmit: handleSubmit, className: "lg:col-span-5 liquid-glass rounded-[28px] p-6 space-y-4" },
-                react_1.default.createElement("div", { className: "flex items-center justify-between gap-2 pb-3 border-b border-white/60" },
-                    react_1.default.createElement("div", { className: "flex items-center gap-2.5" },
-                        react_1.default.createElement("div", { className: "w-9 h-9 rounded-2xl bg-indigo-500/15 border border-indigo-300/60 flex items-center justify-center text-indigo-700" },
-                            react_1.default.createElement(lucide_react_1.Package, { className: "w-4 h-4" })),
+                    " em alerta"))))),
+        react_1.default.createElement("section", { className: "liquid-glass rounded-[28px] p-5 sm:p-6 space-y-4 ring-1 ring-indigo-400/40" },
+            react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-white/60" },
+                react_1.default.createElement("div", { className: "flex items-center gap-2.5" },
+                    react_1.default.createElement("div", { className: "w-10 h-10 rounded-2xl bg-gradient-to-br from-rose-500/20 to-amber-500/20 border border-rose-300/60 flex items-center justify-center text-rose-700 shrink-0" },
+                        react_1.default.createElement(lucide_react_1.PackageMinus, { className: "w-5 h-5" })),
+                    react_1.default.createElement("div", null,
+                        react_1.default.createElement("h3", { className: "text-base font-extrabold text-slate-900" }, "Registro R\u00E1pido de Consumo"),
+                        react_1.default.createElement("p", { className: "text-xs font-medium text-slate-600" }, "D\u00EA baixa direta no saldo com 1 clique. Toda movimenta\u00E7\u00E3o registra data, hora e colaborador com op\u00E7\u00E3o de desfazer."))),
+                react_1.default.createElement("span", { className: "px-3 py-1 rounded-full text-[11px] font-bold bg-white/65 border border-white/80 text-slate-700 inline-flex items-center gap-1.5" },
+                    react_1.default.createElement(lucide_react_1.History, { className: "w-3.5 h-3.5 text-indigo-600" }),
+                    movements.length,
+                    " movimenta\u00E7\u00E3o(\u00F5es)")),
+            items.length === 0 ? (react_1.default.createElement("div", { className: "p-6 rounded-2xl border border-dashed border-white/75 bg-white/25 text-center text-xs font-medium text-slate-600" }, isOperator
+                ? 'Nenhum insumo cadastrado ainda. Solicite ao administrador o cadastro dos materiais no estoque.'
+                : 'Cadastre seus primeiros insumos abaixo (ex.: Chapa de Madeira, Caixa de Lâmina) para liberar os botões de baixa rápida.')) : (react_1.default.createElement("div", { className: "space-y-4" },
+                react_1.default.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3" }, quickActionItems.map((item) => {
+                    const isLow = item.quantity <= item.minStock;
+                    const isBusy = busyItemId === item.id;
+                    const unitLabel = item.category === 'madeiras' && item.unit.toLowerCase() === 'chapa'
+                        ? 'Chapa'
+                        : item.category === 'laminas' &&
+                            (item.unit.toLowerCase() === 'cx' ||
+                                item.unit.toLowerCase() === 'caixa')
+                            ? 'Caixa'
+                            : item.unit;
+                    return (react_1.default.createElement("button", { key: item.id, type: "button", disabled: isBusy || item.quantity <= 0, onClick: () => handleTriggerConsume(item, 1, 'Consumo rápido de produção'), className: `group p-3.5 rounded-2xl border text-left transition flex items-center justify-between gap-3 cursor-pointer active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed ${isLow
+                            ? 'bg-amber-500/15 border-amber-400/70 hover:bg-amber-500/25'
+                            : 'bg-white/55 border-white/80 hover:bg-white/80 hover:border-rose-300/80'}` },
+                        react_1.default.createElement("div", { className: "min-w-0" },
+                            react_1.default.createElement("div", { className: "flex items-center gap-1.5" },
+                                react_1.default.createElement("span", { className: "px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-600 text-white shadow-xs shrink-0" },
+                                    "- 1 ",
+                                    unitLabel),
+                                react_1.default.createElement("span", { className: `text-[10px] font-bold px-2 py-0.5 rounded-full border ${CATEGORY_META[item.category].badgeClass}` }, CATEGORY_META[item.category].shortLabel)),
+                            react_1.default.createElement("p", { className: "text-xs font-extrabold text-slate-900 mt-1.5 truncate" }, item.name),
+                            react_1.default.createElement("p", { className: "text-[11px] font-semibold text-slate-600 mt-0.5 font-mono" },
+                                "Saldo atual:",
+                                ' ',
+                                react_1.default.createElement("strong", { className: isLow ? 'text-amber-900' : 'text-slate-900' },
+                                    item.quantity,
+                                    " ",
+                                    item.unit))),
+                        react_1.default.createElement("span", { className: "btn-compact w-9 h-9 rounded-xl bg-rose-500/15 group-hover:bg-rose-600 text-rose-700 group-hover:text-white border border-rose-300/60 flex items-center justify-center transition shrink-0" },
+                            react_1.default.createElement(lucide_react_1.Minus, { className: "w-4 h-4 stroke-[2.5]" }))));
+                })),
+                react_1.default.createElement("form", { onSubmit: handleCustomConsumeSubmit, className: "p-3.5 rounded-2xl bg-white/45 border border-white/75 grid grid-cols-1 md:grid-cols-12 gap-2.5 items-end" },
+                    react_1.default.createElement("div", { className: "md:col-span-5" },
+                        react_1.default.createElement("label", { className: "text-[11px] font-bold text-slate-700 block mb-1" }, "Outro Insumo Cadastrado"),
+                        react_1.default.createElement("select", { value: selectedConsumeId || items[0]?.id || '', onChange: (e) => setSelectedConsumeId(e.target.value), className: inputClass }, items.map((it) => (react_1.default.createElement("option", { key: it.id, value: it.id },
+                            it.name,
+                            " (Saldo: ",
+                            it.quantity,
+                            " ",
+                            it.unit,
+                            ")"))))),
+                    react_1.default.createElement("div", { className: "md:col-span-2" },
+                        react_1.default.createElement("label", { className: "text-[11px] font-bold text-slate-700 block mb-1" }, "Quantidade"),
+                        react_1.default.createElement("input", { type: "number", step: "0.01", min: "0.01", required: true, value: customConsumeQty, onChange: (e) => setCustomConsumeQty(e.target.value), className: `${inputClass} font-mono font-bold` })),
+                    react_1.default.createElement("div", { className: "md:col-span-3" },
+                        react_1.default.createElement("label", { className: "text-[11px] font-bold text-slate-700 block mb-1" }, "Observa\u00E7\u00E3o (opcional)"),
+                        react_1.default.createElement("input", { type: "text", value: consumeNote, onChange: (e) => setConsumeNote(e.target.value), placeholder: "Ex.: OS-042 / Bancada", className: inputClass })),
+                    react_1.default.createElement("div", { className: "md:col-span-2" },
+                        react_1.default.createElement("button", { type: "submit", disabled: Boolean(busyItemId), className: "w-full min-h-[44px] px-4 py-2.5 rounded-2xl text-xs font-bold bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 disabled:opacity-50 text-white shadow-md inline-flex items-center justify-center gap-1.5 transition cursor-pointer" },
+                            react_1.default.createElement(lucide_react_1.PackageMinus, { className: "w-4 h-4 shrink-0" }),
+                            react_1.default.createElement("span", null, "Dar Baixa")))),
+                react_1.default.createElement("div", { className: "space-y-2.5 pt-1" },
+                    react_1.default.createElement("div", { className: "flex items-center justify-between gap-2" },
+                        react_1.default.createElement("h4", { className: "text-xs font-extrabold uppercase tracking-wider text-slate-700 flex items-center gap-1.5" },
+                            react_1.default.createElement(lucide_react_1.History, { className: "w-3.5 h-3.5 text-indigo-600" }),
+                            react_1.default.createElement("span", null, "Hist\u00F3rico Recente de Consumo e Movimenta\u00E7\u00F5es")),
+                        movements.length > 6 && (react_1.default.createElement("button", { type: "button", onClick: () => setShowFullHistory((p) => !p), className: "btn-compact text-xs font-bold text-indigo-700 hover:underline cursor-pointer" }, showFullHistory
+                            ? 'Mostrar menos'
+                            : `Ver todas (${movements.length})`))),
+                    visibleMovements.length === 0 ? (react_1.default.createElement("div", { className: "p-4 rounded-2xl border border-dashed border-white/75 text-center text-xs font-medium text-slate-600" }, "Nenhuma movimenta\u00E7\u00E3o registrada ainda. Clique em um bot\u00E3o acima para dar baixa.")) : (react_1.default.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-2.5" }, visibleMovements.map((mov) => {
+                        const isConsumo = mov.type === 'consumo';
+                        const isEstorno = mov.type === 'estorno';
+                        const isReverted = Boolean(mov.revertedAt);
+                        return (react_1.default.createElement("div", { key: mov.id, className: `p-3 rounded-2xl bg-white/55 border border-white/80 flex items-center justify-between gap-2.5 text-xs ${isReverted ? 'opacity-65' : ''}` },
+                            react_1.default.createElement("div", { className: "min-w-0 space-y-0.5" },
+                                react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-1.5" },
+                                    react_1.default.createElement("span", { className: `px-2 py-0.5 rounded-full text-[10px] font-extrabold border ${isEstorno
+                                            ? 'bg-slate-500/15 text-slate-700 border-slate-300/70'
+                                            : isConsumo
+                                                ? 'bg-rose-500/15 text-rose-800 border-rose-300/60'
+                                                : 'bg-emerald-500/15 text-emerald-800 border-emerald-300/60'}` }, isEstorno
+                                        ? 'Estorno'
+                                        : isConsumo
+                                            ? `- ${mov.quantity} ${mov.unit}`
+                                            : `+ ${mov.quantity} ${mov.unit}`),
+                                    react_1.default.createElement("span", { className: "font-extrabold text-slate-900 truncate" }, mov.itemName),
+                                    isReverted && (react_1.default.createElement("span", { className: "px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-slate-200 text-slate-600" }, "Desfeito"))),
+                                react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[10px] font-medium text-slate-600" },
+                                    react_1.default.createElement("span", { className: "inline-flex items-center gap-1" },
+                                        react_1.default.createElement(lucide_react_1.User, { className: "w-3 h-3 text-indigo-600" }),
+                                        mov.actorName),
+                                    react_1.default.createElement("span", { className: "inline-flex items-center gap-1 font-mono" },
+                                        react_1.default.createElement(lucide_react_1.Clock, { className: "w-3 h-3 text-slate-500" }),
+                                        (0, financeEngine_1.formatDateTimeGoiasBR)(mov.createdAt)),
+                                    react_1.default.createElement("span", { className: "font-mono" },
+                                        "Saldo: ",
+                                        mov.previousBalance,
+                                        " \u2192 ",
+                                        react_1.default.createElement("strong", null, mov.newBalance)))),
+                            !isEstorno && !isReverted && (react_1.default.createElement("button", { type: "button", disabled: busyMoveId === mov.id, onClick: () => handleUndo(mov), className: "btn-compact px-2.5 py-1.5 rounded-full text-[11px] font-bold bg-white/80 hover:bg-indigo-600 text-slate-700 hover:text-white border border-white/90 inline-flex items-center justify-center gap-1 transition cursor-pointer shrink-0", title: "Desfazer esta movimenta\u00E7\u00E3o" },
+                                react_1.default.createElement(lucide_react_1.RotateCcw, { className: "w-3 h-3" }),
+                                react_1.default.createElement("span", null, "Desfazer")))));
+                    }))))))),
+        !isOperator && (react_1.default.createElement(react_1.default.Fragment, null,
+            react_1.default.createElement("div", { className: "liquid-glass rounded-[24px] p-4 flex flex-wrap items-center justify-between gap-3" },
+                react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
+                    react_1.default.createElement("button", { type: "button", onClick: () => setCategoryFilter('todos'), className: `px-4 py-2 rounded-full text-xs font-bold transition cursor-pointer ${categoryFilter === 'todos'
+                            ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md border border-white/40'
+                            : 'liquid-glass-pill text-slate-700'}` },
+                        "Todas (",
+                        items.length,
+                        ")"),
+                    react_1.default.createElement("button", { type: "button", onClick: () => setCategoryFilter('madeiras'), className: `px-4 py-2 rounded-full text-xs font-bold transition cursor-pointer ${categoryFilter === 'madeiras'
+                            ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md border border-white/40'
+                            : 'liquid-glass-pill text-slate-700'}` },
+                        "1. Madeiras (",
+                        totalMadeirasCount,
+                        ")"),
+                    react_1.default.createElement("button", { type: "button", onClick: () => setCategoryFilter('laminas'), className: `px-4 py-2 rounded-full text-xs font-bold transition cursor-pointer ${categoryFilter === 'laminas'
+                            ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md border border-white/40'
+                            : 'liquid-glass-pill text-slate-700'}` },
+                        "2. L\u00E2minas (",
+                        totalLaminasCount,
+                        ")"),
+                    react_1.default.createElement("button", { type: "button", onClick: () => setOnlyLowStock((prev) => !prev), className: `px-3.5 py-2 rounded-full text-xs font-bold border transition cursor-pointer inline-flex items-center gap-1.5 ${onlyLowStock
+                            ? 'bg-amber-500 text-white border-white/40 shadow-md'
+                            : 'liquid-glass-pill text-amber-800'}` },
+                        react_1.default.createElement(lucide_react_1.AlertTriangle, { className: "w-3.5 h-3.5" }),
+                        react_1.default.createElement("span", null,
+                            "Em falta (",
+                            lowMadeirasCount + lowLaminasCount,
+                            ")"))),
+                react_1.default.createElement("div", { className: "relative w-full sm:w-72" },
+                    react_1.default.createElement(lucide_react_1.Search, { className: "w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" }),
+                    react_1.default.createElement("input", { type: "text", value: localSearch, onChange: (e) => setLocalSearch(e.target.value), placeholder: "Filtrar insumo, fornecedor...", className: "liquid-glass-pill w-full pl-10 pr-8 py-2 rounded-full text-xs text-slate-900 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500/50 outline-none" }),
+                    localSearch && (react_1.default.createElement("button", { type: "button", onClick: () => setLocalSearch(''), className: "btn-compact absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-500 hover:text-slate-900 cursor-pointer" }, "\u2715")))),
+            react_1.default.createElement("div", { className: "grid grid-cols-1 lg:grid-cols-12 gap-5 items-start" },
+                react_1.default.createElement("form", { onSubmit: handleSubmit, className: "lg:col-span-5 liquid-glass rounded-[28px] p-6 space-y-4" },
+                    react_1.default.createElement("div", { className: "flex items-center justify-between gap-2 pb-3 border-b border-white/60" },
+                        react_1.default.createElement("div", { className: "flex items-center gap-2.5" },
+                            react_1.default.createElement("div", { className: "w-9 h-9 rounded-2xl bg-indigo-500/15 border border-indigo-300/60 flex items-center justify-center text-indigo-700" },
+                                react_1.default.createElement(lucide_react_1.Package, { className: "w-4 h-4" })),
+                            react_1.default.createElement("div", null,
+                                react_1.default.createElement("h3", { className: "text-sm font-extrabold text-slate-900" }, editingId
+                                    ? `Editar Item (${editingId})`
+                                    : 'Cadastrar Item no Estoque'),
+                                react_1.default.createElement("p", { className: "text-[11px] font-medium text-slate-600" }, "Madeiras e L\u00E2minas com controle de m\u00EDnimo"))),
+                        editingId && (react_1.default.createElement("button", { type: "button", onClick: () => resetForm(category), className: "btn-compact w-8 h-8 rounded-full liquid-glass-pill text-slate-600 hover:text-slate-900 flex items-center justify-center cursor-pointer", title: "Cancelar edi\u00E7\u00E3o", "aria-label": "Cancelar edi\u00E7\u00E3o" },
+                            react_1.default.createElement(lucide_react_1.X, { className: "w-4 h-4" })))),
+                    react_1.default.createElement("div", null,
+                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "1. Categoria *"),
+                        react_1.default.createElement("div", { className: "grid grid-cols-2 gap-2" }, ['madeiras', 'laminas'].map((cat) => {
+                            const active = category === cat;
+                            return (react_1.default.createElement("button", { type: "button", key: cat, onClick: () => handleSelectFormCategory(cat), className: `py-2.5 px-3 rounded-2xl text-xs font-bold border transition cursor-pointer ${active
+                                    ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white border-white/40 shadow-md'
+                                    : 'liquid-glass-pill text-slate-700'}` }, CATEGORY_META[cat].label));
+                        }))),
+                    react_1.default.createElement("div", null,
+                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "2. Nome / Tipo do Material *"),
+                        react_1.default.createElement("input", { type: "text", required: true, value: name, onChange: (e) => setName(e.target.value), placeholder: category === 'madeiras'
+                                ? 'Ex: Chapa de Madeira Naval 18mm'
+                                : 'Ex: Caixa de Lâmina Corte 2pt 23.8mm', className: inputClass })),
+                    react_1.default.createElement("div", { className: "grid grid-cols-3 gap-2.5" },
                         react_1.default.createElement("div", null,
-                            react_1.default.createElement("h3", { className: "text-sm font-extrabold text-slate-900" }, editingId
-                                ? `Editar Item (${editingId})`
-                                : 'Cadastrar Item no Estoque'),
-                            react_1.default.createElement("p", { className: "text-[11px] font-medium text-slate-600" }, "Madeiras e L\u00E2minas com controle de m\u00EDnimo"))),
-                    editingId && (react_1.default.createElement("button", { type: "button", onClick: () => resetForm(category), className: "p-2 rounded-full liquid-glass-pill text-slate-600 hover:text-slate-900 cursor-pointer", title: "Cancelar edi\u00E7\u00E3o" },
-                        react_1.default.createElement(lucide_react_1.X, { className: "w-4 h-4" })))),
-                react_1.default.createElement("div", null,
-                    react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "1. Categoria *"),
-                    react_1.default.createElement("div", { className: "grid grid-cols-2 gap-2" }, ['madeiras', 'laminas'].map((cat) => {
-                        const active = category === cat;
-                        return (react_1.default.createElement("button", { type: "button", key: cat, onClick: () => handleSelectFormCategory(cat), className: `py-2.5 px-3 rounded-2xl text-xs font-bold border transition cursor-pointer ${active
-                                ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white border-white/40 shadow-md'
-                                : 'liquid-glass-pill text-slate-700'}` }, CATEGORY_META[cat].label));
-                    }))),
-                react_1.default.createElement("div", null,
-                    react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "2. Nome / Tipo do Material *"),
-                    react_1.default.createElement("input", { type: "text", required: true, value: name, onChange: (e) => setName(e.target.value), placeholder: category === 'madeiras'
-                            ? 'Ex: Compensado Naval 18mm (1,20x2,40m)'
-                            : 'Ex: Lâmina Corte 2pt 23.8mm Bohler', className: inputClass })),
-                react_1.default.createElement("div", { className: "grid grid-cols-3 gap-2.5" },
+                            react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "Quantidade *"),
+                            react_1.default.createElement("input", { type: "number", step: "0.01", min: "0", required: true, value: quantity, onChange: (e) => setQuantity(e.target.value), placeholder: "Ex: 12", className: `${inputClass} font-mono font-bold` })),
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "Unidade *"),
+                            react_1.default.createElement("input", { type: "text", required: true, value: unit, onChange: (e) => setUnit(e.target.value), placeholder: "chapa / cx", className: inputClass })),
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "M\u00EDnimo *"),
+                            react_1.default.createElement("input", { type: "number", step: "0.01", min: "0", required: true, value: minStock, onChange: (e) => setMinStock(e.target.value), placeholder: "Ex: 5", className: `${inputClass} font-mono font-bold` }))),
+                    react_1.default.createElement("div", { className: "flex flex-wrap gap-1.5" }, CATEGORY_META[category].unitPresets.map((preset) => (react_1.default.createElement("button", { type: "button", key: preset, onClick: () => setUnit(preset), className: `btn-compact px-2.5 py-1 rounded-full text-[10px] font-bold transition cursor-pointer ${unit === preset
+                            ? 'bg-indigo-600 text-white'
+                            : 'liquid-glass-pill text-slate-700'}` }, preset)))),
                     react_1.default.createElement("div", null,
-                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "Quantidade *"),
-                        react_1.default.createElement("input", { type: "number", step: "0.01", min: "0", required: true, value: quantity, onChange: (e) => setQuantity(e.target.value), placeholder: "Ex: 12", className: `${inputClass} font-mono font-bold` })),
-                    react_1.default.createElement("div", null,
-                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "Unidade *"),
-                        react_1.default.createElement("input", { type: "text", required: true, value: unit, onChange: (e) => setUnit(e.target.value), placeholder: "chapa / m", className: inputClass })),
-                    react_1.default.createElement("div", null,
-                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "M\u00EDnimo *"),
-                        react_1.default.createElement("input", { type: "number", step: "0.01", min: "0", required: true, value: minStock, onChange: (e) => setMinStock(e.target.value), placeholder: "Ex: 5", className: `${inputClass} font-mono font-bold` }))),
-                react_1.default.createElement("div", { className: "flex flex-wrap gap-1.5" }, CATEGORY_META[category].unitPresets.map((preset) => (react_1.default.createElement("button", { type: "button", key: preset, onClick: () => setUnit(preset), className: `px-2.5 py-1 rounded-full text-[10px] font-bold transition cursor-pointer ${unit === preset
-                        ? 'bg-indigo-600 text-white'
-                        : 'liquid-glass-pill text-slate-700'}` }, preset)))),
-                react_1.default.createElement("div", null,
-                    react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "4. Fornecedor *"),
-                    react_1.default.createElement("input", { type: "text", required: true, value: supplier, onChange: (e) => setSupplier(e.target.value), placeholder: "Ex: Madeireira Brasil / A\u00E7oCut", className: inputClass })),
-                react_1.default.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 gap-3" },
-                    react_1.default.createElement("div", null,
-                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "5. Custo Unit\u00E1rio (R$) *"),
-                        react_1.default.createElement("input", { type: "number", step: "0.01", min: "0", required: true, value: unitCost, onChange: (e) => setUnitCost(e.target.value), placeholder: "Ex: 145,00", className: `${inputClass} font-mono font-bold` })),
-                    react_1.default.createElement("div", null,
-                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "6. Data de Entrada *"),
-                        react_1.default.createElement("input", { type: "date", required: true, value: entryDate, onChange: (e) => setEntryDate(e.target.value), className: `${inputClass} font-mono` }))),
-                react_1.default.createElement("button", { type: "submit", className: "w-full py-3 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 via-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white border border-white/40 shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition cursor-pointer active:scale-95" },
-                    react_1.default.createElement(lucide_react_1.Check, { className: "w-4 h-4 stroke-[2.5]" }),
-                    react_1.default.createElement("span", null, editingId ? `Salvar Alterações (${editingId})` : 'Adicionar ao Estoque'))),
-            react_1.default.createElement("div", { className: "lg:col-span-7 space-y-5" },
-                (categoryFilter === 'todos' || categoryFilter === 'madeiras') &&
-                    renderCategoryBlock('madeiras', madeirasItems),
-                (categoryFilter === 'todos' || categoryFilter === 'laminas') &&
-                    renderCategoryBlock('laminas', laminasItems)))));
+                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "4. Fornecedor *"),
+                        react_1.default.createElement("input", { type: "text", required: true, value: supplier, onChange: (e) => setSupplier(e.target.value), placeholder: "Ex: Madeireira Brasil / A\u00E7oCut", className: inputClass })),
+                    react_1.default.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 gap-3" },
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "5. Custo Unit\u00E1rio (R$) *"),
+                            react_1.default.createElement("input", { type: "number", step: "0.01", min: "0", required: true, value: unitCost, onChange: (e) => setUnitCost(e.target.value), placeholder: "Ex: 145,00", className: `${inputClass} font-mono font-bold` })),
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "6. Data de Entrada *"),
+                            react_1.default.createElement("input", { type: "date", required: true, value: entryDate, onChange: (e) => setEntryDate(e.target.value), className: `${inputClass} font-mono` }))),
+                    react_1.default.createElement("button", { type: "submit", className: "w-full py-3 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 via-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white border border-white/40 shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition cursor-pointer active:scale-95" },
+                        react_1.default.createElement(lucide_react_1.Check, { className: "w-4 h-4 stroke-[2.5]" }),
+                        react_1.default.createElement("span", null, editingId ? `Salvar Alterações (${editingId})` : 'Adicionar ao Estoque'))),
+                react_1.default.createElement("div", { className: "lg:col-span-7 space-y-5" },
+                    (categoryFilter === 'todos' || categoryFilter === 'madeiras') &&
+                        renderCategoryBlock('madeiras', madeirasItems),
+                    (categoryFilter === 'todos' || categoryFilter === 'laminas') &&
+                        renderCategoryBlock('laminas', laminasItems)))))));
 };
 exports.StockSection = StockSection;
 
@@ -6865,44 +7865,43 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.NotesSection = exports.PedidoA5Sheet = exports.DEFAULT_FICTITIOUS_EMITTER = exports.PEDIDO_A5_ROWS = void 0;
+exports.NotesSection = exports.PedidoA5Sheet = exports.DEFAULT_EMITTER_PROFILE = exports.PEDIDO_A5_ROWS = void 0;
 exports.loadPedidoEmitterProfile = loadPedidoEmitterProfile;
 exports.savePedidoEmitterProfile = savePedidoEmitterProfile;
-exports.createFictitiousDemoNote = createFictitiousDemoNote;
 exports.formatPedidoNumber = formatPedidoNumber;
 exports.chunkNoteItems = chunkNoteItems;
 const react_1 = __importStar(require("react"));
 const lucide_react_1 = require("lucide-react");
 const financeEngine_1 = require("../utils/financeEngine");
 exports.PEDIDO_A5_ROWS = 15;
-exports.DEFAULT_FICTITIOUS_EMITTER = {
-    monogram: 'FM',
-    brandName: 'facaria modelo',
-    subtitle: 'facas de corte e vinco',
-    phone: '(00) 3000-0000 / 9.0000-0000',
+exports.DEFAULT_EMITTER_PROFILE = {
+    monogram: 'QF',
+    brandName: 'QUALIFACAS',
+    subtitle: 'FACAS DE CORTE E VINCO',
+    phone: '(62) 9 8143-2096',
     specialtiesLine1: 'FACAS P/ MEIO CORTE, ENVELOPES, TAGS',
     specialtiesLine2: 'E CARTONAGEM EM GERAL',
-    email: 'contato@facariamodelo.example',
-    website: 'www.facariamodelo.example',
-    address: 'Av. Exemplo Industrial, Nº 100 - Setor Modelo - Cidade - UF',
+    email: 'qualifacas@hotmail.com',
+    website: '',
+    address: 'Av. Independência N° 1507 - St. L. Vila Nova - Goiânia - GO',
 };
-const EMITTER_STORAGE_PREFIX = 'facasflow_pedido_a5_emitter_v1_';
+const EMITTER_STORAGE_PREFIX = 'facasflow_pedido_a5_emitter_v2_';
 function loadPedidoEmitterProfile(tenantKey) {
     try {
         if (typeof window === 'undefined' || !window.localStorage) {
-            return exports.DEFAULT_FICTITIOUS_EMITTER;
+            return exports.DEFAULT_EMITTER_PROFILE;
         }
         const raw = window.localStorage.getItem(`${EMITTER_STORAGE_PREFIX}${tenantKey || 'default'}`);
         if (!raw)
-            return exports.DEFAULT_FICTITIOUS_EMITTER;
+            return exports.DEFAULT_EMITTER_PROFILE;
         const parsed = JSON.parse(raw);
         return {
-            ...exports.DEFAULT_FICTITIOUS_EMITTER,
+            ...exports.DEFAULT_EMITTER_PROFILE,
             ...(parsed && typeof parsed === 'object' ? parsed : {}),
         };
     }
     catch {
-        return exports.DEFAULT_FICTITIOUS_EMITTER;
+        return exports.DEFAULT_EMITTER_PROFILE;
     }
 }
 function savePedidoEmitterProfile(tenantKey, profile) {
@@ -6914,49 +7913,6 @@ function savePedidoEmitterProfile(tenantKey, profile) {
     catch {
         // non-blocking
     }
-}
-function createFictitiousDemoNote(nextNumber) {
-    const today = (0, financeEngine_1.toISODate)();
-    const items = [
-        {
-            id: 'DEMO-IT-1',
-            descricao: 'Faca Caixa Cartão 300g com Tampa Automática (18mm)',
-            quantidade: 1,
-            precoUnitario: 380,
-            total: 380,
-        },
-        {
-            id: 'DEMO-IT-2',
-            descricao: 'Faca Tag Retangular 50×90 mm c/ Furo Central (Meio Corte)',
-            quantidade: 2,
-            precoUnitario: 165,
-            total: 330,
-        },
-        {
-            id: 'DEMO-IT-3',
-            descricao: 'Emborrachamento Técnico e Ajuste Fino de Vinco',
-            quantidade: 1,
-            precoUnitario: 95.5,
-            total: 95.5,
-        },
-    ];
-    const total = (0, financeEngine_1.roundCurrencyBRL)(items.reduce((sum, item) => sum + item.total, 0));
-    return {
-        id: '__demo_a5__',
-        numero: Math.max(1, nextNumber),
-        data: today,
-        dataSaida: (0, financeEngine_1.addDays)(today, 2),
-        clienteNome: 'Gráfica Horizonte Ltda (Exemplo)',
-        cnpj: '11.222.333/0001-81',
-        inscricao: 'ISENTO',
-        contato: '(00) 99123-4567',
-        endereco: 'Rua das Artes Gráficas, 250 - Centro - Cidade Exemplo - UF',
-        status: 'rascunho',
-        items,
-        total,
-        criadoPor: 'Protótipo',
-        criadoEm: new Date().toISOString(),
-    };
 }
 function formatPedidoNumber(numero) {
     return String(Math.max(1, Math.floor(Number(numero) || 1))).padStart(5, '0');
@@ -6990,19 +7946,24 @@ const NOTE_STATUS_META = {
     },
 };
 const PedidoBrandMark = ({ monogram }) => {
-    const letters = (monogram || 'FM').trim().slice(0, 3).toUpperCase();
-    return (react_1.default.createElement("svg", { viewBox: "0 0 88 54", fill: "none", xmlns: "http://www.w3.org/2000/svg", style: {
-            width: 'calc(21.5 * var(--u))',
-            height: 'calc(13.2 * var(--u))',
+    const letters = (monogram || 'QF').trim().slice(0, 3).toUpperCase();
+    if (letters === 'QF') {
+        return (react_1.default.createElement("svg", { viewBox: "0 0 116 74", fill: "none", xmlns: "http://www.w3.org/2000/svg", style: {
+                width: 'calc(26 * var(--u))',
+                height: 'calc(16.6 * var(--u))',
+                display: 'block',
+            }, "aria-hidden": "true" },
+            react_1.default.createElement("path", { d: "M36 6C19.5 6 6 19.2 6 35.8C6 52.4 19.5 65.6 36 65.6C43.2 65.6 49.8 63.1 55 58.9L63.5 67.2L69.5 61.4L61.2 53.3C64.4 48.2 66.2 42.2 66.2 35.8C66.2 19.2 52.6 6 36 6ZM36 14.2C48.1 14.2 57.6 23.7 57.6 35.8C57.6 40.2 56.3 44.3 54 47.7L46.5 40.4L40.6 46.2L48.1 53.4C44.6 56 40.5 57.4 36 57.4C23.9 57.4 14.4 47.9 14.4 35.8C14.4 23.7 23.9 14.2 36 14.2Z", fill: "#ffffff", stroke: "#C8102E", strokeWidth: "2.4", strokeLinejoin: "round" }),
+            react_1.default.createElement("path", { d: "M71 8H109V16.5H80.2V31.5H104.5V39.8H80.2V64.5H71V8Z", fill: "#ffffff", stroke: "#C8102E", strokeWidth: "2.4", strokeLinejoin: "round" })));
+    }
+    return (react_1.default.createElement("svg", { viewBox: "0 0 110 66", fill: "none", xmlns: "http://www.w3.org/2000/svg", style: {
+            width: 'calc(24 * var(--u))',
+            height: 'calc(15 * var(--u))',
             display: 'block',
         }, "aria-hidden": "true" },
-        react_1.default.createElement("rect", { x: "4", y: "4", width: "80", height: "46", rx: "12", stroke: "#b84a39", strokeWidth: "3.2" }),
-        react_1.default.createElement("path", { d: "M18 11H70M18 43H70", stroke: "#b84a39", strokeWidth: "1.2", strokeDasharray: "4 3", opacity: "0.7" }),
-        react_1.default.createElement("circle", { cx: "15", cy: "27", r: "3", fill: "#b84a39", opacity: "0.85" }),
-        react_1.default.createElement("circle", { cx: "73", cy: "27", r: "3", fill: "#b84a39", opacity: "0.85" }),
-        react_1.default.createElement("text", { x: "44", y: "34.5", textAnchor: "middle", fill: "#b84a39", fontFamily: "Inter, Plus Jakarta Sans, Arial, sans-serif", fontWeight: "800", fontSize: "24", letterSpacing: "1.5" }, letters)));
+        react_1.default.createElement("text", { x: "55", y: "50", textAnchor: "middle", fill: "#ffffff", stroke: "#C8102E", strokeWidth: "2.6", fontFamily: "Inter, Plus Jakarta Sans, Arial, sans-serif", fontWeight: "900", fontSize: "48", letterSpacing: "2" }, letters)));
 };
-const PedidoA5Sheet = ({ note, itemsChunk, pageIndex, totalPages, emitter = exports.DEFAULT_FICTITIOUS_EMITTER, isPrintMode = false, }) => {
+const PedidoA5Sheet = ({ note, itemsChunk, pageIndex, totalPages, emitter = exports.DEFAULT_EMITTER_PROFILE, isPrintMode = false, }) => {
     const formattedNum = formatPedidoNumber(note.numero);
     const pageTotal = (0, financeEngine_1.roundCurrencyBRL)(itemsChunk.reduce((sum, it) => sum + (Number(it.total) || 0), 0));
     const grandTotal = (0, financeEngine_1.roundCurrencyBRL)(note.items.reduce((sum, it) => sum + (Number(it.total) || 0), 0));
@@ -7011,15 +7972,15 @@ const PedidoA5Sheet = ({ note, itemsChunk, pageIndex, totalPages, emitter = expo
     const rowSlots = Array.from({ length: exports.PEDIDO_A5_ROWS }, (_, i) => {
         return itemsChunk[i] || null;
     });
-    const thinBorder = 'calc(0.32 * var(--u)) solid #27272a';
-    const innerRule = 'calc(0.22 * var(--u)) solid #52525b';
+    const thinBorder = 'calc(0.32 * var(--u)) solid #000000';
+    const innerRule = 'calc(0.24 * var(--u)) solid #000000';
     const radius = 'calc(2.4 * var(--u))';
     const sheetBody = (react_1.default.createElement("div", { className: `pedido-a5-doc${isPrintMode ? ' pedido-a5-print' : ''}`, "data-pedido-sheet": "a5", "data-pedido-numero": formattedNum },
         react_1.default.createElement("div", { style: {
                 display: 'flex',
                 alignItems: 'stretch',
-                gap: 'calc(1.2 * var(--u))',
-                height: 'calc(30.5 * var(--u))',
+                gap: 'calc(1.4 * var(--u))',
+                height: 'calc(31.5 * var(--u))',
                 flexShrink: 0,
             } },
             react_1.default.createElement("div", { style: {
@@ -7030,37 +7991,40 @@ const PedidoA5Sheet = ({ note, itemsChunk, pageIndex, totalPages, emitter = expo
                     padding: 'calc(1.8 * var(--u)) calc(2.4 * var(--u))',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: 'calc(2 * var(--u))',
+                    gap: 'calc(2.2 * var(--u))',
                     backgroundColor: '#ffffff',
                 } },
                 react_1.default.createElement("div", { style: {
-                        width: 'calc(28 * var(--u))',
+                        width: 'calc(30 * var(--u))',
                         flexShrink: 0,
                         display: 'flex',
                         flexDirection: 'column',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        gap: 'calc(0.6 * var(--u))',
+                        gap: 'calc(0.5 * var(--u))',
                     } },
                     react_1.default.createElement(PedidoBrandMark, { monogram: emitter.monogram }),
                     react_1.default.createElement("div", { style: {
-                            fontSize: 'calc(3.05 * var(--u))',
-                            fontWeight: 800,
-                            color: '#b84a39',
+                            fontSize: 'calc(3.1 * var(--u))',
+                            fontWeight: 900,
+                            color: '#C8102E',
                             lineHeight: 1.05,
-                            letterSpacing: '-0.02em',
+                            letterSpacing: '0.02em',
                             textAlign: 'center',
+                            textTransform: 'uppercase',
                             maxWidth: '100%',
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
                             whiteSpace: 'nowrap',
                         } }, emitter.brandName),
                     react_1.default.createElement("div", { style: {
-                            fontSize: 'calc(1.85 * var(--u))',
-                            fontWeight: 600,
-                            color: '#a14435',
+                            fontSize: 'calc(1.75 * var(--u))',
+                            fontWeight: 800,
+                            color: '#C8102E',
                             lineHeight: 1.05,
+                            letterSpacing: '0.02em',
                             textAlign: 'center',
+                            textTransform: 'uppercase',
                             maxWidth: '100%',
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
@@ -7073,16 +8037,16 @@ const PedidoA5Sheet = ({ note, itemsChunk, pageIndex, totalPages, emitter = expo
                         display: 'flex',
                         flexDirection: 'column',
                         alignItems: 'center',
-                        justifyContent: 'space-between',
+                        justifyContent: 'space-evenly',
                         textAlign: 'center',
-                        paddingTop: 'calc(0.3 * var(--u))',
-                        paddingBottom: 'calc(0.3 * var(--u))',
+                        paddingTop: 'calc(0.2 * var(--u))',
+                        paddingBottom: 'calc(0.2 * var(--u))',
                     } },
                     react_1.default.createElement("div", { style: {
-                            fontSize: 'calc(3.35 * var(--u))',
+                            fontSize: 'calc(3.85 * var(--u))',
                             fontWeight: 800,
-                            color: '#b84a39',
-                            lineHeight: 1.12,
+                            color: '#C8102E',
+                            lineHeight: 1.1,
                             letterSpacing: '0.01em',
                             maxWidth: '100%',
                             overflow: 'hidden',
@@ -7091,18 +8055,18 @@ const PedidoA5Sheet = ({ note, itemsChunk, pageIndex, totalPages, emitter = expo
                         } }, emitter.phone),
                     react_1.default.createElement("div", { style: {
                             fontSize: 'calc(2.15 * var(--u))',
-                            fontWeight: 700,
-                            color: '#27272a',
+                            fontWeight: 800,
+                            color: '#000000',
                             lineHeight: 1.25,
                             textTransform: 'uppercase',
                         } },
                         react_1.default.createElement("div", null, emitter.specialtiesLine1),
                         react_1.default.createElement("div", null, emitter.specialtiesLine2)),
                     react_1.default.createElement("div", { style: {
-                            fontSize: 'calc(2.25 * var(--u))',
-                            fontWeight: 600,
-                            color: '#b84a39',
-                            lineHeight: 1.22,
+                            fontSize: 'calc(2.45 * var(--u))',
+                            fontWeight: 700,
+                            color: '#C8102E',
+                            lineHeight: 1.18,
                             maxWidth: '100%',
                         } },
                         react_1.default.createElement("div", { style: {
@@ -7110,27 +8074,25 @@ const PedidoA5Sheet = ({ note, itemsChunk, pageIndex, totalPages, emitter = expo
                                 textOverflow: 'ellipsis',
                                 whiteSpace: 'nowrap',
                             } }, emitter.email),
-                        react_1.default.createElement("div", { style: {
+                        emitter.website && (react_1.default.createElement("div", { style: {
+                                fontSize: 'calc(2.05 * var(--u))',
                                 overflow: 'hidden',
                                 textOverflow: 'ellipsis',
                                 whiteSpace: 'nowrap',
-                            } }, emitter.website)),
+                            } }, emitter.website))),
                     react_1.default.createElement("div", { style: {
-                            fontSize: 'calc(1.95 * var(--u))',
+                            fontSize: 'calc(2.0 * var(--u))',
                             fontWeight: 600,
-                            color: '#27272a',
-                            lineHeight: 1.15,
+                            color: '#111111',
+                            lineHeight: 1.2,
                             maxWidth: '100%',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
                         } }, emitter.address))),
             react_1.default.createElement("div", { style: {
-                    width: 'calc(35.5 * var(--u))',
+                    width: 'calc(36 * var(--u))',
                     flexShrink: 0,
                     border: thinBorder,
                     borderRadius: radius,
-                    padding: 'calc(2.4 * var(--u)) calc(2 * var(--u))',
+                    padding: 'calc(2.6 * var(--u)) calc(2 * var(--u))',
                     display: 'flex',
                     flexDirection: 'column',
                     alignItems: 'center',
@@ -7138,26 +8100,26 @@ const PedidoA5Sheet = ({ note, itemsChunk, pageIndex, totalPages, emitter = expo
                     backgroundColor: '#ffffff',
                 } },
                 react_1.default.createElement("div", { style: {
-                        fontSize: 'calc(5.1 * var(--u))',
-                        fontWeight: 800,
-                        color: '#27272a',
-                        letterSpacing: '0.06em',
+                        fontSize: 'calc(5.2 * var(--u))',
+                        fontWeight: 900,
+                        color: '#000000',
+                        letterSpacing: '0.05em',
                         lineHeight: 1.05,
                         textTransform: 'uppercase',
                     } }, "PEDIDO"),
                 react_1.default.createElement("div", { style: {
-                        fontSize: 'calc(4.85 * var(--u))',
-                        fontWeight: 700,
-                        color: '#c2412d',
+                        fontSize: 'calc(5.0 * var(--u))',
+                        fontWeight: 800,
+                        color: '#C8102E',
                         fontVariantNumeric: 'tabular-nums',
-                        letterSpacing: '0.08em',
+                        letterSpacing: '0.06em',
                         lineHeight: 1.05,
                         marginBottom: totalPages > 1 ? 'calc(0.4 * var(--u))' : 'calc(2.8 * var(--u))',
                     } }, formattedNum),
                 totalPages > 1 && (react_1.default.createElement("div", { style: {
                         fontSize: 'calc(1.85 * var(--u))',
                         fontWeight: 700,
-                        color: '#52525b',
+                        color: '#000000',
                         lineHeight: 1,
                     } },
                     "FOLHA ",
@@ -7465,13 +8427,13 @@ const PedidoA5Sheet = ({ note, itemsChunk, pageIndex, totalPages, emitter = expo
                 } },
                 react_1.default.createElement("div", { style: {
                         width: '82%',
-                        borderBottom: 'calc(0.28 * var(--u)) solid #27272a',
+                        borderBottom: 'calc(0.32 * var(--u)) solid #000000',
                         marginBottom: 'calc(1 * var(--u))',
                     } }),
                 react_1.default.createElement("span", { style: {
                         fontSize: 'calc(2.15 * var(--u))',
-                        fontWeight: 700,
-                        color: '#27272a',
+                        fontWeight: 800,
+                        color: '#000000',
                         letterSpacing: '0.04em',
                         textTransform: 'uppercase',
                     } }, "ASSINATURA DO CLIENTE")),
@@ -7487,17 +8449,17 @@ const PedidoA5Sheet = ({ note, itemsChunk, pageIndex, totalPages, emitter = expo
                     backgroundColor: '#ffffff',
                 }, "data-pedido-total-box": "true" },
                 react_1.default.createElement("span", { style: {
-                        fontSize: 'calc(1.65 * var(--u))',
-                        fontWeight: 700,
-                        color: '#52525b',
+                        fontSize: 'calc(1.7 * var(--u))',
+                        fontWeight: 800,
+                        color: '#000000',
                         letterSpacing: '0.05em',
                         lineHeight: 1,
                         textTransform: 'uppercase',
                     } }, totalBoxLabel),
                 react_1.default.createElement("span", { style: {
-                        fontSize: 'calc(3.05 * var(--u))',
-                        fontWeight: 800,
-                        color: '#09090b',
+                        fontSize: 'calc(3.1 * var(--u))',
+                        fontWeight: 900,
+                        color: '#000000',
                         textAlign: 'right',
                         fontVariantNumeric: 'tabular-nums',
                         lineHeight: 1.05,
@@ -7513,9 +8475,8 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
     const [viewMode, setViewMode] = (0, react_1.useState)('list');
     const [editingId, setEditingId] = (0, react_1.useState)(undefined);
     const [previewNoteId, setPreviewNoteId] = (0, react_1.useState)(null);
-    const [demoPreviewNote, setDemoPreviewNote] = (0, react_1.useState)(null);
     const [isSaving, setIsSaving] = (0, react_1.useState)(false);
-    // Emitter header profile (defaults to strictly fictitious prototype data)
+    // Emitter header profile (defaults to QUALIFACAS official profile)
     const [emitter, setEmitter] = (0, react_1.useState)(() => loadPedidoEmitterProfile(tenantKey));
     const [showEmitterPanel, setShowEmitterPanel] = (0, react_1.useState)(false);
     // Form states
@@ -7541,13 +8502,12 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
             return next;
         });
     };
-    const resetEmitterToFictitious = () => {
-        setEmitter(exports.DEFAULT_FICTITIOUS_EMITTER);
-        savePedidoEmitterProfile(tenantKey, exports.DEFAULT_FICTITIOUS_EMITTER);
+    const resetEmitterToDefault = () => {
+        setEmitter(exports.DEFAULT_EMITTER_PROFILE);
+        savePedidoEmitterProfile(tenantKey, exports.DEFAULT_EMITTER_PROFILE);
     };
     const openNewForm = () => {
         setEditingId(undefined);
-        setDemoPreviewNote(null);
         setNumero(nextNoteNumber);
         const today = (0, financeEngine_1.toISODate)();
         setDataEntrada(today);
@@ -7573,9 +8533,8 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
         setViewMode('form');
     };
     const openEditForm = (note) => {
-        setEditingId(note.id === '__demo_a5__' ? undefined : note.id);
-        setDemoPreviewNote(null);
-        setNumero(note.id === '__demo_a5__' ? nextNoteNumber : note.numero);
+        setEditingId(note.id);
+        setNumero(note.numero);
         setDataEntrada(note.data || (0, financeEngine_1.toISODate)());
         setDataSaida(note.dataSaida || '');
         setSelectedCompanyId(note.empresaId || 'manual');
@@ -7585,7 +8544,7 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
         setInscricao(note.inscricao || '');
         setFone(note.contato || '');
         setEndereco(note.endereco || '');
-        setStatus(note.id === '__demo_a5__' ? 'emitida' : note.status);
+        setStatus(note.status);
         setItems(note.items.length > 0
             ? note.items.map((it) => ({ ...it }))
             : [
@@ -7600,28 +8559,12 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
         setFormError(null);
         setViewMode('form');
     };
-    const openFictitiousDemoPreview = () => {
-        const demo = createFictitiousDemoNote(nextNoteNumber);
-        setDemoPreviewNote(demo);
-        setPreviewNoteId(null);
-        setViewMode('preview');
-    };
-    const handleFillFictitiousInForm = () => {
-        const demo = createFictitiousDemoNote(numero);
-        setSelectedCompanyId('manual');
-        setSelectedOrderId('');
-        setClienteNome(demo.clienteNome);
-        setCnpjCpf(demo.cnpj);
-        setInscricao(demo.inscricao || 'ISENTO');
-        setFone(demo.contato);
-        setEndereco(demo.endereco || '');
-        setDataEntrada(demo.data);
-        setDataSaida(demo.dataSaida || demo.data);
-        setItems(demo.items.map((it, idx) => ({
-            ...it,
-            id: `IT-${Date.now()}-${idx + 1}`,
-        })));
-        setFormError(null);
+    const sanitizeImportedDoc = (raw) => {
+        const digits = String(raw || '').replace(/\D/g, '');
+        if (!digits || /^0+$/.test(digits) || digits === '00000000000100') {
+            return '';
+        }
+        return (0, financeEngine_1.formatCpfCnpjMask)(digits);
     };
     const handleCompanySelect = (compId) => {
         setSelectedCompanyId(compId);
@@ -7630,7 +8573,7 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
         const comp = companies.find((c) => c.id === compId);
         if (comp) {
             setClienteNome(comp.corporateName);
-            setCnpjCpf((0, financeEngine_1.formatCpfCnpjMask)(comp.cnpj));
+            setCnpjCpf(sanitizeImportedDoc(comp.cnpj));
             setFone((0, financeEngine_1.formatPhoneMask)(comp.phone));
             if (comp.city && !endereco.trim()) {
                 setEndereco(comp.city);
@@ -7648,7 +8591,7 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
         if (comp) {
             setSelectedCompanyId(comp.id);
             setClienteNome(comp.corporateName);
-            setCnpjCpf((0, financeEngine_1.formatCpfCnpjMask)(comp.cnpj));
+            setCnpjCpf(sanitizeImportedDoc(comp.cnpj));
             setFone((0, financeEngine_1.formatPhoneMask)(comp.phone || ord.companyPhone));
             setEndereco(comp.city || '');
         }
@@ -7776,8 +8719,8 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
             return;
         }
         const docDigits = cnpjCpf.replace(/\D/g, '');
-        if (docDigits.length > 0 && !(0, financeEngine_1.isValidCpfOrCnpj)(cnpjCpf)) {
-            setFormError('CNPJ/CPF inválido. Informe 11 dígitos (CPF) ou 14 dígitos (CNPJ) válidos, ou deixe em branco.');
+        if (docDigits.length > 0 && docDigits.length !== 11 && docDigits.length !== 14) {
+            setFormError('CNPJ/CPF incompleto. Informe 11 dígitos (CPF) ou 14 dígitos (CNPJ), ou deixe em branco.');
             return;
         }
         const validItems = items.filter((it) => it.descricao.trim() && it.quantidade > 0);
@@ -7809,12 +8752,11 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
                 total: computedTotal,
             }, editingId);
             if (saved) {
-                setDemoPreviewNote(null);
                 setPreviewNoteId(saved.id);
                 setViewMode('preview');
             }
             else {
-                setViewMode('list');
+                setFormError('Não foi possível salvar a nota no banco de dados. Verifique sua conexão e tente novamente.');
             }
         }
         finally {
@@ -7831,8 +8773,7 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
             n.cnpj.toLowerCase().includes(q) ||
             (n.osId || '').toLowerCase().includes(q));
     }, [notas, globalSearchQuery]);
-    const previewNote = demoPreviewNote || notas.find((n) => n.id === previewNoteId) || null;
-    const isDemoPreview = previewNote?.id === '__demo_a5__';
+    const previewNote = notas.find((n) => n.id === previewNoteId) || null;
     (0, react_1.useEffect)(() => {
         if (!onSyncPrintPreview)
             return;
@@ -7851,9 +8792,6 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
                     react_1.default.createElement("h2", { className: "text-lg font-extrabold text-slate-900 tracking-tight frosted-text-depth" }, "Notas e Pedidos (A5)"),
                     react_1.default.createElement("p", { className: "text-xs font-medium text-slate-700" }, "Pedido imprim\u00EDvel em A5 retrato (148\u00D7210 mm), 15 linhas, preenchimento direto da OS e soma autom\u00E1tica.")),
                 react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
-                    react_1.default.createElement("button", { type: "button", onClick: openFictitiousDemoPreview, className: "liquid-glass-pill min-h-[44px] px-4 py-2 rounded-full text-xs font-bold text-slate-800 inline-flex items-center gap-1.5 cursor-pointer" },
-                        react_1.default.createElement(lucide_react_1.Sparkles, { className: "w-4 h-4 text-indigo-600" }),
-                        react_1.default.createElement("span", null, "Ver Modelo A5")),
                     react_1.default.createElement("button", { type: "button", onClick: () => setShowEmitterPanel((v) => !v), className: `liquid-glass-pill min-h-[44px] px-4 py-2 rounded-full text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer ${showEmitterPanel
                             ? 'ring-2 ring-indigo-500/60 text-indigo-800'
                             : 'text-slate-800'}` },
@@ -7865,11 +8803,11 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
             showEmitterPanel && (react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-5 space-y-4" },
                 react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-2" },
                     react_1.default.createElement("div", null,
-                        react_1.default.createElement("h3", { className: "text-sm font-extrabold text-slate-900" }, "Dados do Cabe\u00E7alho do Pedido (Prot\u00F3tipo Fict\u00EDcio)"),
-                        react_1.default.createElement("p", { className: "text-[11px] font-medium text-slate-600" }, "Por padr\u00E3o utiliza marca e contatos fict\u00EDcios. Edite aqui se desejar personalizar a impress\u00E3o A5 localmente.")),
-                    react_1.default.createElement("button", { type: "button", onClick: resetEmitterToFictitious, className: "liquid-glass-pill min-h-[44px] px-3.5 py-2 rounded-full text-xs font-bold text-slate-700 inline-flex items-center gap-1.5 cursor-pointer" },
+                        react_1.default.createElement("h3", { className: "text-sm font-extrabold text-slate-900" }, "Dados do Cabe\u00E7alho do Pedido"),
+                        react_1.default.createElement("p", { className: "text-[11px] font-medium text-slate-600" }, "Personalize a marca, contatos e endere\u00E7o exibidos na impress\u00E3o A5.")),
+                    react_1.default.createElement("button", { type: "button", onClick: resetEmitterToDefault, className: "liquid-glass-pill min-h-[44px] px-3.5 py-2 rounded-full text-xs font-bold text-slate-700 inline-flex items-center gap-1.5 cursor-pointer" },
                         react_1.default.createElement(lucide_react_1.RotateCcw, { className: "w-3.5 h-3.5" }),
-                        react_1.default.createElement("span", null, "Restaurar Fict\u00EDcio"))),
+                        react_1.default.createElement("span", null, "Restaurar Padr\u00E3o"))),
                 react_1.default.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-3" },
                     react_1.default.createElement("div", null,
                         react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Sigla do Logo (at\u00E9 3 letras)"),
@@ -7902,12 +8840,13 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
                         react_1.default.createElement("input", { type: "text", value: emitter.address, onChange: (e) => updateEmitterField('address', e.target.value), className: inputClass }))))),
             react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] overflow-hidden min-w-0" },
                 react_1.default.createElement("div", { className: "md:hidden divide-y divide-white/55" }, filteredNotas.length === 0 ? (react_1.default.createElement("div", { className: "py-10 px-4 text-center space-y-3" },
-                    react_1.default.createElement("p", { className: "font-medium text-xs text-slate-600" }, "Nenhum pedido emitido ainda. Crie um novo pedido a partir de uma OS ou visualize o modelo A5 fict\u00EDcio."),
-                    react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-center gap-2" },
-                        react_1.default.createElement("button", { type: "button", onClick: openFictitiousDemoPreview, className: "liquid-glass-pill min-h-[44px] px-4 py-2 rounded-full text-xs font-bold text-indigo-700 inline-flex items-center gap-1.5 cursor-pointer" },
-                            react_1.default.createElement(lucide_react_1.Sparkles, { className: "w-4 h-4" }),
-                            react_1.default.createElement("span", null, "Ver Modelo A5")),
-                        react_1.default.createElement("button", { type: "button", onClick: openNewForm, className: "min-h-[44px] px-4 py-2 rounded-full text-xs font-bold bg-indigo-600 text-white inline-flex items-center gap-1.5 cursor-pointer" },
+                    react_1.default.createElement("p", { className: "font-medium text-xs text-slate-600" },
+                        "Nenhum pedido emitido ainda. Clique em",
+                        ' ',
+                        react_1.default.createElement("strong", null, "Novo Pedido"),
+                        " para preencher com dados da OS."),
+                    react_1.default.createElement("div", { className: "flex items-center justify-center pt-1" },
+                        react_1.default.createElement("button", { type: "button", onClick: openNewForm, className: "min-h-[44px] px-5 py-2 rounded-full text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white inline-flex items-center justify-center gap-1.5 shadow-sm cursor-pointer" },
                             react_1.default.createElement(lucide_react_1.Plus, { className: "w-4 h-4" }),
                             react_1.default.createElement("span", null, "Novo Pedido"))))) : (filteredNotas.map((note) => {
                     const stMeta = NOTE_STATUS_META[note.status];
@@ -7937,7 +8876,6 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
                                 react_1.default.createElement("span", { className: "font-mono text-slate-700" }, note.cnpj)))),
                         react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2 pt-1" },
                             react_1.default.createElement("button", { type: "button", onClick: () => {
-                                    setDemoPreviewNote(null);
                                     setPreviewNoteId(note.id);
                                     setViewMode('preview');
                                 }, className: "liquid-glass-pill min-h-[44px] px-3.5 py-2 rounded-full text-xs font-bold text-slate-800 inline-flex items-center gap-1.5 cursor-pointer" },
@@ -7971,14 +8909,9 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
                                     "Nenhum pedido emitido ainda. Clique em",
                                     ' ',
                                     react_1.default.createElement("strong", null, "Novo Pedido"),
-                                    " para preencher com dados da OS ou clique em ",
-                                    react_1.default.createElement("strong", null, "Ver Modelo A5"),
-                                    " para visualizar o prot\u00F3tipo imprim\u00EDvel."),
-                                react_1.default.createElement("div", { className: "inline-flex items-center gap-2 pt-1" },
-                                    react_1.default.createElement("button", { type: "button", onClick: openFictitiousDemoPreview, className: "liquid-glass-pill min-h-[44px] px-4 py-2 rounded-full text-xs font-bold text-indigo-700 inline-flex items-center gap-1.5 cursor-pointer" },
-                                        react_1.default.createElement(lucide_react_1.Sparkles, { className: "w-4 h-4" }),
-                                        react_1.default.createElement("span", null, "Ver Modelo A5 (Fict\u00EDcio)")),
-                                    react_1.default.createElement("button", { type: "button", onClick: openNewForm, className: "min-h-[44px] px-4 py-2 rounded-full text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white inline-flex items-center gap-1.5 cursor-pointer" },
+                                    " para preencher com dados da OS."),
+                                react_1.default.createElement("div", { className: "flex items-center justify-center pt-1" },
+                                    react_1.default.createElement("button", { type: "button", onClick: openNewForm, className: "min-h-[44px] px-5 py-2 rounded-full text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white inline-flex items-center justify-center gap-1.5 shadow-sm cursor-pointer" },
                                         react_1.default.createElement(lucide_react_1.Plus, { className: "w-4 h-4" }),
                                         react_1.default.createElement("span", null, "Novo Pedido")))))) : (filteredNotas.map((note) => {
                             const stMeta = NOTE_STATUS_META[note.status];
@@ -8002,7 +8935,6 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
                                 react_1.default.createElement("td", { className: "py-4 px-5 text-right whitespace-nowrap" },
                                     react_1.default.createElement("div", { className: "inline-flex items-center gap-1.5" },
                                         react_1.default.createElement("button", { type: "button", onClick: () => {
-                                                setDemoPreviewNote(null);
                                                 setPreviewNoteId(note.id);
                                                 setViewMode('preview');
                                             }, className: "liquid-glass-pill min-h-[38px] px-3 py-1.5 rounded-full text-xs font-bold text-slate-800 inline-flex items-center gap-1 cursor-pointer" },
@@ -8017,7 +8949,7 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
                                             }, className: "min-h-[38px] px-3 py-1.5 rounded-full text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white inline-flex items-center gap-1 cursor-pointer" },
                                             react_1.default.createElement(lucide_react_1.Printer, { className: "w-3.5 h-3.5" }),
                                             react_1.default.createElement("span", null, "Imprimir A5")),
-                                        react_1.default.createElement("button", { type: "button", onClick: () => onDeleteNote(note.id), className: "p-2 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 cursor-pointer", title: "Excluir pedido", "aria-label": "Excluir pedido" },
+                                        react_1.default.createElement("button", { type: "button", onClick: () => onDeleteNote(note.id), className: "btn-compact w-9 h-9 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir pedido", "aria-label": "Excluir pedido" },
                                             react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" }))))));
                         })))))))),
         viewMode === 'form' && (react_1.default.createElement("form", { onSubmit: handleSubmit, className: "space-y-5 min-w-0" },
@@ -8038,10 +8970,7 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
                             " \u2014 ",
                             o.companyName,
                             " \u2014 ",
-                            (0, financeEngine_1.formatBRL)(o.amount))))),
-                    react_1.default.createElement("button", { type: "button", onClick: handleFillFictitiousInForm, className: "liquid-glass-pill min-h-[44px] px-4 py-2 rounded-full text-xs font-bold text-indigo-700 inline-flex items-center gap-1.5 cursor-pointer shrink-0" },
-                        react_1.default.createElement(lucide_react_1.Sparkles, { className: "w-4 h-4" }),
-                        react_1.default.createElement("span", null, "Dados Fict\u00EDcios")))),
+                            (0, financeEngine_1.formatBRL)(o.amount))))))),
             formError && (react_1.default.createElement("div", { className: "p-3.5 rounded-2xl bg-rose-500/15 border border-rose-300/70 text-rose-800 text-xs font-bold flex items-center gap-2" },
                 react_1.default.createElement(lucide_react_1.AlertCircle, { className: "w-4 h-4 shrink-0" }),
                 react_1.default.createElement("span", null, formError))),
@@ -8160,16 +9089,15 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
             react_1.default.createElement("div", { className: "liquid-glass rounded-[24px] p-4 flex flex-wrap items-center justify-between gap-3" },
                 react_1.default.createElement("div", { className: "flex items-center gap-3 min-w-0" },
                     react_1.default.createElement("button", { type: "button", onClick: () => {
-                            setDemoPreviewNote(null);
                             setViewMode('list');
                         }, className: "liquid-glass-pill min-h-[44px] min-w-[44px] rounded-full text-slate-800 inline-flex items-center justify-center cursor-pointer shrink-0", "aria-label": "Voltar" },
                         react_1.default.createElement(lucide_react_1.ArrowLeft, { className: "w-4 h-4" })),
                     react_1.default.createElement("div", { className: "min-w-0" },
                         react_1.default.createElement("h3", { className: "text-sm font-extrabold text-slate-900 flex items-center gap-2 flex-wrap" },
                             react_1.default.createElement(lucide_react_1.FileText, { className: "w-4 h-4 text-indigo-600 shrink-0" }),
-                            react_1.default.createElement("span", null, isDemoPreview
-                                ? `Modelo Fictício — Pedido Nº ${formatPedidoNumber(previewNote.numero)}`
-                                : `Pedido Nº ${formatPedidoNumber(previewNote.numero)}`)),
+                            react_1.default.createElement("span", null,
+                                "Pedido N\u00BA ",
+                                formatPedidoNumber(previewNote.numero))),
                         react_1.default.createElement("p", { className: "text-[11px] font-medium text-slate-600" },
                             "Formato A5 Retrato (148 \u00D7 210 mm) \u2022 15 linhas \u2022 Total autom\u00E1tico (",
                             (0, financeEngine_1.formatBRL)(previewNote.total),
@@ -8177,11 +9105,9 @@ const NotesSection = ({ notas, companies, orders, nextNoteNumber, tenantKey, glo
                 react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
                     react_1.default.createElement("button", { type: "button", onClick: () => openEditForm(previewNote), className: "liquid-glass-pill min-h-[44px] px-4 py-2 rounded-full text-xs font-bold text-slate-800 inline-flex items-center gap-1.5 cursor-pointer" },
                         react_1.default.createElement(lucide_react_1.Edit3, { className: "w-4 h-4 text-indigo-600" }),
-                        react_1.default.createElement("span", null, isDemoPreview ? 'Editar / Salvar' : 'Editar')),
+                        react_1.default.createElement("span", null, "Editar")),
                     react_1.default.createElement("button", { type: "button", onClick: () => {
-                            if (!isDemoPreview) {
-                                onMarkNotePrinted(previewNote.id);
-                            }
+                            onMarkNotePrinted(previewNote.id);
                             onTriggerPrint(previewNote, emitter);
                         }, className: "min-h-[44px] px-5 py-2 rounded-full text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow-md inline-flex items-center gap-1.5 cursor-pointer" },
                         react_1.default.createElement(lucide_react_1.Printer, { className: "w-4 h-4" }),
@@ -8330,7 +9256,7 @@ const TeamManagementSection = ({ session, employees, onAddEmployee, onToggleEmpl
                                         react_1.default.createElement("div", { className: "text-[11px] font-medium text-slate-700 mt-0.5 leading-relaxed" },
                                             "Libera acesso apenas para",
                                             ' ',
-                                            react_1.default.createElement("span", { className: "text-indigo-700 font-bold" }, "Esteira, Entregas, Retornos e Estoque"),
+                                            react_1.default.createElement("span", { className: "text-indigo-700 font-bold" }, "Esteira, Entregas, Retornos, Estoque e Notas"),
                                             ". Oculta Finan\u00E7as, Empresas e Vis\u00E3o Geral."))),
                                 react_1.default.createElement("button", { type: "button", onClick: () => setRole('admin'), className: `p-3 rounded-2xl border text-left transition cursor-pointer flex items-start gap-3 ${role === 'admin'
                                         ? 'bg-indigo-500/15 border-indigo-400/70 ring-1 ring-indigo-400/50'
@@ -8387,10 +9313,13 @@ const TeamManagementSection = ({ session, employees, onAddEmployee, onToggleEmpl
                                     react_1.default.createElement("span", { className: "text-emerald-700" }, "Copiado!"))) : (react_1.default.createElement(react_1.default.Fragment, null,
                                     react_1.default.createElement(lucide_react_1.Copy, { className: "w-4 h-4 text-slate-600" }),
                                     react_1.default.createElement("span", null, "Copiar Acesso")))),
-                                !isSelf && (react_1.default.createElement("button", { type: "button", disabled: busyId === emp.id, onClick: async () => {
-                                        setBusyId(emp.id);
+                                !isSelf && emp.id && (react_1.default.createElement("button", { type: "button", disabled: busyId === emp.id, onClick: async () => {
+                                        const memberId = emp.id;
+                                        if (!memberId)
+                                            return;
+                                        setBusyId(memberId);
                                         try {
-                                            await onToggleEmployeeRole(emp.id, isOperador ? 'admin' : 'operador');
+                                            await onToggleEmployeeRole(memberId, isOperador ? 'admin' : 'operador');
                                         }
                                         finally {
                                             setBusyId(null);
@@ -8399,25 +9328,29 @@ const TeamManagementSection = ({ session, employees, onAddEmployee, onToggleEmpl
                                     react_1.default.createElement(lucide_react_1.UserCheck, { className: "w-4 h-4 text-indigo-600" }),
                                     react_1.default.createElement("span", null, isOperador ? 'Tornar Admin' : 'Tornar Operador'))),
                                 !isSelf &&
+                                    emp.id &&
                                     (confirmDeleteId === emp.id ? (react_1.default.createElement("div", { className: "inline-flex items-center gap-1.5 bg-rose-500/15 border border-rose-300/70 rounded-full px-3 py-1" },
                                         react_1.default.createElement("button", { type: "button", disabled: busyId === emp.id, onClick: async () => {
-                                                setBusyId(emp.id);
+                                                const memberId = emp.id;
+                                                if (!memberId)
+                                                    return;
+                                                setBusyId(memberId);
                                                 try {
-                                                    await onDeleteEmployee(emp.id);
+                                                    await onDeleteEmployee(memberId);
                                                     setConfirmDeleteId(null);
                                                 }
                                                 finally {
                                                     setBusyId(null);
                                                 }
                                             }, className: "min-h-[36px] text-xs font-bold text-rose-800 hover:text-rose-950 px-2 cursor-pointer" }, "Confirmar"),
-                                        react_1.default.createElement("button", { type: "button", onClick: () => setConfirmDeleteId(null), "aria-label": "Cancelar exclus\u00E3o", className: "min-h-[36px] min-w-[36px] text-xs font-bold text-slate-600 hover:text-slate-900 cursor-pointer" }, "\u2715"))) : (react_1.default.createElement("button", { type: "button", onClick: () => setConfirmDeleteId(emp.id), "aria-label": "Apagar funcion\u00E1rio", className: "min-h-[44px] min-w-[44px] rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 inline-flex items-center justify-center transition cursor-pointer", title: "Apagar funcion\u00E1rio" },
+                                        react_1.default.createElement("button", { type: "button", onClick: () => setConfirmDeleteId(null), "aria-label": "Cancelar exclus\u00E3o", className: "min-h-[36px] min-w-[36px] text-xs font-bold text-slate-600 hover:text-slate-900 cursor-pointer" }, "\u2715"))) : (react_1.default.createElement("button", { type: "button", onClick: () => setConfirmDeleteId(emp.id || null), "aria-label": "Excluir funcion\u00E1rio", className: "btn-compact w-9 h-9 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir funcion\u00E1rio" },
                                         react_1.default.createElement(lucide_react_1.Trash2, { className: "w-4 h-4" })))))));
                     }))),
                 react_1.default.createElement("div", { className: "mt-6 pt-4 border-t border-white/60 flex flex-wrap items-center justify-between gap-2 text-[11px] font-medium text-slate-600" },
                     react_1.default.createElement("span", { className: "flex items-center gap-1.5" },
                         react_1.default.createElement(lucide_react_1.ShieldAlert, { className: "w-3.5 h-3.5 text-indigo-600" }),
-                        "Operadores enxergam apenas as Se\u00E7\u00F5es 2, 4 e 5."),
-                    react_1.default.createElement("span", null, "Dica: Abra uma aba an\u00F4nima e fa\u00E7a login como operador para ver o Realtime funcionando ao vivo!"))))));
+                        "Operadores acessam apenas Esteira, Entregas, Retornos, Estoque e Notas."),
+                    react_1.default.createElement("span", null, "As permiss\u00F5es s\u00E3o aplicadas em tempo real no painel e no banco de dados."))))));
 };
 exports.TeamManagementSection = TeamManagementSection;
 
@@ -9087,7 +10020,11 @@ const FastEntryModal = ({ isOpen, onClose, companies, nextOrderId, onSaveOrder, 
                                     : 'liquid-glass-pill text-slate-700'}` },
                                 react_1.default.createElement("span", { className: "truncate" }, meta.short),
                                 selected && react_1.default.createElement(lucide_react_1.Check, { className: "w-3.5 h-3.5 shrink-0 ml-1" })));
-                        })))),
+                        })),
+                        react_1.default.createElement("p", { className: "text-[11px] font-medium text-slate-600 mt-1.5" },
+                            "Toda OS entra automaticamente com status ",
+                            react_1.default.createElement("strong", null, "N\u00E3o Pago"),
+                            " at\u00E9 confirma\u00E7\u00E3o manual em \"Marcar como pago\"."))),
                 react_1.default.createElement("div", { className: "px-5 py-4 border-t border-white/60 bg-white/45 shrink-0 pb-[calc(1rem+env(safe-area-inset-bottom))]" },
                     react_1.default.createElement("button", { type: "submit", className: "w-full min-h-[48px] py-3 rounded-full text-sm font-bold bg-gradient-to-r from-indigo-600 via-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white border border-white/40 shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition cursor-pointer active:scale-95" },
                         react_1.default.createElement(lucide_react_1.Check, { className: "w-4 h-4 stroke-[2.5]" }),
@@ -9176,6 +10113,7 @@ function createEmptyDb(companyId = '') {
         deliveries: [],
         returns: [],
         stock: [],
+        stockMovements: [],
         notas: [],
         noteSequence: 0,
         despesas: [],
@@ -9220,14 +10158,23 @@ const App = () => {
     const autoBackupTimerRef = (0, react_1.useRef)(null);
     const [moveError, setMoveError] = (0, react_1.useState)(null);
     const [toast, setToast] = (0, react_1.useState)(null);
-    const showToast = (0, react_1.useCallback)((message, variant = 'ok') => {
-        setToast({ message, variant });
-        window.setTimeout(() => {
+    const toastTimerRef = (0, react_1.useRef)(null);
+    const showToast = (0, react_1.useCallback)((message, variant = 'ok', action) => {
+        if (toastTimerRef.current) {
+            window.clearTimeout(toastTimerRef.current);
+        }
+        setToast({
+            message,
+            variant,
+            actionLabel: action?.label,
+            onAction: action?.onClick,
+        });
+        toastTimerRef.current = window.setTimeout(() => {
             setToast((prev) => (prev?.message === message ? null : prev));
-        }, 3800);
+        }, action ? 7000 : 3800);
     }, []);
-    const refreshSettingsAndBackups = (0, react_1.useCallback)(async (empresaId, role) => {
-        if (role !== 'admin' || !empresaId)
+    const refreshSettingsAndBackups = (0, react_1.useCallback)(async (empresaId, isSuperAdmin) => {
+        if (!isSuperAdmin || !empresaId)
             return;
         setSettingsState((prev) => ({ ...prev, loading: true }));
         try {
@@ -9253,8 +10200,8 @@ const App = () => {
             setSelectedCompanyId((prev) => prev && loaded.companies.some((c) => c.id === prev)
                 ? prev
                 : loaded.companies[0]?.id || null);
-            if (activeSession.role === 'admin') {
-                await refreshSettingsAndBackups(targetEmpresaId, activeSession.role);
+            if (activeSession.isSuperAdmin) {
+                await refreshSettingsAndBackups(targetEmpresaId, activeSession.isSuperAdmin);
             }
         }
         catch (err) {
@@ -9283,10 +10230,14 @@ const App = () => {
                     tipo: 'automatico',
                     debounced: true,
                 });
-                await refreshSettingsAndBackups(empresaId, 'admin');
+                if (active.isSuperAdmin) {
+                    await refreshSettingsAndBackups(empresaId, true);
+                }
             }
             catch {
-                await refreshSettingsAndBackups(empresaId, 'admin');
+                if (active.isSuperAdmin) {
+                    await refreshSettingsAndBackups(empresaId, true);
+                }
             }
         }, 15000);
     }, [settingsState.settings.backup_automatico, refreshSettingsAndBackups]);
@@ -9410,6 +10361,10 @@ const App = () => {
         });
     };
     const handleSelectSection = (target) => {
+        if (target === 'configuracoes' && !session?.isSuperAdmin) {
+            setActiveSection(session?.role === 'operador' ? 'esteira' : 'bento_home');
+            return;
+        }
         if (session?.role === 'operador' &&
             !OPERATOR_ALLOWED_SECTIONS.includes(target)) {
             setActiveSection('esteira');
@@ -9630,7 +10585,7 @@ const App = () => {
             return;
         const today = (0, financeEngine_1.toISODate)();
         const isPaid = order.paymentStatus === 'pago';
-        const nextStatus = isPaid ? 'a_receber' : 'pago';
+        const nextStatus = isPaid ? 'nao_pago' : 'pago';
         const nextPaidAt = isPaid ? null : today;
         const nextVersion = (Number(order.version) || 1) + 1;
         try {
@@ -9652,7 +10607,9 @@ const App = () => {
                     : o),
             }));
             scheduleAutoBackup();
-            showToast(`Status financeiro de ${orderId} atualizado!`);
+            showToast(nextStatus === 'pago'
+                ? `${orderId} marcada como paga!`
+                : `${orderId} reaberta como Não Pago.`);
         }
         catch (err) {
             showToast(err?.message || 'Erro ao atualizar pagamento.', 'err');
@@ -9832,9 +10789,9 @@ const App = () => {
             showToast(err?.message || 'Erro ao apagar retorno.', 'err');
         }
     };
-    // Seção 6 • Estoque (Mantém UI e regras de negócio originais; persistência real + soft delete no Supabase)
+    // Seção 6 • Estoque (CRUD restrito a admin; consumo rápido e estorno liberados para admin e operador)
     const handleAddStockItem = async (payload) => {
-        if (!session || session.role === 'cliente')
+        if (!session || session.role !== 'admin')
             return;
         try {
             const code = (0, storageAdapter_1.getNextStockId)(db);
@@ -9851,7 +10808,7 @@ const App = () => {
         }
     };
     const handleUpdateStockItem = async (id, payload) => {
-        if (!session || session.role === 'cliente')
+        if (!session || session.role !== 'admin')
             return;
         const target = (db.stock || []).find((item) => item.id === id);
         if (!target?.dbUuid)
@@ -9870,7 +10827,7 @@ const App = () => {
         }
     };
     const handleDeleteStockItem = async (id) => {
-        if (!session || session.role === 'cliente')
+        if (!session || session.role !== 'admin')
             return;
         const target = (db.stock || []).find((item) => item.id === id);
         if (!target?.dbUuid)
@@ -9886,6 +10843,77 @@ const App = () => {
         }
         catch (err) {
             showToast(err?.message || 'Erro ao excluir item de estoque.', 'err');
+        }
+    };
+    const handleRevertStockMovement = async (movement) => {
+        if (!session || session.role === 'cliente')
+            return;
+        const currentItem = (dbRef.current.stock || []).find((i) => i.dbUuid === movement.stockItemUuid);
+        if (!currentItem) {
+            showToast('Insumo não localizado para desfazer a movimentação.', 'err');
+            return;
+        }
+        try {
+            const { updatedItem, revertedAt, estornoMovement } = await (0, supabaseDataService_1.dbRevertStockMovement)(empresaId, movement, currentItem, session.ownerName);
+            setDb((prev) => ({
+                ...prev,
+                stock: (prev.stock || []).map((it) => it.dbUuid === updatedItem.dbUuid ? updatedItem : it),
+                stockMovements: [
+                    estornoMovement,
+                    ...(prev.stockMovements || []).map((m) => m.id === movement.id ? { ...m, revertedAt } : m),
+                ],
+            }));
+            scheduleAutoBackup();
+            showToast(`Movimentação desfeita! Saldo de "${updatedItem.name}": ${updatedItem.quantity} ${updatedItem.unit}.`);
+        }
+        catch (err) {
+            showToast(err?.message || 'Erro ao desfazer movimentação.', 'err');
+        }
+    };
+    const handleQuickConsumeStock = async (item, quantity, note) => {
+        if (!session || session.role === 'cliente')
+            return;
+        try {
+            const { updatedItem, movement } = await (0, supabaseDataService_1.dbRegisterStockMovement)(empresaId, item, -Math.abs(quantity), session.ownerName, note);
+            setDb((prev) => ({
+                ...prev,
+                stock: (prev.stock || []).map((it) => it.dbUuid === updatedItem.dbUuid ? updatedItem : it),
+                stockMovements: [movement, ...(prev.stockMovements || [])],
+            }));
+            scheduleAutoBackup();
+            showToast(`Baixa registrada: -${movement.quantity} ${movement.unit} de "${movement.itemName}" (Saldo: ${updatedItem.quantity})`, 'ok', {
+                label: 'Desfazer',
+                onClick: () => {
+                    setToast(null);
+                    handleRevertStockMovement(movement);
+                },
+            });
+        }
+        catch (err) {
+            showToast(err?.message || 'Erro ao registrar baixa de estoque.', 'err');
+        }
+    };
+    const handleQuickReplenishStock = async (item, quantity, note) => {
+        if (!session || session.role !== 'admin')
+            return;
+        try {
+            const { updatedItem, movement } = await (0, supabaseDataService_1.dbRegisterStockMovement)(empresaId, item, Math.abs(quantity), session.ownerName, note);
+            setDb((prev) => ({
+                ...prev,
+                stock: (prev.stock || []).map((it) => it.dbUuid === updatedItem.dbUuid ? updatedItem : it),
+                stockMovements: [movement, ...(prev.stockMovements || [])],
+            }));
+            scheduleAutoBackup();
+            showToast(`Reposição registrada: +${movement.quantity} ${movement.unit} em "${movement.itemName}" (Saldo: ${updatedItem.quantity})`, 'ok', {
+                label: 'Desfazer',
+                onClick: () => {
+                    setToast(null);
+                    handleRevertStockMovement(movement);
+                },
+            });
+        }
+        catch (err) {
+            showToast(err?.message || 'Erro ao repor estoque.', 'err');
         }
     };
     // Finanças -> Despesas (Seção 3 - CRUD completo com Soft Delete + RBAC Admin)
@@ -10232,11 +11260,15 @@ const App = () => {
             react_1.default.createElement("div", { className: "relative z-10" },
                 react_1.default.createElement(AuthLoginScreen_1.AuthLoginScreen, { onAuthenticated: handleAuthenticated }))));
     }
-    // Enforce RBAC section access
-    const effectiveSection = session.role === 'operador' &&
-        !OPERATOR_ALLOWED_SECTIONS.includes(activeSection)
-        ? 'esteira'
-        : activeSection;
+    // Enforce RBAC + Super Admin section access
+    const effectiveSection = activeSection === 'configuracoes' && !session.isSuperAdmin
+        ? session.role === 'operador'
+            ? 'esteira'
+            : 'bento_home'
+        : session.role === 'operador' &&
+            !OPERATOR_ALLOWED_SECTIONS.includes(activeSection)
+            ? 'esteira'
+            : activeSection;
     const printPages = printJob
         ? (0, NotesSection_1.chunkNoteItems)(printJob.note.items, NotesSection_1.PEDIDO_A5_ROWS)
         : [];
@@ -10248,11 +11280,11 @@ const App = () => {
             react_1.default.createElement("div", { className: "blob blob-4" }),
             react_1.default.createElement("div", { className: "blob blob-5" }),
             react_1.default.createElement("div", { className: "max-w-[1720px] mx-auto flex gap-5 relative p-3 sm:p-5 lg:p-7 min-w-0" },
-                react_1.default.createElement(HeaderBar_1.LiquidSidebar, { activeSection: effectiveSection, onSelectSection: handleSelectSection, tenantName: session.companyName, userRole: session.role, userName: session.ownerName, onLogout: handleLogout, counts: counts }),
+                react_1.default.createElement(HeaderBar_1.LiquidSidebar, { activeSection: effectiveSection, onSelectSection: handleSelectSection, tenantName: session.companyName, userRole: session.role, isSuperAdmin: Boolean(session.isSuperAdmin), userName: session.ownerName, onLogout: handleLogout, counts: counts }),
                 react_1.default.createElement("div", { className: "flex-1 flex flex-col gap-5 min-w-0" },
-                    react_1.default.createElement(HeaderBar_1.HeaderBar, { activeSection: effectiveSection, onSelectSection: handleSelectSection, searchQuery: searchQuery, onSearchChange: setSearchQuery, onOpenNewOrder: () => setIsNewModalOpen(true), tenantName: session.companyName, userRole: session.role, userName: session.ownerName, realtimeStatus: realtimeStatus, onLogout: handleLogout, counts: counts }),
+                    react_1.default.createElement(HeaderBar_1.HeaderBar, { activeSection: effectiveSection, onSelectSection: handleSelectSection, searchQuery: searchQuery, onSearchChange: setSearchQuery, onOpenNewOrder: () => setIsNewModalOpen(true), tenantName: session.companyName, userRole: session.role, isSuperAdmin: Boolean(session.isSuperAdmin), userName: session.ownerName, realtimeStatus: realtimeStatus, onLogout: handleLogout, counts: counts }),
                     react_1.default.createElement("main", { className: "flex-1 flex flex-col gap-5 min-w-0" },
-                        session.role === 'admin' &&
+                        session.isSuperAdmin &&
                             unDismissedAlerts.length > 0 &&
                             effectiveSection !== 'configuracoes' && (react_1.default.createElement("div", { className: "rounded-[22px] bg-rose-500/15 border border-rose-500/70 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3" },
                             react_1.default.createElement("div", { className: "flex items-start gap-2.5 min-w-0" },
@@ -10288,11 +11320,11 @@ const App = () => {
                         session.role === 'admin' && effectiveSection === 'financeiro' && (react_1.default.createElement(FinanceAnalyticsSection_1.FinanceAnalyticsSection, { orders: filteredOrders, financials: financials, despesas: db.despesas || [], canEditDespesas: session.role === 'admin', serviceProviders: db.serviceProviders || [], payrollEmployees: db.payrollEmployees || [], investments: db.investments || [], onTogglePaid: handleTogglePaid, onEmitBilling30d: handleEmitBilling30d, onDeleteOrder: handleDeleteOrder, onCreateExpense: handleCreateExpense, onUpdateExpense: handleUpdateExpense, onDeleteExpense: handleDeleteExpense, onAddProvider: handleAddProvider, onUpdateProvider: handleUpdateProvider, onDeleteProvider: handleDeleteProvider, onAddPayrollEmployee: handleAddPayrollEmployee, onUpdatePayrollEmployee: handleUpdatePayrollEmployee, onDeletePayrollEmployee: handleDeletePayrollEmployee, onAddInvestment: handleAddInvestment, onUpdateInvestment: handleUpdateInvestment, onDeleteInvestment: handleDeleteInvestment })),
                         effectiveSection === 'entregas' && (react_1.default.createElement(DeliveriesLogisticsSection_1.DeliveriesLogisticsSection, { orders: db.orders, deliveries: db.deliveries, prefillOrder: prefillDeliveryOrder, onAddDelivery: handleAddDelivery, onDeleteDelivery: handleDeleteDelivery })),
                         effectiveSection === 'retornos' && (react_1.default.createElement(WarrantyReturnsSection_1.WarrantyReturnsSection, { orders: db.orders, returns: db.returns, onAddReturn: handleAddReturn, onUpdateReturnStatus: handleUpdateReturnStatus, onDeleteReturn: handleDeleteReturn })),
-                        effectiveSection === 'estoque' && (react_1.default.createElement(StockSection_1.StockSection, { items: db.stock || [], globalSearchQuery: searchQuery, onAddItem: handleAddStockItem, onUpdateItem: handleUpdateStockItem, onDeleteItem: handleDeleteStockItem })),
+                        effectiveSection === 'estoque' && (react_1.default.createElement(StockSection_1.StockSection, { userRole: session.role, items: db.stock || [], movements: db.stockMovements || [], globalSearchQuery: searchQuery, onAddItem: handleAddStockItem, onUpdateItem: handleUpdateStockItem, onDeleteItem: handleDeleteStockItem, onQuickConsume: handleQuickConsumeStock, onQuickReplenish: handleQuickReplenishStock, onRevertMovement: handleRevertStockMovement })),
                         effectiveSection === 'notas' && session.role !== 'cliente' && (react_1.default.createElement(NotesSection_1.NotesSection, { notas: db.notas || [], companies: db.companies, orders: db.orders, nextNoteNumber: nextNoteNumber, tenantKey: empresaId, currentUserName: session.ownerName, globalSearchQuery: searchQuery, onSaveNote: handleSaveNote, onMarkNotePrinted: handleMarkNotePrinted, onDeleteNote: handleDeleteNote, onTriggerPrint: handleTriggerPrint, onSyncPrintPreview: setPrintJob })),
                         session.role === 'admin' && effectiveSection === 'equipe' && (react_1.default.createElement(TeamManagementSection_1.TeamManagementSection, { session: session, employees: db.employees || [], onAddEmployee: handleAddEmployee, onToggleEmployeeRole: handleToggleEmployeeRole, onDeleteEmployee: handleDeleteEmployee })),
-                        session.role === 'admin' &&
-                            effectiveSection === 'configuracoes' && (react_1.default.createElement(SettingsBackupsSection_1.SettingsBackupsSection, { empresaId: empresaId, companyName: session.companyName, settings: settingsState.settings, backups: settingsState.backups, logs: settingsState.logs, loading: settingsState.loading, onRefresh: () => refreshSettingsAndBackups(empresaId, session.role), onUpdateSettings: async (updates) => {
+                        session.isSuperAdmin &&
+                            effectiveSection === 'configuracoes' && (react_1.default.createElement(SettingsBackupsSection_1.SettingsBackupsSection, { empresaId: empresaId, companyName: session.companyName, settings: settingsState.settings, backups: settingsState.backups, logs: settingsState.logs, loading: settingsState.loading, onRefresh: () => refreshSettingsAndBackups(empresaId, session.isSuperAdmin), onUpdateSettings: async (updates) => {
                                 const updated = await (0, supabaseDataService_1.dbUpdateCompanySettings)(empresaId, updates);
                                 setSettingsState((prev) => ({
                                     ...prev,
@@ -10309,9 +11341,10 @@ const App = () => {
                             } }))))),
             toast && (react_1.default.createElement("div", { role: "status", className: `fixed bottom-20 right-4 sm:right-6 z-[75] max-w-[calc(100vw-2rem)] px-4 py-3 rounded-2xl liquid-glass ring-2 ${toast.variant === 'err'
                     ? 'ring-rose-500/70 text-rose-900'
-                    : 'ring-indigo-400/50 text-slate-900'} text-xs font-bold shadow-2xl flex items-center gap-2` },
+                    : 'ring-indigo-400/50 text-slate-900'} text-xs font-bold shadow-2xl flex items-center gap-2.5` },
                 toast.variant === 'err' ? (react_1.default.createElement(lucide_react_1.AlertTriangle, { className: "w-4 h-4 text-rose-600 shrink-0" })) : (react_1.default.createElement(lucide_react_1.CheckCircle2, { className: "w-4 h-4 text-emerald-600 shrink-0" })),
-                react_1.default.createElement("span", { className: "break-words" }, toast.message))),
+                react_1.default.createElement("span", { className: "break-words" }, toast.message),
+                toast.actionLabel && toast.onAction && (react_1.default.createElement("button", { type: "button", onClick: toast.onAction, className: "btn-compact ml-1 px-3 py-1 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-extrabold shadow-sm transition cursor-pointer shrink-0" }, toast.actionLabel)))),
             session.role === 'admin' && (react_1.default.createElement("button", { type: "button", onClick: () => setIsNewModalOpen(true), className: "md:hidden fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] right-4 z-20 min-h-[48px] inline-flex items-center gap-2 px-5 py-3 rounded-full font-bold text-sm bg-gradient-to-r from-indigo-600 via-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 active:scale-95 text-white border border-white/40 shadow-2xl shadow-indigo-600/40 transition-all cursor-pointer" },
                 react_1.default.createElement("span", null, "Nova OS"))),
             session.role === 'admin' && (react_1.default.createElement(FastEntryModal_1.FastEntryModal, { isOpen: isNewModalOpen, onClose: () => setIsNewModalOpen(false), companies: db.companies, nextOrderId: nextOrderId, onSaveOrder: handleCreateOrderFull }))),

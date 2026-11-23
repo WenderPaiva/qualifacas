@@ -58,18 +58,21 @@
           font-size: 16px !important;
           min-height: 44px;
         }
-        button,
-        a,
-        [role="button"] {
-          min-width: 44px;
-          min-height: 44px;
-        }
         .icon-btn-44 {
           min-width: 44px;
           min-height: 44px;
           display: inline-flex;
           align-items: center;
           justify-content: center;
+        }
+      }
+
+      @media (pointer: coarse) {
+        button:not(.btn-compact),
+        a:not(.btn-compact),
+        [role="button"]:not(.btn-compact) {
+          min-width: 44px;
+          min-height: 44px;
         }
       }
 
