@@ -985,6 +985,7 @@ __moduleFactories["./services/supabaseDataService"] = Object.assign(
   function(module, exports, require) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.toFriendlySupabaseError = toFriendlySupabaseError;
 exports.restoreSupabaseSession = restoreSupabaseSession;
 exports.signInWithSupabase = signInWithSupabase;
 exports.signUpWithSupabase = signUpWithSupabase;
@@ -992,6 +993,9 @@ exports.signOutSupabase = signOutSupabase;
 exports.loadCompanyDatabaseFromSupabase = loadCompanyDatabaseFromSupabase;
 exports.dbCreateCompany = dbCreateCompany;
 exports.dbSoftDeleteCompany = dbSoftDeleteCompany;
+exports.dbBulkSoftDeleteOrders = dbBulkSoftDeleteOrders;
+exports.dbBulkSoftDeleteDeliveries = dbBulkSoftDeleteDeliveries;
+exports.dbBulkSoftDeleteReturns = dbBulkSoftDeleteReturns;
 exports.dbCreateOrder = dbCreateOrder;
 exports.dbMoveOrderStage = dbMoveOrderStage;
 exports.dbUpdateOrderPayment = dbUpdateOrderPayment;
@@ -1041,6 +1045,41 @@ function fromExpensePayment(pm) {
     }
     return 'pix';
 }
+function toFriendlySupabaseError(err, fallback) {
+    const code = String(err?.code || '').trim().toUpperCase();
+    const raw = String(err?.message || err || '').trim();
+    const lower = raw.toLowerCase();
+    if (code === 'P0001' && raw && !lower.includes('constraint') && !lower.includes('relation')) {
+        return raw;
+    }
+    if (lower.includes('ordens_servico_empresa_id_numero_os_key') || (code === '23505' && lower.includes('numero_os'))) {
+        return 'Conflito na numeração automática da OS. Tente novamente em instantes.';
+    }
+    if (code === '23505' || lower.includes('duplicate key') || lower.includes('unique constraint')) {
+        return 'Já existe um registro com este identificador ou código.';
+    }
+    if (code === '23503' || lower.includes('foreign key')) {
+        return 'O registro vinculado não foi encontrado ou já foi removido.';
+    }
+    if (code === '23514' || lower.includes('check constraint')) {
+        return 'Um dos valores informados está fora das regras permitidas.';
+    }
+    if (code === '42501' ||
+        lower.includes('row-level security') ||
+        lower.includes('permission denied')) {
+        return 'Você não tem permissão para executar esta operação.';
+    }
+    if (code === 'PGRST116' || lower.includes('0 rows')) {
+        return 'Registro não encontrado ou sem permissão de acesso.';
+    }
+    if (lower.includes('jwt expired') || lower.includes('not authenticated') || lower.includes('invalid jwt')) {
+        return 'Sua sessão expirou. Entre novamente para continuar.';
+    }
+    if (lower.includes('failed to fetch') || lower.includes('networkerror') || lower.includes('fetch failed')) {
+        return 'Falha de conexão com o servidor. Verifique sua internet e tente novamente.';
+    }
+    return fallback;
+}
 function generateUuid() {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
         return crypto.randomUUID();
@@ -1061,7 +1100,7 @@ async function resolveProfileSession(userId, email) {
         .eq('ativo', true)
         .maybeSingle();
     if (pErr || !perfil) {
-        throw new Error(pErr?.message || 'Perfil de empresa não localizado para este usuário.');
+        throw new Error(toFriendlySupabaseError(pErr, 'Perfil de empresa não localizado para este usuário.'));
     }
     const { data: empresa } = await sb
         .from('empresas')
@@ -1079,11 +1118,11 @@ async function resolveProfileSession(userId, email) {
         companyName: empresa?.nome || 'Facaria',
         ownerName: perfil.nome || email.split('@')[0],
         email: perfil.email || email,
-        role: perfil.role === 'operador'
-            ? 'operador'
-            : perfil.role === 'cliente'
-                ? 'cliente'
-                : 'admin',
+        role: perfil.role === 'admin'
+            ? 'admin'
+            : perfil.role === 'operador'
+                ? 'operador'
+                : 'cliente',
         isSuperAdmin,
         jobTitle: perfil.cargo || undefined,
         loggedInAt: new Date().toISOString(),
@@ -1125,14 +1164,14 @@ async function signInWithSupabase(emailInput, passwordInput) {
         if (msg.includes('invalid login credentials')) {
             return { error: 'E-mail ou senha inválidos. Verifique suas credenciais.' };
         }
-        return { error: error?.message || 'Não foi possível autenticar.' };
+        return { error: toFriendlySupabaseError(error, 'Não foi possível autenticar.') };
     }
     try {
         const session = await resolveProfileSession(data.user.id, data.user.email || email);
         return { session };
     }
     catch (err) {
-        return { error: err?.message || 'Erro ao carregar perfil da empresa.' };
+        return { error: toFriendlySupabaseError(err, 'Erro ao carregar perfil da empresa.') };
     }
 }
 async function signUpWithSupabase(payload) {
@@ -1157,7 +1196,7 @@ async function signUpWithSupabase(payload) {
         },
     });
     if (error) {
-        return { error: error.message || 'Não foi possível criar a conta.' };
+        return { error: toFriendlySupabaseError(error, 'Não foi possível criar a conta.') };
     }
     if (!data.session && data.user) {
         // Attempt immediate sign-in in case auto-confirm completed asynchronously
@@ -1177,7 +1216,7 @@ async function signUpWithSupabase(payload) {
             return { session };
         }
         catch (err) {
-            return { error: err?.message || 'Conta criada, mas perfil não carregou.' };
+            return { error: toFriendlySupabaseError(err, 'Conta criada, mas perfil não carregou.') };
         }
     }
     return { error: 'Não foi possível concluir o cadastro.' };
@@ -1293,6 +1332,7 @@ async function loadCompanyDatabaseFromSupabase(empresaId, role) {
         ['entregas', deliveriesRes.error],
         ['retornos', returnsRes.error],
         ['estoque_itens', stockRes.error],
+        ['estoque_movimentacoes', stockMovRes.error],
         ['notas', notasRes.error],
         ['nota_itens', notaItensRes.error],
         ['despesas', despesasRes.error],
@@ -1302,10 +1342,8 @@ async function loadCompanyDatabaseFromSupabase(empresaId, role) {
         ['perfis', perfisRes.error],
     ].filter(([, err]) => Boolean(err));
     if (queryErrors.length > 0) {
-        const details = queryErrors
-            .map(([tbl, err]) => `${tbl}: ${err?.message || 'erro desconhecido'}`)
-            .join(' | ');
-        throw new Error(`Falha ao carregar dados do Supabase (${details}).`);
+        const firstMsg = toFriendlySupabaseError(queryErrors[0][1], 'Verifique sua conexão e tente novamente.');
+        throw new Error(`Falha ao carregar dados (${queryErrors.length} consulta(s)): ${firstMsg}`);
     }
     const companies = (companiesRes.data || []).map((c) => ({
         id: c.codigo_legado || c.id,
@@ -1534,7 +1572,7 @@ async function dbCreateCompany(empresaId, codigoLegado, payload) {
         .select('*')
         .single();
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao cadastrar empresa cliente.'));
     return {
         id: data.codigo_legado || data.id,
         dbUuid: data.id,
@@ -1554,7 +1592,46 @@ async function dbSoftDeleteCompany(empresaId, dbUuid) {
         .eq('id', dbUuid)
         .eq('empresa_id', empresaId);
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao excluir empresa cliente.'));
+}
+async function dbBulkSoftDeleteOrders(empresaId, dbUuids) {
+    if (dbUuids.length === 0)
+        return;
+    const sb = (0, supabaseClient_1.getSupabaseClient)();
+    const { error } = await sb
+        .from('ordens_servico')
+        .update({ deleted_at: new Date().toISOString() })
+        .eq('empresa_id', empresaId)
+        .in('id', dbUuids)
+        .is('deleted_at', null);
+    if (error)
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao excluir ordens vinculadas.'));
+}
+async function dbBulkSoftDeleteDeliveries(empresaId, dbUuids) {
+    if (dbUuids.length === 0)
+        return;
+    const sb = (0, supabaseClient_1.getSupabaseClient)();
+    const { error } = await sb
+        .from('entregas')
+        .update({ deleted_at: new Date().toISOString() })
+        .eq('empresa_id', empresaId)
+        .in('id', dbUuids)
+        .is('deleted_at', null);
+    if (error)
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao excluir entregas vinculadas.'));
+}
+async function dbBulkSoftDeleteReturns(empresaId, dbUuids) {
+    if (dbUuids.length === 0)
+        return;
+    const sb = (0, supabaseClient_1.getSupabaseClient)();
+    const { error } = await sb
+        .from('retornos')
+        .update({ deleted_at: new Date().toISOString() })
+        .eq('empresa_id', empresaId)
+        .in('id', dbUuids)
+        .is('deleted_at', null);
+    if (error)
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao excluir retornos vinculados.'));
 }
 async function dbCreateOrder(empresaId, numeroOs, payload) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
@@ -1571,7 +1648,7 @@ async function dbCreateOrder(empresaId, numeroOs, payload) {
         .insert({
         id: generateUuid(),
         empresa_id: empresaId,
-        numero_os: numeroOs,
+        numero_os: numeroOs || 'AUTO',
         cliente_empresa_id: payload.companyUuid || null,
         cliente_codigo_legado: payload.companyId,
         cliente_nome: payload.companyName,
@@ -1590,7 +1667,7 @@ async function dbCreateOrder(empresaId, numeroOs, payload) {
         .select('*')
         .single();
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao registrar Ordem de Serviço.'));
     return {
         id: data.numero_os,
         dbUuid: data.id,
@@ -1621,7 +1698,7 @@ async function dbMoveOrderStage(ordemUuid, targetStage, stamp) {
         p_etapa_atualizada_em: stamp,
     });
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao mover faca na esteira.'));
     return {
         version: Number(data?.version) || 1,
         updatedAt: data?.updated_at || new Date().toISOString(),
@@ -1640,7 +1717,7 @@ async function dbUpdateOrderPayment(empresaId, ordemUuid, updates) {
         .eq('id', ordemUuid)
         .eq('empresa_id', empresaId);
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao atualizar pagamento da OS.'));
 }
 async function dbSoftDeleteOrder(empresaId, ordemUuid) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
@@ -1650,7 +1727,7 @@ async function dbSoftDeleteOrder(empresaId, ordemUuid) {
         .eq('id', ordemUuid)
         .eq('empresa_id', empresaId);
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao excluir Ordem de Serviço.'));
 }
 async function dbCreateDelivery(empresaId, codigoLegado, payload, ordemUuid) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
@@ -1672,7 +1749,7 @@ async function dbCreateDelivery(empresaId, codigoLegado, payload, ordemUuid) {
         .select('*')
         .single();
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao registrar entrega.'));
     return {
         id: data.codigo_legado || data.id,
         dbUuid: data.id,
@@ -1694,7 +1771,7 @@ async function dbSoftDeleteDelivery(empresaId, dbUuid) {
         .eq('id', dbUuid)
         .eq('empresa_id', empresaId);
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao excluir entrega.'));
 }
 async function dbCreateReturn(empresaId, codigoLegado, payload, ordemUuid) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
@@ -1717,7 +1794,7 @@ async function dbCreateReturn(empresaId, codigoLegado, payload, ordemUuid) {
         .select('*')
         .single();
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao registrar retorno.'));
     return {
         id: data.codigo_legado || data.id,
         dbUuid: data.id,
@@ -1741,7 +1818,7 @@ async function dbUpdateReturnStatus(empresaId, dbUuid, status) {
         .eq('id', dbUuid)
         .eq('empresa_id', empresaId);
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao atualizar status do retorno.'));
 }
 async function dbSoftDeleteReturn(empresaId, dbUuid) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
@@ -1751,7 +1828,7 @@ async function dbSoftDeleteReturn(empresaId, dbUuid) {
         .eq('id', dbUuid)
         .eq('empresa_id', empresaId);
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao excluir retorno.'));
 }
 // ESTOQUE (preserva todas as regras de negócio; persistência real + soft delete no Supabase)
 async function dbCreateStockItem(empresaId, codigoLegado, payload) {
@@ -1774,7 +1851,7 @@ async function dbCreateStockItem(empresaId, codigoLegado, payload) {
         .select('*')
         .single();
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao cadastrar item de estoque.'));
     return {
         id: data.codigo_legado || data.id,
         dbUuid: data.id,
@@ -1809,7 +1886,7 @@ async function dbUpdateStockItem(empresaId, dbUuid, payload) {
         .select('*')
         .single();
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao atualizar item de estoque.'));
     return {
         id: data.codigo_legado || data.id,
         dbUuid: data.id,
@@ -1833,7 +1910,7 @@ async function dbSoftDeleteStockItem(empresaId, dbUuid) {
         .eq('id', dbUuid)
         .eq('empresa_id', empresaId);
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao excluir item de estoque.'));
 }
 async function dbRegisterStockMovement(empresaId, item, delta, actorName, note) {
     if (!item.dbUuid) {
@@ -1855,7 +1932,7 @@ async function dbRegisterStockMovement(empresaId, item, delta, actorName, note) 
         .select('*')
         .single();
     if (upErr)
-        throw new Error(upErr.message);
+        throw new Error(toFriendlySupabaseError(upErr, 'Erro ao atualizar saldo do estoque.'));
     const { data: movRow, error: movErr } = await sb
         .from('estoque_movimentacoes')
         .insert({
@@ -1876,7 +1953,7 @@ async function dbRegisterStockMovement(empresaId, item, delta, actorName, note) 
         .select('*')
         .single();
     if (movErr)
-        throw new Error(movErr.message);
+        throw new Error(toFriendlySupabaseError(movErr, 'Erro ao registrar movimentação de estoque.'));
     return {
         updatedItem: {
             id: stockRow.codigo_legado || stockRow.id,
@@ -1928,14 +2005,14 @@ async function dbRevertStockMovement(empresaId, movement, currentItem, actorName
         .select('*')
         .single();
     if (upErr)
-        throw new Error(upErr.message);
+        throw new Error(toFriendlySupabaseError(upErr, 'Erro ao estornar saldo do estoque.'));
     const { error: markErr } = await sb
         .from('estoque_movimentacoes')
         .update({ estornado_em: nowIso })
         .eq('id', movement.id)
         .eq('empresa_id', empresaId);
     if (markErr)
-        throw new Error(markErr.message);
+        throw new Error(toFriendlySupabaseError(markErr, 'Erro ao marcar movimentação como estornada.'));
     const { data: estRow, error: estErr } = await sb
         .from('estoque_movimentacoes')
         .insert({
@@ -1956,7 +2033,7 @@ async function dbRevertStockMovement(empresaId, movement, currentItem, actorName
         .select('*')
         .single();
     if (estErr)
-        throw new Error(estErr.message);
+        throw new Error(toFriendlySupabaseError(estErr, 'Erro ao registrar estorno de estoque.'));
     return {
         updatedItem: {
             id: stockRow.codigo_legado || stockRow.id,
@@ -2014,14 +2091,17 @@ async function dbSaveNote(empresaId, actorName, payload, editingId) {
             .eq('id', editingId)
             .eq('empresa_id', empresaId);
         if (upErr)
-            throw new Error(upErr.message);
+            throw new Error(toFriendlySupabaseError(upErr, 'Erro ao atualizar nota/pedido.'));
         // Soft-delete previous items cleanly
-        await sb
+        const { error: delItemsErr } = await sb
             .from('nota_itens')
             .update({ deleted_at: new Date().toISOString() })
             .eq('nota_id', editingId)
             .eq('empresa_id', empresaId)
             .is('deleted_at', null);
+        if (delItemsErr) {
+            throw new Error(toFriendlySupabaseError(delItemsErr, 'Erro ao atualizar itens da nota.'));
+        }
     }
     else {
         const { error: insErr } = await sb.from('notas').insert({
@@ -2041,7 +2121,7 @@ async function dbSaveNote(empresaId, actorName, payload, editingId) {
             criado_por: actorName,
         });
         if (insErr)
-            throw new Error(insErr.message);
+            throw new Error(toFriendlySupabaseError(insErr, 'Erro ao criar nota/pedido.'));
     }
     const itemRows = payload.items.map((it) => ({
         id: generateUuid(),
@@ -2054,20 +2134,26 @@ async function dbSaveNote(empresaId, actorName, payload, editingId) {
     if (itemRows.length > 0) {
         const { error: itemErr } = await sb.from('nota_itens').insert(itemRows);
         if (itemErr)
-            throw new Error(itemErr.message);
+            throw new Error(toFriendlySupabaseError(itemErr, 'Erro ao salvar itens da nota.'));
     }
     const { data: savedNote, error: fetchErr } = await sb
         .from('notas')
         .select('*')
         .eq('id', noteId)
+        .eq('empresa_id', empresaId)
         .single();
-    if (fetchErr || !savedNote)
-        throw new Error(fetchErr?.message || 'Erro ao recarregar nota.');
-    const { data: savedItems } = await sb
+    if (fetchErr || !savedNote) {
+        throw new Error(toFriendlySupabaseError(fetchErr, 'Erro ao recarregar nota salva.'));
+    }
+    const { data: savedItems, error: savedItemsErr } = await sb
         .from('nota_itens')
         .select('*')
         .eq('nota_id', noteId)
+        .eq('empresa_id', empresaId)
         .is('deleted_at', null);
+    if (savedItemsErr) {
+        throw new Error(toFriendlySupabaseError(savedItemsErr, 'Erro ao recarregar itens da nota.'));
+    }
     return {
         id: savedNote.id,
         company_id: savedNote.empresa_id,
@@ -2103,24 +2189,26 @@ async function dbUpdateNoteStatus(empresaId, noteId, status) {
         .eq('id', noteId)
         .eq('empresa_id', empresaId);
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao atualizar status da nota.'));
 }
 async function dbSoftDeleteNote(empresaId, noteId) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
     const stamp = new Date().toISOString();
-    await sb
+    const { error: itemsErr } = await sb
         .from('nota_itens')
         .update({ deleted_at: stamp })
         .eq('nota_id', noteId)
         .eq('empresa_id', empresaId)
         .is('deleted_at', null);
+    if (itemsErr)
+        throw new Error(toFriendlySupabaseError(itemsErr, 'Erro ao excluir itens da nota.'));
     const { error } = await sb
         .from('notas')
         .update({ deleted_at: stamp })
         .eq('id', noteId)
         .eq('empresa_id', empresaId);
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao excluir nota/pedido.'));
 }
 async function dbCreateExpense(empresaId, payload) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
@@ -2144,7 +2232,7 @@ async function dbCreateExpense(empresaId, payload) {
         .select('*')
         .single();
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao cadastrar despesa.'));
     return {
         ...data,
         descricao: data.descricao || '',
@@ -2178,7 +2266,7 @@ async function dbUpdateExpense(empresaId, expenseId, payload) {
         .select('*')
         .single();
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao atualizar despesa.'));
     return {
         ...data,
         descricao: data.descricao || '',
@@ -2198,7 +2286,7 @@ async function dbSoftDeleteExpense(empresaId, expenseId) {
         .eq('id', expenseId)
         .eq('empresa_id', empresaId);
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao excluir despesa.'));
 }
 // PRESTADORES, FUNCIONÁRIOS FOLHA, INVESTIMENTOS
 async function dbCreateProvider(empresaId, codigoLegado, payload) {
@@ -2219,7 +2307,7 @@ async function dbCreateProvider(empresaId, codigoLegado, payload) {
         .select('*')
         .single();
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao cadastrar prestador.'));
     return {
         id: data.codigo_legado || data.id,
         dbUuid: data.id,
@@ -2250,7 +2338,7 @@ async function dbUpdateProvider(empresaId, dbUuid, payload) {
         .select('*')
         .single();
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao atualizar prestador.'));
     return {
         id: data.codigo_legado || data.id,
         dbUuid: data.id,
@@ -2272,7 +2360,7 @@ async function dbSoftDeleteProvider(empresaId, dbUuid) {
         .eq('id', dbUuid)
         .eq('empresa_id', empresaId);
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao excluir prestador.'));
 }
 async function dbCreatePayrollEmployee(empresaId, codigoLegado, payload) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
@@ -2290,7 +2378,7 @@ async function dbCreatePayrollEmployee(empresaId, codigoLegado, payload) {
         .select('*')
         .single();
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao cadastrar colaborador na folha.'));
     return {
         id: data.codigo_legado || data.id,
         dbUuid: data.id,
@@ -2317,7 +2405,7 @@ async function dbUpdatePayrollEmployee(empresaId, dbUuid, payload) {
         .select('*')
         .single();
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao atualizar colaborador na folha.'));
     return {
         id: data.codigo_legado || data.id,
         dbUuid: data.id,
@@ -2337,7 +2425,7 @@ async function dbSoftDeletePayrollEmployee(empresaId, dbUuid) {
         .eq('id', dbUuid)
         .eq('empresa_id', empresaId);
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao excluir colaborador da folha.'));
 }
 async function dbCreateInvestment(empresaId, codigoLegado, payload) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
@@ -2361,7 +2449,7 @@ async function dbCreateInvestment(empresaId, codigoLegado, payload) {
         .select('*')
         .single();
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao registrar investimento.'));
     return {
         id: data.codigo_legado || data.id,
         dbUuid: data.id,
@@ -2396,7 +2484,7 @@ async function dbUpdateInvestment(empresaId, dbUuid, payload) {
         .select('*')
         .single();
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao atualizar investimento.'));
     return {
         id: data.codigo_legado || data.id,
         dbUuid: data.id,
@@ -2418,7 +2506,7 @@ async function dbSoftDeleteInvestment(empresaId, dbUuid) {
         .eq('id', dbUuid)
         .eq('empresa_id', empresaId);
     if (error)
-        throw new Error(error.message);
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao excluir investimento.'));
 }
 // ============================================================================
 // EQUIPE (Edge Function manage-team - sem service_role no frontend)
@@ -2433,8 +2521,21 @@ async function invokeManageTeam(body) {
         body,
         headers: { Authorization: `Bearer ${token}` },
     });
-    if (error)
-        throw new Error(error.message || 'Erro ao gerenciar equipe.');
+    if (error) {
+        let errMsg = error.message || 'Erro ao gerenciar equipe.';
+        try {
+            const ctx = error.context;
+            if (ctx && typeof ctx.json === 'function') {
+                const parsed = await ctx.json();
+                if (parsed?.error)
+                    errMsg = parsed.error;
+            }
+        }
+        catch {
+            // ignore parse fallback
+        }
+        throw new Error(errMsg);
+    }
     if (data?.error)
         throw new Error(data.error);
     return data;
@@ -2487,17 +2588,21 @@ async function dbUpdateCompanySettings(empresaId, updates) {
     }, { onConflict: 'empresa_id' })
         .select('*')
         .single();
-    if (error)
-        throw new Error(error.message);
+    if (error) {
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao atualizar configurações de backup.'));
+    }
     return data;
 }
 async function dbDismissBackupAlert(empresaId, logId) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
-    await sb
+    const { error } = await sb
         .from('backup_logs')
         .update({ alerta_dispensado: true })
         .eq('id', logId)
         .eq('empresa_id', empresaId);
+    if (error) {
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao dispensar alerta de backup.'));
+    }
 }
 async function invokeBackupEngine(body) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
@@ -2555,6 +2660,7 @@ exports.authenticateTenantWithServerFallback = authenticateTenantWithServerFallb
 exports.saveEnterpriseDatabaseLocalOnly = saveEnterpriseDatabaseLocalOnly;
 exports.saveEnterpriseDatabase = saveEnterpriseDatabase;
 exports.moveOrderStageOnServer = moveOrderStageOnServer;
+exports.getNextCompanyCode = getNextCompanyCode;
 exports.getNextOrderId = getNextOrderId;
 exports.getNextDeliveryId = getNextDeliveryId;
 exports.getNextReturnId = getNextReturnId;
@@ -3232,68 +3338,44 @@ async function moveOrderStageOnServer(params) {
     const data = await res.json();
     return data?.order || null;
 }
-function getNextOrderId(db) {
+function getNextPrefixedCode(items, prefix, padLength = 3) {
+    const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const matcher = new RegExp(`^${escaped}-(\\d+)$`, 'i');
     let max = 0;
-    for (const o of db.orders) {
-        const num = parseInt(o.id.replace(/\D/g, ''), 10);
-        if (!Number.isNaN(num) && num > max)
-            max = num;
+    for (const item of items || []) {
+        const idStr = String(item?.id || '').trim();
+        const match = matcher.exec(idStr);
+        if (match) {
+            const num = parseInt(match[1], 10);
+            if (!Number.isNaN(num) && num > max)
+                max = num;
+        }
     }
-    return `OS-${String(max + 1).padStart(3, '0')}`;
+    return `${prefix}-${String(max + 1).padStart(padLength, '0')}`;
+}
+function getNextCompanyCode(companies) {
+    return getNextPrefixedCode(companies, 'EMP', 3);
+}
+function getNextOrderId(db) {
+    return getNextPrefixedCode(db.orders, 'OS', 3);
 }
 function getNextDeliveryId(db) {
-    let max = 0;
-    for (const d of db.deliveries) {
-        const num = parseInt(d.id.replace(/\D/g, ''), 10);
-        if (!Number.isNaN(num) && num > max)
-            max = num;
-    }
-    return `ENT-${String(max + 1).padStart(3, '0')}`;
+    return getNextPrefixedCode(db.deliveries, 'ENT', 3);
 }
 function getNextReturnId(db) {
-    let max = 0;
-    for (const r of db.returns) {
-        const num = parseInt(r.id.replace(/\D/g, ''), 10);
-        if (!Number.isNaN(num) && num > max)
-            max = num;
-    }
-    return `RET-${String(max + 1).padStart(3, '0')}`;
+    return getNextPrefixedCode(db.returns, 'RET', 3);
 }
 function getNextStockId(db) {
-    let max = 0;
-    for (const s of db.stock || []) {
-        const num = parseInt(s.id.replace(/\D/g, ''), 10);
-        if (!Number.isNaN(num) && num > max)
-            max = num;
-    }
-    return `EST-${String(max + 1).padStart(3, '0')}`;
+    return getNextPrefixedCode(db.stock, 'EST', 3);
 }
 function getNextProviderId(db) {
-    let max = 0;
-    for (const p of db.serviceProviders || []) {
-        const num = parseInt(p.id.replace(/\D/g, ''), 10);
-        if (!Number.isNaN(num) && num > max)
-            max = num;
-    }
-    return `PST-${String(max + 1).padStart(3, '0')}`;
+    return getNextPrefixedCode(db.serviceProviders, 'PST', 3);
 }
 function getNextPayrollEmployeeId(db) {
-    let max = 0;
-    for (const e of db.payrollEmployees || []) {
-        const num = parseInt(e.id.replace(/\D/g, ''), 10);
-        if (!Number.isNaN(num) && num > max)
-            max = num;
-    }
-    return `FUN-${String(max + 1).padStart(3, '0')}`;
+    return getNextPrefixedCode(db.payrollEmployees, 'FUN', 3);
 }
 function getNextInvestmentId(db) {
-    let max = 0;
-    for (const i of db.investments || []) {
-        const num = parseInt(i.id.replace(/\D/g, ''), 10);
-        if (!Number.isNaN(num) && num > max)
-            max = num;
-    }
-    return `INV-${String(max + 1).padStart(3, '0')}`;
+    return getNextPrefixedCode(db.investments, 'INV', 3);
 }
 function getNextNoteNumber(db) {
     let max = Number(db.noteSequence) || 0;
@@ -3351,6 +3433,7 @@ let activeSupabaseChannel = null;
 let activeSupabaseClient = null;
 let activeBroadcastChannel = null;
 let activeSubscriptionCount = 0;
+let supabaseChannelChain = Promise.resolve();
 function getActiveRealtimeChannelCount() {
     return activeSubscriptionCount;
 }
@@ -3417,6 +3500,10 @@ function publishRealtimeUpdate(params) {
         actorRole: params.actorRole,
         timestamp: new Date().toISOString(),
         order: params.order,
+        deletedOrderUuid: params.deletedOrderUuid,
+        deletedOrderId: params.deletedOrderId,
+        deletedOrderUuids: params.deletedOrderUuids,
+        deletedOrderIds: params.deletedOrderIds,
         db: params.db,
     };
     // 1. Native BroadcastChannel (Instant cross-tab sync)
@@ -3484,7 +3571,11 @@ function subscribeToCompanyRealtime(company_id, onRemoteUpdate, onConnectionStat
                     seenEvents.delete(first);
             }
         }
-        if (!rawEvent.order && (!rawEvent.db || !Array.isArray(rawEvent.db.orders))) {
+        const hasDeletePayload = Boolean(rawEvent.deletedOrderUuid) ||
+            Boolean(rawEvent.deletedOrderId) ||
+            (Array.isArray(rawEvent.deletedOrderUuids) && rawEvent.deletedOrderUuids.length > 0) ||
+            (Array.isArray(rawEvent.deletedOrderIds) && rawEvent.deletedOrderIds.length > 0);
+        if (!rawEvent.order && !hasDeletePayload && (!rawEvent.db || !Array.isArray(rawEvent.db.orders))) {
             return;
         }
         onRemoteUpdate(rawEvent);
@@ -3546,121 +3637,156 @@ function subscribeToCompanyRealtime(company_id, onRemoteUpdate, onConnectionStat
                     // ignore
                 }
             };
+            sseSource.onerror = () => {
+                sseSource?.close();
+                sseSource = null;
+            };
         }
         catch {
             // ignore
         }
     }
     // 4. Supabase Realtime Channel (ordens_servico changes + broadcast)
-    try {
-        const client = (0, supabaseClient_1.getSupabaseClient)();
-        localSupabaseClient = client;
-        activeSupabaseClient = client;
-        if (activeSupabaseChannel) {
-            try {
-                client.removeChannel(activeSupabaseChannel);
+    supabaseChannelChain = supabaseChannelChain
+        .then(async () => {
+        if (isDisposed)
+            return;
+        try {
+            const client = (0, supabaseClient_1.getSupabaseClient)();
+            localSupabaseClient = client;
+            activeSupabaseClient = client;
+            if (activeSupabaseChannel) {
+                const prevChannel = activeSupabaseChannel;
+                activeSupabaseChannel = null;
+                try {
+                    await client.removeChannel(prevChannel);
+                }
+                catch {
+                    // ignore
+                }
             }
-            catch {
-                // ignore
-            }
-            activeSupabaseChannel = null;
-        }
-        const channel = client
-            .channel(`facasflow_company_${company_id}`, {
-            config: { broadcast: { self: false } },
-        })
-            .on('broadcast', { event: 'facasflow_sync' }, (payload) => {
-            if (payload?.payload) {
-                handleIncoming(payload.payload);
-            }
-        })
-            .on('broadcast', { event: 'facasflow_sync_request' }, (payload) => {
-            if (isDisposed || !getLocalSnapshotForPeer)
+            if (isDisposed)
                 return;
-            const req = payload?.payload;
-            const requesterId = req?.requesterId;
-            if (!requesterId ||
-                requesterId === exports.CLIENT_INSTANCE_ID ||
-                req?.company_id !== company_id ||
-                repliedRequesters.has(requesterId)) {
-                return;
-            }
-            repliedRequesters.add(requesterId);
-            if (repliedRequesters.size > 50) {
-                const first = repliedRequesters.values().next().value;
-                if (first)
-                    repliedRequesters.delete(first);
-            }
-            const snap = getLocalSnapshotForPeer();
-            if (snap && Array.isArray(snap.orders) && snap.orders.length > 0) {
-                channel.send({
-                    type: 'broadcast',
-                    event: 'facasflow_sync',
-                    payload: {
-                        eventId: `peer_sync_${exports.CLIENT_INSTANCE_ID}_${requesterId}`,
-                        senderInstanceId: exports.CLIENT_INSTANCE_ID,
+            const channel = client
+                .channel(`facasflow_company_${company_id}`, {
+                config: { broadcast: { self: false } },
+            })
+                .on('broadcast', { event: 'facasflow_sync' }, (payload) => {
+                if (payload?.payload) {
+                    handleIncoming(payload.payload);
+                }
+            })
+                .on('broadcast', { event: 'facasflow_sync_request' }, (payload) => {
+                if (isDisposed || !getLocalSnapshotForPeer)
+                    return;
+                const req = payload?.payload;
+                const requesterId = req?.requesterId;
+                if (!requesterId ||
+                    requesterId === exports.CLIENT_INSTANCE_ID ||
+                    req?.company_id !== company_id ||
+                    repliedRequesters.has(requesterId)) {
+                    return;
+                }
+                repliedRequesters.add(requesterId);
+                if (repliedRequesters.size > 50) {
+                    const first = repliedRequesters.values().next().value;
+                    if (first)
+                        repliedRequesters.delete(first);
+                }
+                const snap = getLocalSnapshotForPeer();
+                if (snap && Array.isArray(snap.orders) && snap.orders.length > 0) {
+                    channel.send({
+                        type: 'broadcast',
+                        event: 'facasflow_sync',
+                        payload: {
+                            eventId: `peer_sync_${exports.CLIENT_INSTANCE_ID}_${requesterId}`,
+                            senderInstanceId: exports.CLIENT_INSTANCE_ID,
+                            company_id,
+                            section: 'all',
+                            actionLabel: '',
+                            actorName: '',
+                            actorRole: 'admin',
+                            timestamp: new Date().toISOString(),
+                            db: snap,
+                        },
+                    });
+                }
+            })
+                .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'ordens_servico',
+                filter: `empresa_id=eq.${company_id}`,
+            }, (change) => {
+                const row = change?.new;
+                const oldRow = change?.old;
+                if (change?.eventType === 'DELETE' || row?.deleted_at) {
+                    const deletedUuid = row?.id || oldRow?.id;
+                    if (deletedUuid) {
+                        handleIncoming({
+                            eventId: `pg_order_del_${deletedUuid}_${Date.now()}`,
+                            company_id,
+                            section: 'esteira',
+                            actionLabel: '',
+                            actorName: '',
+                            actorRole: 'operador',
+                            timestamp: row?.deleted_at || new Date().toISOString(),
+                            deletedOrderUuid: deletedUuid,
+                            deletedOrderId: row?.numero_os || oldRow?.numero_os,
+                        });
+                    }
+                    return;
+                }
+                if (row && row.id && row.etapa && !row.deleted_at) {
+                    handleIncoming({
+                        eventId: `pg_order_${row.id}_v${row.version || row.updated_at || Date.now()}`,
                         company_id,
-                        section: 'all',
+                        section: 'esteira',
                         actionLabel: '',
                         actorName: '',
-                        actorRole: 'admin',
-                        timestamp: new Date().toISOString(),
-                        db: snap,
-                    },
-                });
-            }
-        })
-            .on('postgres_changes', {
-            event: '*',
-            schema: 'public',
-            table: 'ordens_servico',
-            filter: `empresa_id=eq.${company_id}`,
-        }, (change) => {
-            const row = change?.new;
-            if (row && row.id && row.etapa && !row.deleted_at) {
-                handleIncoming({
-                    eventId: `pg_order_${row.id}_v${row.version || row.updated_at || Date.now()}`,
-                    company_id,
-                    section: 'esteira',
-                    actionLabel: '',
-                    actorName: '',
-                    actorRole: 'operador',
-                    timestamp: row.updated_at || new Date().toISOString(),
-                    order: {
-                        id: row.numero_os || row.id,
-                        dbUuid: row.id,
-                        company_id: row.empresa_id,
-                        companyId: row.cliente_codigo_legado || row.cliente_empresa_id || '',
-                        companyUuid: row.cliente_empresa_id || undefined,
-                        companyName: row.cliente_nome || '',
-                        companyPhone: row.cliente_telefone || '',
-                        toolDescription: row.descricao_ferramenta || '',
-                        amount: Number(row.valor) || 0,
-                        paymentModality: row.forma_pagamento,
-                        paymentStatus: row.status_pagamento,
-                        stage: row.etapa,
-                        stageUpdatedAt: row.etapa_atualizada_em || '',
-                        stageHistory: Array.isArray(row.historico_etapas) ? row.historico_etapas : [],
-                        version: Number(row.version) || 1,
-                        updatedAt: row.updated_at || new Date().toISOString(),
-                        createdAt: String(row.created_at || '').slice(0, 10),
-                        dueDate: String(row.data_vencimento || '').slice(0, 10),
-                        paidAt: row.data_pagamento ? String(row.data_pagamento).slice(0, 10) : undefined,
-                    },
-                });
-            }
-        })
-            .subscribe((status) => {
-            if (status === 'SUBSCRIBED' && !isDisposed) {
-                onConnectionStatusChange?.('supabase_live');
-            }
-        });
-        localSupabaseChannel = channel;
-        activeSupabaseChannel = channel;
-    }
-    catch {
-        // Fallback to local BroadcastChannel / SSE
-    }
+                        actorRole: 'operador',
+                        timestamp: row.updated_at || new Date().toISOString(),
+                        order: {
+                            id: row.numero_os || row.id,
+                            dbUuid: row.id,
+                            company_id: row.empresa_id,
+                            companyId: row.cliente_codigo_legado || row.cliente_empresa_id || '',
+                            companyUuid: row.cliente_empresa_id || undefined,
+                            companyName: row.cliente_nome || '',
+                            companyPhone: row.cliente_telefone || '',
+                            toolDescription: row.descricao_ferramenta || '',
+                            bladeMeters: row.blade_meters != null ? Number(row.blade_meters) : undefined,
+                            woodMm: row.wood_mm || undefined,
+                            amount: Number(row.valor) || 0,
+                            paymentModality: row.forma_pagamento,
+                            paymentStatus: row.status_pagamento,
+                            stage: row.etapa,
+                            stageUpdatedAt: row.etapa_atualizada_em || '',
+                            stageHistory: Array.isArray(row.historico_etapas) ? row.historico_etapas : [],
+                            version: Number(row.version) || 1,
+                            updatedAt: row.updated_at || new Date().toISOString(),
+                            createdAt: String(row.created_at || '').slice(0, 10),
+                            dueDate: String(row.data_vencimento || '').slice(0, 10),
+                            paidAt: row.data_pagamento ? String(row.data_pagamento).slice(0, 10) : undefined,
+                        },
+                    });
+                }
+            })
+                .subscribe((status) => {
+                if (status === 'SUBSCRIBED' && !isDisposed) {
+                    onConnectionStatusChange?.('supabase_live');
+                }
+            });
+            localSupabaseChannel = channel;
+            activeSupabaseChannel = channel;
+        }
+        catch {
+            // Fallback to local BroadcastChannel / SSE
+        }
+    })
+        .catch(() => {
+        // ignore chain rejection
+    });
     return () => {
         isDisposed = true;
         activeSubscriptionCount = Math.max(0, activeSubscriptionCount - 1);
@@ -3676,17 +3802,25 @@ function subscribeToCompanyRealtime(company_id, onRemoteUpdate, onConnectionStat
             }
             localBroadcast = null;
         }
-        if (localSupabaseClient && localSupabaseChannel) {
-            try {
-                localSupabaseClient.removeChannel(localSupabaseChannel);
-            }
-            catch {
+        const clientToClose = localSupabaseClient;
+        const chanToClose = localSupabaseChannel;
+        if (chanToClose && activeSupabaseChannel === chanToClose) {
+            activeSupabaseChannel = null;
+        }
+        localSupabaseChannel = null;
+        if (clientToClose && chanToClose) {
+            supabaseChannelChain = supabaseChannelChain
+                .then(async () => {
+                try {
+                    await clientToClose.removeChannel(chanToClose);
+                }
+                catch {
+                    // ignore
+                }
+            })
+                .catch(() => {
                 // ignore
-            }
-            if (activeSupabaseChannel === localSupabaseChannel) {
-                activeSupabaseChannel = null;
-            }
-            localSupabaseChannel = null;
+            });
         }
     };
 }
@@ -3770,7 +3904,7 @@ const AuthLoginScreen = ({ onAuthenticated, }) => {
                 setErrorMsg(res.error || 'Falha na autenticação.');
                 return;
             }
-            onAuthenticated(res.session);
+            await onAuthenticated(res.session);
         }
         finally {
             setIsSubmitting(false);
@@ -3802,7 +3936,7 @@ const AuthLoginScreen = ({ onAuthenticated, }) => {
                 setErrorMsg(res.error || 'Não foi possível criar a conta.');
                 return;
             }
-            onAuthenticated(res.session);
+            await onAuthenticated(res.session);
         }
         finally {
             setIsSubmitting(false);
@@ -4081,7 +4215,11 @@ const SidebarBody = ({ activeSection, onSelectSection, tenantName, userRole, isS
                     react_1.default.createElement("span", { className: "absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-white shadow-sm" })),
                 react_1.default.createElement("div", { className: "text-left leading-tight min-w-0" },
                     react_1.default.createElement("p", { className: "text-xs font-bold text-slate-900 frosted-text-depth truncate" }, userName),
-                    react_1.default.createElement("p", { className: "text-[11px] text-slate-600 font-semibold truncate" }, userRole === 'operador' ? 'Produção' : 'Administrador'))),
+                    react_1.default.createElement("p", { className: "text-[11px] text-slate-600 font-semibold truncate" }, userRole === 'operador'
+                        ? 'Produção'
+                        : userRole === 'cliente'
+                            ? 'Cliente'
+                            : 'Administrador'))),
             react_1.default.createElement("button", { type: "button", onClick: () => {
                     if (onCloseMobile)
                         onCloseMobile();
@@ -4142,22 +4280,87 @@ exports.HeaderBar = HeaderBar;
 __moduleFactories["./components/BentoOverviewSection"] = Object.assign(
   function(module, exports, require) {
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BentoOverviewSection = void 0;
-const react_1 = __importDefault(require("react"));
+const react_1 = __importStar(require("react"));
 const lucide_react_1 = require("lucide-react");
 const financeEngine_1 = require("../utils/financeEngine");
 const BentoOverviewSection = ({ companies, orders, deliveries, returns, stock, financials, onNavigate, onOpenNewOrder, onSelectCompany, }) => {
-    const readyCount = orders.filter((o) => o.stage === 'faca_pronta').length;
-    const activeProductionCount = orders.length - readyCount;
-    const openReturnsCount = returns.filter((r) => r.status !== 'liberado').length;
-    const madeirasStock = stock.filter((s) => s.category === 'madeiras');
-    const laminasStock = stock.filter((s) => s.category === 'laminas');
-    const lowMadeiras = madeirasStock.filter((s) => s.quantity <= s.minStock);
-    const lowLaminas = laminasStock.filter((s) => s.quantity <= s.minStock);
+    const { readyCount, activeProductionCount, stageCounts, companyOrderCounts } = (0, react_1.useMemo)(() => {
+        let ready = 0;
+        const stages = {};
+        const compCounts = {};
+        for (const o of orders) {
+            if (o.stage === 'faca_pronta')
+                ready += 1;
+            stages[o.stage] = (stages[o.stage] || 0) + 1;
+            compCounts[o.companyId] = (compCounts[o.companyId] || 0) + 1;
+        }
+        return {
+            readyCount: ready,
+            activeProductionCount: orders.length - ready,
+            stageCounts: stages,
+            companyOrderCounts: compCounts,
+        };
+    }, [orders]);
+    const openReturnsCount = (0, react_1.useMemo)(() => returns.filter((r) => r.status !== 'liberado').length, [returns]);
+    const { madeirasStock, laminasStock, lowMadeiras, lowLaminas } = (0, react_1.useMemo)(() => {
+        const madeiras = [];
+        const laminas = [];
+        const lowM = [];
+        const lowL = [];
+        for (const s of stock) {
+            if (s.category === 'madeiras') {
+                madeiras.push(s);
+                if (s.quantity <= s.minStock)
+                    lowM.push(s);
+            }
+            else {
+                laminas.push(s);
+                if (s.quantity <= s.minStock)
+                    lowL.push(s);
+            }
+        }
+        return {
+            madeirasStock: madeiras,
+            laminasStock: laminas,
+            lowMadeiras: lowM,
+            lowLaminas: lowL,
+        };
+    }, [stock]);
     return (react_1.default.createElement("div", { className: "space-y-5" },
         react_1.default.createElement("section", { className: "grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4", "data-purpose": "kpi-metrics-row" },
             react_1.default.createElement("div", { onClick: () => onNavigate('financeiro'), className: "liquid-glass rounded-[26px] p-4 flex flex-col justify-between overflow-hidden group hover:-translate-y-1 cursor-pointer" },
@@ -4319,7 +4522,7 @@ const BentoOverviewSection = ({ companies, orders, deliveries, returns, stock, f
                     react_1.default.createElement("span", null, "Abrir Esteira Completa"),
                     react_1.default.createElement(lucide_react_1.ArrowUpRight, { className: "w-3.5 h-3.5" }))),
             react_1.default.createElement("div", { className: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3" }, financeEngine_1.PRODUCTION_STAGES.map((st) => {
-                const count = orders.filter((o) => o.stage === st.id).length;
+                const count = stageCounts[st.id] || 0;
                 return (react_1.default.createElement("div", { key: st.id, onClick: () => onNavigate('esteira'), className: "p-4 rounded-2xl liquid-glass-subtle hover:bg-white/45 transition cursor-pointer flex flex-col justify-between" },
                     react_1.default.createElement("div", { className: "flex items-center justify-between" },
                         react_1.default.createElement("span", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-600" },
@@ -4340,7 +4543,7 @@ const BentoOverviewSection = ({ companies, orders, deliveries, returns, stock, f
                             "Ver CRM ",
                             react_1.default.createElement(lucide_react_1.ArrowUpRight, { className: "w-3.5 h-3.5" }))),
                     react_1.default.createElement("div", { className: "space-y-2.5" }, companies.length === 0 ? (react_1.default.createElement("div", { className: "p-6 rounded-2xl border border-dashed border-white/70 text-center text-xs font-medium text-slate-600" }, "Nenhuma empresa cadastrada.")) : (companies.slice(0, 4).map((comp) => {
-                        const compOrders = orders.filter((o) => o.companyId === comp.id);
+                        const compCount = companyOrderCounts[comp.id] || 0;
                         return (react_1.default.createElement("div", { key: comp.id, onClick: () => {
                                 onSelectCompany(comp.id);
                                 onNavigate('empresas');
@@ -4349,7 +4552,7 @@ const BentoOverviewSection = ({ companies, orders, deliveries, returns, stock, f
                                 react_1.default.createElement("p", { className: "text-xs font-bold text-slate-900 truncate" }, comp.corporateName),
                                 react_1.default.createElement("span", { className: "text-[11px] text-slate-600 font-mono" }, comp.cnpj)),
                             react_1.default.createElement("span", { className: "px-2.5 py-1 rounded-full bg-white/65 border border-white/80 text-slate-800 text-xs font-extrabold shrink-0" },
-                                compOrders.length,
+                                compCount,
                                 " facas")));
                     }))))),
             react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-6 flex flex-col justify-between" },
@@ -4482,35 +4685,87 @@ const CompaniesCrmSection = ({ companies, orders, selectedCompanyId, onSelectCom
     const [toolDesc, setToolDesc] = (0, react_1.useState)('');
     const [toolAmount, setToolAmount] = (0, react_1.useState)('');
     const [toolModality, setToolModality] = (0, react_1.useState)('boleto');
-    const handleCreateCompany = (e) => {
+    const [isCreatingCompany, setIsCreatingCompany] = (0, react_1.useState)(false);
+    const [isCreatingDie, setIsCreatingDie] = (0, react_1.useState)(false);
+    const [deletingKey, setDeletingKey] = (0, react_1.useState)(null);
+    const ordersByCompanyId = (0, react_1.useMemo)(() => {
+        const map = new Map();
+        for (const o of orders) {
+            const list = map.get(o.companyId);
+            if (list)
+                list.push(o);
+            else
+                map.set(o.companyId, [o]);
+        }
+        return map;
+    }, [orders]);
+    const handleCreateCompany = async (e) => {
         e.preventDefault();
-        if (!newCorpName.trim())
+        if (isCreatingCompany || !newCorpName.trim())
             return;
-        onAddCompany({
-            corporateName: newCorpName.trim(),
-            cnpj: newCnpj.trim() || '00.000.000/0001-00',
-            phone: newPhone.trim() || '(11) 99999-0000',
-            contactName: newContact.trim() || 'Compras / PCP',
-        });
-        setNewCorpName('');
-        setNewCnpj('');
-        setNewPhone('');
-        setNewContact('');
-        setShowNewCompanyForm(false);
+        setIsCreatingCompany(true);
+        try {
+            const ok = await onAddCompany({
+                corporateName: newCorpName.trim(),
+                cnpj: newCnpj.trim() || '00.000.000/0001-00',
+                phone: newPhone.trim() || '(11) 99999-0000',
+                contactName: newContact.trim() || 'Compras / PCP',
+            });
+            if (ok !== false) {
+                setNewCorpName('');
+                setNewCnpj('');
+                setNewPhone('');
+                setNewContact('');
+                setShowNewCompanyForm(false);
+            }
+        }
+        finally {
+            setIsCreatingCompany(false);
+        }
     };
-    const handleCreateDieInCompany = (e) => {
+    const handleCreateDieInCompany = async (e) => {
         e.preventDefault();
-        if (!activeCompany || !toolDesc.trim())
+        if (isCreatingDie || !activeCompany || !toolDesc.trim())
             return;
         const val = parseFloat(toolAmount.replace(',', '.')) || 0;
-        onAddDieForCompany(activeCompany, toolDesc.trim(), val, toolModality);
-        setToolDesc('');
-        setToolAmount('');
+        setIsCreatingDie(true);
+        try {
+            const ok = await onAddDieForCompany(activeCompany, toolDesc.trim(), val, toolModality);
+            if (ok !== false) {
+                setToolDesc('');
+                setToolAmount('');
+            }
+        }
+        finally {
+            setIsCreatingDie(false);
+        }
     };
-    const companyOrders = activeCompany
-        ? orders.filter((o) => o.companyId === activeCompany.id)
-        : [];
-    const companyTotalValue = companyOrders.reduce((acc, o) => acc + (o.amount || 0), 0);
+    const handleDeleteComp = async (companyId) => {
+        const key = `comp:${companyId}`;
+        if (deletingKey)
+            return;
+        setDeletingKey(key);
+        try {
+            await onDeleteCompany(companyId);
+        }
+        finally {
+            setDeletingKey(null);
+        }
+    };
+    const handleDeleteOrd = async (orderId) => {
+        const key = `ord:${orderId}`;
+        if (deletingKey)
+            return;
+        setDeletingKey(key);
+        try {
+            await onDeleteOrder(orderId);
+        }
+        finally {
+            setDeletingKey(null);
+        }
+    };
+    const companyOrders = (0, react_1.useMemo)(() => (activeCompany ? ordersByCompanyId.get(activeCompany.id) || [] : []), [activeCompany, ordersByCompanyId]);
+    const companyTotalValue = (0, react_1.useMemo)(() => companyOrders.reduce((acc, o) => acc + (o.amount || 0), 0), [companyOrders]);
     const inputClass = 'liquid-glass-pill w-full min-h-[44px] px-3.5 py-2.5 text-base rounded-2xl text-slate-900 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500/50 outline-none transition';
     return (react_1.default.createElement("div", { className: "space-y-5" },
         react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-3" },
@@ -4528,15 +4783,18 @@ const CompaniesCrmSection = ({ companies, orders, selectedCompanyId, onSelectCom
                 react_1.default.createElement("input", { type: "text", value: newPhone, onChange: (e) => setNewPhone(e.target.value), placeholder: "Telefone / WhatsApp", className: inputClass }),
                 react_1.default.createElement("input", { type: "text", value: newContact, onChange: (e) => setNewContact(e.target.value), placeholder: "Respons\u00E1vel (Compras / PCP)", className: inputClass })),
             react_1.default.createElement("div", { className: "flex justify-end" },
-                react_1.default.createElement("button", { type: "submit", className: "px-5 py-2.5 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white border border-white/40 shadow-md transition cursor-pointer" }, "Salvar Empresa")))),
+                react_1.default.createElement("button", { type: "submit", disabled: isCreatingCompany, className: "px-5 py-2.5 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 disabled:opacity-60 disabled:cursor-not-allowed text-white border border-white/40 shadow-md inline-flex items-center gap-1.5 transition cursor-pointer" }, isCreatingCompany ? (react_1.default.createElement(react_1.default.Fragment, null,
+                    react_1.default.createElement(lucide_react_1.Loader2, { className: "w-3.5 h-3.5 animate-spin" }),
+                    react_1.default.createElement("span", null, "Salvando..."))) : (react_1.default.createElement("span", null, "Salvar Empresa")))))),
         companies.length === 0 ? (react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-10 border-dashed text-center space-y-2" },
             react_1.default.createElement(lucide_react_1.Building2, { className: "w-8 h-8 text-indigo-600 mx-auto" }),
             react_1.default.createElement("h3", { className: "text-sm font-extrabold text-slate-900" }, "Nenhuma empresa cadastrada ainda"),
             react_1.default.createElement("p", { className: "text-xs font-medium text-slate-600 max-w-md mx-auto" }, "Utilize o formul\u00E1rio acima ou o bot\u00E3o \"Nova OS\" para cadastrar seu primeiro cliente e iniciar o controle de ferramental."))) : (react_1.default.createElement("div", { className: "grid grid-cols-1 lg:grid-cols-12 gap-5 items-start" },
             react_1.default.createElement("div", { className: "lg:col-span-5 space-y-3" }, companies.map((comp) => {
-                const linked = orders.filter((o) => o.companyId === comp.id);
+                const linked = ordersByCompanyId.get(comp.id) || [];
                 const sumVal = linked.reduce((acc, o) => acc + (o.amount || 0), 0);
                 const isSelected = activeCompany?.id === comp.id;
+                const isDeletingThis = deletingKey === `comp:${comp.id}`;
                 return (react_1.default.createElement("div", { key: comp.id, onClick: () => onSelectCompany(comp.id), className: `liquid-glass rounded-[26px] p-5 transition-all cursor-pointer ${isSelected
                         ? 'ring-2 ring-indigo-500/70 bg-white/45'
                         : 'hover:bg-white/35'}` },
@@ -4556,11 +4814,10 @@ const CompaniesCrmSection = ({ companies, orders, selectedCompanyId, onSelectCom
                                 linked.length,
                                 " ",
                                 linked.length === 1 ? 'faca' : 'facas'),
-                            react_1.default.createElement("button", { type: "button", onClick: (e) => {
+                            react_1.default.createElement("button", { type: "button", disabled: Boolean(deletingKey), onClick: (e) => {
                                     e.stopPropagation();
-                                    onDeleteCompany(comp.id);
-                                }, className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir empresa e facas vinculadas", "aria-label": "Excluir empresa" },
-                                react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" })))),
+                                    void handleDeleteComp(comp.id);
+                                }, className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir empresa e facas vinculadas", "aria-label": "Excluir empresa" }, isDeletingThis ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-3.5 h-3.5 animate-spin text-rose-600" })) : (react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" }))))),
                     react_1.default.createElement("div", { className: "mt-4 pt-3 border-t border-white/55 flex items-center justify-between text-xs text-slate-700" },
                         react_1.default.createElement("div", { className: "flex items-center gap-3" },
                             react_1.default.createElement("span", { className: "flex items-center gap-1 font-medium" },
@@ -4587,8 +4844,7 @@ const CompaniesCrmSection = ({ companies, orders, selectedCompanyId, onSelectCom
                         react_1.default.createElement("div", { className: "p-3.5 rounded-2xl liquid-glass-subtle text-right" },
                             react_1.default.createElement("span", { className: "text-[10px] font-bold uppercase text-slate-600 block" }, "Volume Total Cadastrado"),
                             react_1.default.createElement("span", { className: "text-xl font-black text-emerald-700 font-mono" }, (0, financeEngine_1.formatBRL)(companyTotalValue))),
-                        react_1.default.createElement("button", { type: "button", onClick: () => onDeleteCompany(activeCompany.id), className: "btn-compact w-10 h-10 rounded-2xl liquid-glass-pill text-slate-600 hover:text-rose-700 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir esta empresa", "aria-label": "Excluir empresa" },
-                            react_1.default.createElement(lucide_react_1.Trash2, { className: "w-4 h-4" })))),
+                        react_1.default.createElement("button", { type: "button", disabled: Boolean(deletingKey), onClick: () => void handleDeleteComp(activeCompany.id), className: "btn-compact w-10 h-10 rounded-2xl liquid-glass-pill disabled:opacity-50 text-slate-600 hover:text-rose-700 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir esta empresa", "aria-label": "Excluir empresa" }, deletingKey === `comp:${activeCompany.id}` ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-4 h-4 animate-spin text-rose-600" })) : (react_1.default.createElement(lucide_react_1.Trash2, { className: "w-4 h-4" }))))),
                 react_1.default.createElement("form", { onSubmit: handleCreateDieInCompany, className: "p-4 rounded-2xl liquid-glass-subtle space-y-3" },
                     react_1.default.createElement("div", { className: "flex items-center justify-between" },
                         react_1.default.createElement("span", { className: "text-xs font-extrabold text-slate-900 flex items-center gap-1.5" },
@@ -4607,9 +4863,11 @@ const CompaniesCrmSection = ({ companies, orders, selectedCompanyId, onSelectCom
                                     ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white border-white/40 shadow-sm'
                                     : 'liquid-glass-pill text-slate-700'}` }, meta.label));
                         })),
-                        react_1.default.createElement("button", { type: "submit", className: "px-4 py-2 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white border border-white/40 shadow-md flex items-center gap-1.5 transition cursor-pointer shrink-0" },
+                        react_1.default.createElement("button", { type: "submit", disabled: isCreatingDie, className: "px-4 py-2 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 disabled:opacity-60 disabled:cursor-not-allowed text-white border border-white/40 shadow-md flex items-center gap-1.5 transition cursor-pointer shrink-0" }, isCreatingDie ? (react_1.default.createElement(react_1.default.Fragment, null,
+                            react_1.default.createElement(lucide_react_1.Loader2, { className: "w-3.5 h-3.5 animate-spin" }),
+                            react_1.default.createElement("span", null, "Cadastrando..."))) : (react_1.default.createElement(react_1.default.Fragment, null,
                             react_1.default.createElement(lucide_react_1.Check, { className: "w-3.5 h-3.5 stroke-[2.5]" }),
-                            react_1.default.createElement("span", null, "Cadastrar Faca")))),
+                            react_1.default.createElement("span", null, "Cadastrar Faca")))))),
                 react_1.default.createElement("div", { className: "space-y-2.5" },
                     react_1.default.createElement("h4", { className: "text-xs font-bold uppercase tracking-wider text-slate-600" },
                         "Hist\u00F3rico de Facas Associadas \u2022 ",
@@ -4617,6 +4875,7 @@ const CompaniesCrmSection = ({ companies, orders, selectedCompanyId, onSelectCom
                     companyOrders.length === 0 ? (react_1.default.createElement("div", { className: "p-8 rounded-2xl border border-dashed border-white/70 text-center text-xs font-medium text-slate-600" }, "Nenhuma faca cadastrada para esta empresa ainda.")) : (companyOrders.map((order) => {
                         const modMeta = financeEngine_1.PAYMENT_MODALITY_META[order.paymentModality];
                         const stageMeta = financeEngine_1.PRODUCTION_STAGES.find((s) => s.id === order.stage);
+                        const isDeletingOrder = deletingKey === `ord:${order.id}`;
                         return (react_1.default.createElement("div", { key: order.id, className: "p-4 rounded-2xl liquid-glass-subtle flex flex-col sm:flex-row sm:items-center justify-between gap-3" },
                             react_1.default.createElement("div", { className: "space-y-1" },
                                 react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
@@ -4638,8 +4897,7 @@ const CompaniesCrmSection = ({ companies, orders, selectedCompanyId, onSelectCom
                                     react_1.default.createElement("span", { className: "text-[10px] font-medium text-slate-600" },
                                         "Atualizado: ",
                                         order.stageUpdatedAt)),
-                                react_1.default.createElement("button", { type: "button", onClick: () => onDeleteOrder(order.id), className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir esta OS / Faca", "aria-label": "Excluir ordem de servi\u00E7o" },
-                                    react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" })))));
+                                react_1.default.createElement("button", { type: "button", disabled: Boolean(deletingKey), onClick: () => void handleDeleteOrd(order.id), className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir esta OS / Faca", "aria-label": "Excluir ordem de servi\u00E7o" }, isDeletingOrder ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-3.5 h-3.5 animate-spin text-rose-600" })) : (react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" }))))));
                     })))))))));
 };
 exports.CompaniesCrmSection = CompaniesCrmSection;
@@ -4690,11 +4948,12 @@ const react_1 = __importStar(require("react"));
 const lucide_react_1 = require("lucide-react");
 const financeEngine_1 = require("../utils/financeEngine");
 const ACTIVE_PRODUCTION_STAGES = financeEngine_1.PRODUCTION_STAGES.filter((s) => s.id !== 'faca_pronta');
-const OrderKanbanCard = react_1.default.memo(({ order, isPending, isExpanded, onToggleExpand, onDragStart, onDragEnd, onMoveStage, onQuickRegisterDelivery, onDeleteOrder, }) => {
+const OrderKanbanCard = react_1.default.memo(({ order, userRole, isPending, isExpanded, onToggleExpand, onDragStart, onDragEnd, onMoveStage, onQuickRegisterDelivery, onDeleteOrder, }) => {
     const prevStage = (0, financeEngine_1.getPrevStage)(order.stage);
     const nextStage = (0, financeEngine_1.getNextStage)(order.stage);
     const modMeta = financeEngine_1.PAYMENT_MODALITY_META[order.paymentModality];
     const isFinalizingStep = nextStage === 'faca_pronta';
+    const canDeleteOrder = userRole !== 'operador' && userRole !== 'cliente';
     return (react_1.default.createElement("div", { draggable: !isPending, onDragStart: () => onDragStart(order.id), onDragEnd: onDragEnd, className: `rounded-2xl p-3 liquid-glass-subtle hover:bg-white/45 transition-colors cursor-grab active:cursor-grabbing flex flex-col gap-2 overflow-hidden min-w-0 ${isPending ? 'opacity-75 ring-1 ring-indigo-400/70' : ''}` },
         react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-1 min-w-0" },
             react_1.default.createElement("div", { className: "flex items-center gap-1 min-w-0 flex-wrap" },
@@ -4702,8 +4961,8 @@ const OrderKanbanCard = react_1.default.memo(({ order, isPending, isExpanded, on
                 react_1.default.createElement("span", { className: `px-1.5 py-0.5 rounded-full text-[9px] font-bold border truncate max-w-[92px] ${modMeta?.badgeClass}`, title: modMeta?.label }, modMeta?.short)),
             react_1.default.createElement("div", { className: "flex items-center gap-1 shrink-0" },
                 react_1.default.createElement("button", { type: "button", onClick: () => onToggleExpand(order.id), className: "btn-compact w-6 h-6 rounded-lg bg-white/65 hover:bg-white/95 text-slate-600 hover:text-indigo-700 border border-white/80 flex items-center justify-center transition-colors cursor-pointer shrink-0", title: isExpanded ? 'Recolher detalhes' : 'Exibir mais detalhes', "aria-label": isExpanded ? 'Recolher detalhes' : 'Exibir mais detalhes' }, isExpanded ? (react_1.default.createElement(lucide_react_1.ChevronUp, { className: "w-3 h-3" })) : (react_1.default.createElement(lucide_react_1.ChevronDown, { className: "w-3 h-3" }))),
-                react_1.default.createElement("button", { type: "button", onClick: () => onDeleteOrder(order.id), className: "btn-compact w-6 h-6 rounded-lg bg-white/65 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/80 flex items-center justify-center transition-colors cursor-pointer shrink-0", title: "Excluir esta OS", "aria-label": "Excluir esta OS" },
-                    react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3 h-3" })))),
+                canDeleteOrder && (react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onDeleteOrder(order.id), className: "btn-compact w-6 h-6 rounded-lg bg-white/65 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/80 flex items-center justify-center transition-colors cursor-pointer shrink-0", title: "Excluir esta OS", "aria-label": "Excluir esta OS" },
+                    react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3 h-3" }))))),
         react_1.default.createElement("div", { className: "min-w-0" },
             react_1.default.createElement("span", { className: "text-[11px] font-bold text-slate-600 block truncate" }, order.companyName),
             react_1.default.createElement("h4", { className: "text-xs font-extrabold text-slate-900 leading-snug mt-0.5 break-words" }, order.toolDescription)),
@@ -4738,16 +4997,17 @@ const OrderKanbanCard = react_1.default.memo(({ order, isPending, isExpanded, on
                 react_1.default.createElement(lucide_react_1.Truck, { className: "w-3 h-3 shrink-0" }),
                 react_1.default.createElement("span", { className: "truncate" }, "Despachar"))))));
 });
-const ProductionKanban = ({ orders, pendingOrderIds = [], moveError, onMoveStage, onQuickRegisterDelivery, onDeleteOrder, }) => {
+const ProductionKanban = ({ orders, userRole, pendingOrderIds = [], moveError, onMoveStage, onQuickRegisterDelivery, onDeleteOrder, }) => {
     const [activeView, setActiveView] = (0, react_1.useState)('producao');
     const [draggedId, setDraggedId] = (0, react_1.useState)(null);
     const [dragOverStage, setDragOverStage] = (0, react_1.useState)(null);
     const [expandedOrderIds, setExpandedOrderIds] = (0, react_1.useState)(() => new Set());
-    const pendingSet = new Set(pendingOrderIds);
+    const pendingSet = (0, react_1.useMemo)(() => new Set(pendingOrderIds), [pendingOrderIds]);
+    const canDeleteOrder = userRole !== 'operador' && userRole !== 'cliente';
     const activeOrders = (0, react_1.useMemo)(() => orders.filter((o) => o.stage !== 'faca_pronta'), [orders]);
     const readyOrders = (0, react_1.useMemo)(() => orders.filter((o) => o.stage === 'faca_pronta'), [orders]);
     const readyTotalVolume = (0, react_1.useMemo)(() => readyOrders.reduce((acc, o) => acc + (o.amount || 0), 0), [readyOrders]);
-    const handleToggleExpand = (orderId) => {
+    const handleToggleExpand = (0, react_1.useCallback)((orderId) => {
         setExpandedOrderIds((prev) => {
             const next = new Set(prev);
             if (next.has(orderId))
@@ -4756,7 +5016,11 @@ const ProductionKanban = ({ orders, pendingOrderIds = [], moveError, onMoveStage
                 next.add(orderId);
             return next;
         });
-    };
+    }, []);
+    const handleDragEnd = (0, react_1.useCallback)(() => {
+        setDraggedId(null);
+        setDragOverStage(null);
+    }, []);
     return (react_1.default.createElement("div", { className: "space-y-5 min-w-0" },
         react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-3" },
             react_1.default.createElement("div", null,
@@ -4834,10 +5098,7 @@ const ProductionKanban = ({ orders, pendingOrderIds = [], moveError, onMoveStage
                         react_1.default.createElement("span", { className: "font-extrabold text-emerald-700" }, (0, financeEngine_1.formatBRL)(colTotal)))),
                 react_1.default.createElement("div", { className: "space-y-2.5 flex-1 min-w-0" }, colOrders.length === 0 ? (react_1.default.createElement("div", { className: "h-32 rounded-2xl border border-dashed border-white/75 bg-white/20 flex items-center justify-center text-xs font-medium text-slate-600 text-center px-2" },
                     "Sem facas em ",
-                    stage.label)) : (colOrders.map((order) => (react_1.default.createElement(OrderKanbanCard, { key: order.id, order: order, isPending: pendingSet.has(order.id), isExpanded: expandedOrderIds.has(order.id), onToggleExpand: handleToggleExpand, onDragStart: setDraggedId, onDragEnd: () => {
-                        setDraggedId(null);
-                        setDragOverStage(null);
-                    }, onMoveStage: onMoveStage, onQuickRegisterDelivery: onQuickRegisterDelivery, onDeleteOrder: onDeleteOrder })))))));
+                    stage.label)) : (colOrders.map((order) => (react_1.default.createElement(OrderKanbanCard, { key: order.id, order: order, userRole: userRole, isPending: pendingSet.has(order.id), isExpanded: expandedOrderIds.has(order.id), onToggleExpand: handleToggleExpand, onDragStart: setDraggedId, onDragEnd: handleDragEnd, onMoveStage: onMoveStage, onQuickRegisterDelivery: onQuickRegisterDelivery, onDeleteOrder: onDeleteOrder })))))));
         }))) : (
         /* Subseção Dedicada: Facas Prontas / Concluídas */
         react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-5 sm:p-6 space-y-4 min-w-0" },
@@ -4872,8 +5133,8 @@ const ProductionKanban = ({ orders, pendingOrderIds = [], moveError, onMoveStage
                                         : 'bg-white/70 text-slate-700 border-white/80'}` }, order.paymentStatus === 'pago' ? 'Pago' : 'Não Pago')),
                             react_1.default.createElement("div", { className: "flex items-center gap-1 shrink-0" },
                                 react_1.default.createElement("button", { type: "button", onClick: () => handleToggleExpand(order.id), className: "btn-compact w-7 h-7 rounded-lg bg-white/65 hover:bg-white/95 text-slate-600 hover:text-indigo-700 border border-white/80 flex items-center justify-center transition cursor-pointer shrink-0", title: isExpanded ? 'Recolher detalhes' : 'Exibir mais detalhes', "aria-label": isExpanded ? 'Recolher detalhes' : 'Exibir mais detalhes' }, isExpanded ? (react_1.default.createElement(lucide_react_1.ChevronUp, { className: "w-3.5 h-3.5" })) : (react_1.default.createElement(lucide_react_1.ChevronDown, { className: "w-3.5 h-3.5" }))),
-                                react_1.default.createElement("button", { type: "button", onClick: () => onDeleteOrder(order.id), className: "btn-compact w-7 h-7 rounded-lg bg-white/65 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/80 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir esta OS", "aria-label": "Excluir esta OS" },
-                                    react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" })))),
+                                canDeleteOrder && (react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onDeleteOrder(order.id), className: "btn-compact w-7 h-7 rounded-lg bg-white/65 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/80 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir esta OS", "aria-label": "Excluir esta OS" },
+                                    react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" }))))),
                         react_1.default.createElement("div", { className: "min-w-0" },
                             react_1.default.createElement("span", { className: "text-xs font-bold text-slate-600 block truncate" }, order.companyName),
                             react_1.default.createElement("h4", { className: "text-sm font-extrabold text-slate-900 leading-snug mt-0.5 break-words" }, order.toolDescription)),
@@ -5779,12 +6040,15 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
     const [provModality, setProvModality] = (0, react_1.useState)('pix');
     const [provDueDate, setProvDueDate] = (0, react_1.useState)(() => (0, financeEngine_1.toISODate)());
     const [provStatus, setProvStatus] = (0, react_1.useState)('pendente');
+    const [isSubmittingProv, setIsSubmittingProv] = (0, react_1.useState)(false);
     // Payroll Employees Form State
     const [editEmpId, setEditEmpId] = (0, react_1.useState)(null);
     const [empName, setEmpName] = (0, react_1.useState)('');
     const [empRoleTitle, setEmpRoleTitle] = (0, react_1.useState)('');
     const [empSalary, setEmpSalary] = (0, react_1.useState)(0);
     const [empAdmissionDate, setEmpAdmissionDate] = (0, react_1.useState)(() => (0, financeEngine_1.toISODate)());
+    const [isSubmittingEmp, setIsSubmittingEmp] = (0, react_1.useState)(false);
+    const [deletingKey, setDeletingKey] = (0, react_1.useState)(null);
     const totalProviders = providers.reduce((sum, p) => sum + (p.amount || 0), 0);
     const totalPayroll = payrollEmployees.reduce((sum, e) => sum + (e.salary || 0), 0);
     const resetProviderForm = () => {
@@ -5803,9 +6067,9 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
         setEmpSalary(0);
         setEmpAdmissionDate((0, financeEngine_1.toISODate)());
     };
-    const handleProviderSubmit = (e) => {
+    const handleProviderSubmit = async (e) => {
         e.preventDefault();
-        if (!provName.trim() || !provService.trim())
+        if (isSubmittingProv || !provName.trim() || !provService.trim())
             return;
         const payload = {
             name: provName.trim(),
@@ -5815,17 +6079,22 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
             dueDate: provDueDate || (0, financeEngine_1.toISODate)(),
             status: provStatus,
         };
-        if (editProvId) {
-            onUpdateProvider(editProvId, payload);
+        setIsSubmittingProv(true);
+        try {
+            const ok = editProvId
+                ? await onUpdateProvider(editProvId, payload)
+                : await onAddProvider(payload);
+            if (ok !== false) {
+                resetProviderForm();
+            }
         }
-        else {
-            onAddProvider(payload);
+        finally {
+            setIsSubmittingProv(false);
         }
-        resetProviderForm();
     };
-    const handleEmployeeSubmit = (e) => {
+    const handleEmployeeSubmit = async (e) => {
         e.preventDefault();
-        if (!empName.trim() || !empRoleTitle.trim())
+        if (isSubmittingEmp || !empName.trim() || !empRoleTitle.trim())
             return;
         const payload = {
             name: empName.trim(),
@@ -5833,13 +6102,44 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
             salary: empSalary,
             admissionDate: empAdmissionDate || (0, financeEngine_1.toISODate)(),
         };
-        if (editEmpId) {
-            onUpdatePayrollEmployee(editEmpId, payload);
+        setIsSubmittingEmp(true);
+        try {
+            const ok = editEmpId
+                ? await onUpdatePayrollEmployee(editEmpId, payload)
+                : await onAddPayrollEmployee(payload);
+            if (ok !== false) {
+                resetEmployeeForm();
+            }
         }
-        else {
-            onAddPayrollEmployee(payload);
+        finally {
+            setIsSubmittingEmp(false);
         }
-        resetEmployeeForm();
+    };
+    const handleDeleteProv = async (id) => {
+        if (deletingKey)
+            return;
+        setDeletingKey(`prov:${id}`);
+        try {
+            await onDeleteProvider(id);
+            if (editProvId === id)
+                resetProviderForm();
+        }
+        finally {
+            setDeletingKey(null);
+        }
+    };
+    const handleDeleteEmp = async (id) => {
+        if (deletingKey)
+            return;
+        setDeletingKey(`emp:${id}`);
+        try {
+            await onDeletePayrollEmployee(id);
+            if (editEmpId === id)
+                resetEmployeeForm();
+        }
+        finally {
+            setDeletingKey(null);
+        }
     };
     const inputClass = 'liquid-glass-pill w-full min-h-[44px] px-3.5 py-2.5 text-base rounded-2xl text-slate-900 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500/50 outline-none transition';
     return (react_1.default.createElement("div", { className: "space-y-5" },
@@ -5892,9 +6192,11 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
                     react_1.default.createElement("div", null,
                         react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Status"),
                         react_1.default.createElement("select", { value: provStatus, onChange: (e) => setProvStatus(e.target.value), className: inputClass }, Object.entries(PROVIDER_STATUS_META).map(([k, v]) => (react_1.default.createElement("option", { key: k, value: k }, v.label)))))),
-                react_1.default.createElement("button", { type: "submit", className: "w-full py-3 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 to-indigo-700 text-white border border-white/40 shadow-md flex items-center justify-center gap-2 cursor-pointer" },
+                react_1.default.createElement("button", { type: "submit", disabled: isSubmittingProv, className: "w-full py-3 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 to-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed text-white border border-white/40 shadow-md flex items-center justify-center gap-2 cursor-pointer" }, isSubmittingProv ? (react_1.default.createElement(react_1.default.Fragment, null,
+                    react_1.default.createElement(lucide_react_1.Loader2, { className: "w-4 h-4 animate-spin" }),
+                    react_1.default.createElement("span", null, editProvId ? 'Salvando...' : 'Adicionando...'))) : (react_1.default.createElement(react_1.default.Fragment, null,
                     react_1.default.createElement(lucide_react_1.Check, { className: "w-4 h-4" }),
-                    react_1.default.createElement("span", null, editProvId ? 'Salvar Prestador' : 'Adicionar Prestador'))),
+                    react_1.default.createElement("span", null, editProvId ? 'Salvar Prestador' : 'Adicionar Prestador'))))),
             react_1.default.createElement("div", { className: "lg:col-span-7 liquid-glass rounded-[28px] p-6 space-y-3" },
                 react_1.default.createElement("h3", { className: "text-sm font-extrabold text-slate-900 pb-2 border-b border-white/60" }, "Prestadores Cadastrados"),
                 providers.length === 0 ? (react_1.default.createElement("div", { className: "p-8 rounded-2xl border border-dashed border-white/70 text-center text-xs font-medium text-slate-600" }, "Nenhum prestador de servi\u00E7o cadastrado.")) : (providers.map((p) => {
@@ -5922,12 +6224,7 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
                                     setProvStatus(p.status);
                                 }, className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-indigo-500/20 text-slate-600 hover:text-indigo-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Editar prestador", "aria-label": "Editar prestador" },
                                 react_1.default.createElement(lucide_react_1.Edit3, { className: "w-3.5 h-3.5" })),
-                            react_1.default.createElement("button", { type: "button", onClick: () => {
-                                    if (editProvId === p.id)
-                                        resetProviderForm();
-                                    onDeleteProvider(p.id);
-                                }, className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir prestador", "aria-label": "Excluir prestador" },
-                                react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" })))));
+                            react_1.default.createElement("button", { type: "button", disabled: Boolean(deletingKey), onClick: () => void handleDeleteProv(p.id), className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir prestador", "aria-label": "Excluir prestador" }, deletingKey === `prov:${p.id}` ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-3.5 h-3.5 animate-spin text-rose-600" })) : (react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" }))))));
                 }))))) : (react_1.default.createElement("div", { className: "grid grid-cols-1 lg:grid-cols-12 gap-5 items-start" },
             react_1.default.createElement("form", { onSubmit: handleEmployeeSubmit, className: "lg:col-span-5 liquid-glass rounded-[28px] p-6 space-y-3.5" },
                 react_1.default.createElement("div", { className: "flex items-center justify-between pb-3 border-b border-white/60" },
@@ -5951,9 +6248,11 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
                     react_1.default.createElement("div", null,
                         react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Data de Admiss\u00E3o"),
                         react_1.default.createElement("input", { type: "date", required: true, value: empAdmissionDate, onChange: (e) => setEmpAdmissionDate(e.target.value), className: `${inputClass} font-mono` }))),
-                react_1.default.createElement("button", { type: "submit", className: "w-full py-3 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 to-indigo-700 text-white border border-white/40 shadow-md flex items-center justify-center gap-2 cursor-pointer" },
+                react_1.default.createElement("button", { type: "submit", disabled: isSubmittingEmp, className: "w-full py-3 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 to-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed text-white border border-white/40 shadow-md flex items-center justify-center gap-2 cursor-pointer" }, isSubmittingEmp ? (react_1.default.createElement(react_1.default.Fragment, null,
+                    react_1.default.createElement(lucide_react_1.Loader2, { className: "w-4 h-4 animate-spin" }),
+                    react_1.default.createElement("span", null, editEmpId ? 'Salvando...' : 'Adicionando...'))) : (react_1.default.createElement(react_1.default.Fragment, null,
                     react_1.default.createElement(lucide_react_1.Check, { className: "w-4 h-4" }),
-                    react_1.default.createElement("span", null, editEmpId ? 'Salvar Funcionário' : 'Adicionar Funcionário'))),
+                    react_1.default.createElement("span", null, editEmpId ? 'Salvar Funcionário' : 'Adicionar Funcionário'))))),
             react_1.default.createElement("div", { className: "lg:col-span-7 liquid-glass rounded-[28px] p-6 space-y-3" },
                 react_1.default.createElement("h3", { className: "text-sm font-extrabold text-slate-900 pb-2 border-b border-white/60" }, "Quadro de Funcion\u00E1rios"),
                 payrollEmployees.length === 0 ? (react_1.default.createElement("div", { className: "p-8 rounded-2xl border border-dashed border-white/70 text-center text-xs font-medium text-slate-600" }, "Nenhum funcion\u00E1rio cadastrado.")) : (payrollEmployees.map((emp) => (react_1.default.createElement("div", { key: emp.id, className: "p-4 rounded-2xl liquid-glass-subtle flex flex-wrap items-center justify-between gap-3" },
@@ -5973,12 +6272,7 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
                                 setEmpAdmissionDate(emp.admissionDate);
                             }, className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-indigo-500/20 text-slate-600 hover:text-indigo-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Editar funcion\u00E1rio", "aria-label": "Editar funcion\u00E1rio" },
                             react_1.default.createElement(lucide_react_1.Edit3, { className: "w-3.5 h-3.5" })),
-                        react_1.default.createElement("button", { type: "button", onClick: () => {
-                                if (editEmpId === emp.id)
-                                    resetEmployeeForm();
-                                onDeletePayrollEmployee(emp.id);
-                            }, className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir funcion\u00E1rio", "aria-label": "Excluir funcion\u00E1rio" },
-                            react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" }))))))))))));
+                        react_1.default.createElement("button", { type: "button", disabled: Boolean(deletingKey), onClick: () => void handleDeleteEmp(emp.id), className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir funcion\u00E1rio", "aria-label": "Excluir funcion\u00E1rio" }, deletingKey === `emp:${emp.id}` ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-3.5 h-3.5 animate-spin text-rose-600" })) : (react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" })))))))))))));
 };
 exports.CollaboratorsSubsection = CollaboratorsSubsection;
 
@@ -6042,6 +6336,8 @@ const InvestmentsSubsection = ({ investments, onAddInvestment, onUpdateInvestmen
     const [investedAmount, setInvestedAmount] = (0, react_1.useState)(0);
     const [currentAmount, setCurrentAmount] = (0, react_1.useState)(0);
     const [customCurrentTouched, setCustomCurrentTouched] = (0, react_1.useState)(false);
+    const [isSubmitting, setIsSubmitting] = (0, react_1.useState)(false);
+    const [deletingId, setDeletingId] = (0, react_1.useState)(null);
     const filteredInvestments = (0, react_1.useMemo)(() => {
         if (categoryFilter === 'todos')
             return investments;
@@ -6071,9 +6367,9 @@ const InvestmentsSubsection = ({ investments, onAddInvestment, onUpdateInvestmen
         setCurrentAmount(0);
         setCustomCurrentTouched(false);
     };
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault();
-        if (!assetName.trim() || investedAmount <= 0)
+        if (isSubmitting || !assetName.trim() || investedAmount <= 0)
             return;
         const resolvedCurrent = customCurrentTouched && currentAmount > 0 ? currentAmount : investedAmount;
         const payload = {
@@ -6084,13 +6380,31 @@ const InvestmentsSubsection = ({ investments, onAddInvestment, onUpdateInvestmen
             investedAmount,
             currentAmount: resolvedCurrent,
         };
-        if (editId) {
-            onUpdateInvestment(editId, payload);
+        setIsSubmitting(true);
+        try {
+            const ok = editId
+                ? await onUpdateInvestment(editId, payload)
+                : await onAddInvestment(payload);
+            if (ok !== false) {
+                resetForm();
+            }
         }
-        else {
-            onAddInvestment(payload);
+        finally {
+            setIsSubmitting(false);
         }
-        resetForm();
+    };
+    const handleDelete = async (id) => {
+        if (deletingId)
+            return;
+        setDeletingId(id);
+        try {
+            await onDeleteInvestment(id);
+            if (editId === id)
+                resetForm();
+        }
+        finally {
+            setDeletingId(null);
+        }
     };
     const inputClass = 'liquid-glass-pill w-full min-h-[44px] px-3.5 py-2.5 text-base rounded-2xl text-slate-900 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500/50 outline-none transition';
     return (react_1.default.createElement("div", { className: "space-y-5" },
@@ -6161,9 +6475,11 @@ const InvestmentsSubsection = ({ investments, onAddInvestment, onUpdateInvestmen
                         ' ',
                         react_1.default.createElement("span", { className: "font-medium text-slate-500" }, "(opcional)")),
                     react_1.default.createElement("input", { type: "text", value: description, onChange: (e) => setDescription(e.target.value), placeholder: "Detalhes adicionais, banco, cota ou refer\u00EAncia...", className: inputClass })),
-                react_1.default.createElement("button", { type: "submit", className: "w-full min-h-[44px] py-3 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white border border-white/40 shadow-md flex items-center justify-center gap-2 cursor-pointer" },
+                react_1.default.createElement("button", { type: "submit", disabled: isSubmitting, className: "w-full min-h-[44px] py-3 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 disabled:opacity-60 disabled:cursor-not-allowed text-white border border-white/40 shadow-md flex items-center justify-center gap-2 cursor-pointer" }, isSubmitting ? (react_1.default.createElement(react_1.default.Fragment, null,
+                    react_1.default.createElement(lucide_react_1.Loader2, { className: "w-4 h-4 animate-spin" }),
+                    react_1.default.createElement("span", null, editId ? 'Salvando...' : 'Registrando...'))) : (react_1.default.createElement(react_1.default.Fragment, null,
                     react_1.default.createElement(lucide_react_1.Check, { className: "w-4 h-4" }),
-                    react_1.default.createElement("span", null, editId ? 'Salvar Alterações' : 'Registrar Investimento'))),
+                    react_1.default.createElement("span", null, editId ? 'Salvar Alterações' : 'Registrar Investimento'))))),
             react_1.default.createElement("div", { className: "lg:col-span-7 liquid-glass rounded-[28px] p-6 space-y-4" },
                 react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-white/60" },
                     react_1.default.createElement("h3", { className: "text-sm font-extrabold text-slate-900" },
@@ -6204,12 +6520,7 @@ const InvestmentsSubsection = ({ investments, onAddInvestment, onUpdateInvestmen
                                     setCustomCurrentTouched(Math.abs(inv.currentAmount - inv.investedAmount) > 0.01);
                                 }, className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-indigo-500/20 text-slate-600 hover:text-indigo-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Editar investimento", "aria-label": "Editar investimento" },
                                 react_1.default.createElement(lucide_react_1.Edit3, { className: "w-3.5 h-3.5" })),
-                            react_1.default.createElement("button", { type: "button", onClick: () => {
-                                    if (editId === inv.id)
-                                        resetForm();
-                                    onDeleteInvestment(inv.id);
-                                }, className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir investimento", "aria-label": "Excluir investimento" },
-                                react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" })))));
+                            react_1.default.createElement("button", { type: "button", disabled: Boolean(deletingId), onClick: () => void handleDelete(inv.id), className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir investimento", "aria-label": "Excluir investimento" }, deletingId === inv.id ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-3.5 h-3.5 animate-spin text-rose-600" })) : (react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" }))))));
                 })))))));
 };
 exports.InvestmentsSubsection = InvestmentsSubsection;
@@ -6298,36 +6609,79 @@ const MonthlyReportSubsection = ({ orders, despesas, serviceProviders, payrollEm
         });
         return Array.from(years).sort((a, b) => b - a);
     }, [orders, despesas, initialYear]);
+    const groupedByMonth = (0, react_1.useMemo)(() => {
+        const paidOrdersMap = new Map();
+        const unpaidOrdersMap = new Map();
+        const expensesMap = new Map();
+        const providersMap = new Map();
+        const investmentsMap = new Map();
+        for (const o of orders) {
+            if (o.paymentStatus === 'pago') {
+                const key = (o.paidAt || o.createdAt || '').slice(0, 7);
+                const arr = paidOrdersMap.get(key);
+                if (arr)
+                    arr.push(o);
+                else
+                    paidOrdersMap.set(key, [o]);
+            }
+            else {
+                const key = (o.createdAt || '').slice(0, 7);
+                const arr = unpaidOrdersMap.get(key);
+                if (arr)
+                    arr.push(o);
+                else
+                    unpaidOrdersMap.set(key, [o]);
+            }
+        }
+        for (const d of despesas) {
+            if (d.deleted_at || d.status === 'cancelado')
+                continue;
+            const key = (d.data_competencia || '').slice(0, 7);
+            const arr = expensesMap.get(key);
+            if (arr)
+                arr.push(d);
+            else
+                expensesMap.set(key, [d]);
+        }
+        for (const p of serviceProviders) {
+            const key = (p.dueDate || '').slice(0, 7);
+            const arr = providersMap.get(key);
+            if (arr)
+                arr.push(p);
+            else
+                providersMap.set(key, [p]);
+        }
+        for (const inv of investments) {
+            const key = (inv.appliedDate || '').slice(0, 7);
+            const arr = investmentsMap.get(key);
+            if (arr)
+                arr.push(inv);
+            else
+                investmentsMap.set(key, [inv]);
+        }
+        return {
+            paidOrdersMap,
+            unpaidOrdersMap,
+            expensesMap,
+            providersMap,
+            investmentsMap,
+        };
+    }, [orders, despesas, serviceProviders, investments]);
     const computeMonthTotals = (monthKey) => {
         const monthEnd = `${monthKey}-31`;
-        // Entradas efetivamente pagas no mês
-        const paidOrders = orders.filter((o) => {
-            if (o.paymentStatus !== 'pago')
-                return false;
-            const refDate = (o.paidAt || o.createdAt || '').slice(0, 7);
-            return refDate === monthKey;
-        });
-        const unpaidOrdersInMonth = orders.filter((o) => {
-            if (o.paymentStatus === 'pago')
-                return false;
-            const refDate = (o.createdAt || '').slice(0, 7);
-            return refDate === monthKey;
-        });
+        const paidOrders = groupedByMonth.paidOrdersMap.get(monthKey) || [];
+        const unpaidOrdersInMonth = groupedByMonth.unpaidOrdersMap.get(monthKey) || [];
         const totalEntradas = (0, financeEngine_1.roundCurrencyBRL)(paidOrders.reduce((sum, o) => sum + (Number(o.amount) || 0), 0));
         const totalNaoPagoMes = (0, financeEngine_1.roundCurrencyBRL)(unpaidOrdersInMonth.reduce((sum, o) => sum + (Number(o.amount) || 0), 0));
-        // Saídas: Despesas ativas (não canceladas) do mês
-        const monthExpenses = despesas.filter((d) => !d.deleted_at &&
-            d.status !== 'cancelado' &&
-            (d.data_competencia || '').slice(0, 7) === monthKey);
+        const monthExpenses = groupedByMonth.expensesMap.get(monthKey) || [];
         const totalDespesas = (0, financeEngine_1.roundCurrencyBRL)(monthExpenses.reduce((sum, d) => sum + (Number(d.valor) || 0), 0));
-        // Saídas: Prestadores de Serviço com vencimento no mês
-        const monthProviders = serviceProviders.filter((p) => (p.dueDate || '').slice(0, 7) === monthKey);
+        const monthProviders = groupedByMonth.providersMap.get(monthKey) || [];
         const totalPrestadores = (0, financeEngine_1.roundCurrencyBRL)(monthProviders.reduce((sum, p) => sum + (Number(p.amount) || 0), 0));
         // Saídas: Folha de funcionários admitidos até o mês selecionado
         const activePayroll = payrollEmployees.filter((emp) => !emp.admissionDate || emp.admissionDate.slice(0, 10) <= monthEnd);
         const totalFolha = (0, financeEngine_1.roundCurrencyBRL)(activePayroll.reduce((sum, emp) => sum + (Number(emp.salary) || 0), 0));
         // Investimentos lançados no mês (informativo + detalhamento)
-        const monthInvestments = investments.filter((inv) => (inv.appliedDate || '').slice(0, 7) === monthKey);
+        const monthInvestments = groupedByMonth.investmentsMap.get(monthKey) || [];
         const totalInvestimentos = (0, financeEngine_1.roundCurrencyBRL)(monthInvestments.reduce((sum, inv) => sum + (Number(inv.investedAmount) || 0), 0));
         const totalSaidas = (0, financeEngine_1.roundCurrencyBRL)(totalDespesas + totalPrestadores + totalFolha);
         const saldoLiquido = Math.round((totalEntradas - totalSaidas) * 100) / 100;
@@ -6348,15 +6702,7 @@ const MonthlyReportSubsection = ({ orders, despesas, serviceProviders, payrollEm
             saldoLiquido,
         };
     };
-    const report = (0, react_1.useMemo)(() => computeMonthTotals(selectedMonthKey), [
-        selectedMonthKey,
-        selectedMonthEnd,
-        orders,
-        despesas,
-        serviceProviders,
-        payrollEmployees,
-        investments,
-    ]);
+    const report = (0, react_1.useMemo)(() => computeMonthTotals(selectedMonthKey), [selectedMonthKey, groupedByMonth, payrollEmployees]);
     // Últimos 6 meses comparativos
     const last6Months = (0, react_1.useMemo)(() => {
         const list = [];
@@ -6373,15 +6719,7 @@ const MonthlyReportSubsection = ({ orders, despesas, serviceProviders, payrollEm
             });
         }
         return list;
-    }, [
-        selectedYear,
-        selectedMonth,
-        orders,
-        despesas,
-        serviceProviders,
-        payrollEmployees,
-        investments,
-    ]);
+    }, [selectedYear, selectedMonth, groupedByMonth, payrollEmployees]);
     const maxBarValue = (0, react_1.useMemo)(() => {
         const m = last6Months.reduce((acc, row) => Math.max(acc, row.entradas, row.saidas), 0);
         return m > 0 ? m : 1;
@@ -6696,11 +7034,20 @@ const FinanceAnalyticsSection = ({ orders, financials, despesas, canEditDespesas
     const [statusFilter, setStatusFilter] = (0, react_1.useState)('todos');
     const [copiedId, setCopiedId] = (0, react_1.useState)(null);
     const [hoveredModality, setHoveredModality] = (0, react_1.useState)(null);
-    const filteredOrders = orders.filter((o) => {
+    const [busyOrderAction, setBusyOrderAction] = (0, react_1.useState)(null);
+    const copiedTimerRef = (0, react_1.useRef)(null);
+    (0, react_1.useEffect)(() => {
+        return () => {
+            if (copiedTimerRef.current) {
+                window.clearTimeout(copiedTimerRef.current);
+            }
+        };
+    }, []);
+    const filteredOrders = (0, react_1.useMemo)(() => {
         if (statusFilter === 'todos')
-            return true;
-        return o.paymentStatus === statusFilter;
-    });
+            return orders;
+        return orders.filter((o) => o.paymentStatus === statusFilter);
+    }, [orders, statusFilter]);
     const handleCopyPix = async (order) => {
         const text = (0, financeEngine_1.buildPixClipboardSnippet)(order);
         try {
@@ -6715,26 +7062,41 @@ const FinanceAnalyticsSection = ({ orders, financials, despesas, canEditDespesas
             document.body.removeChild(ta);
         }
         setCopiedId(order.id);
-        setTimeout(() => {
+        if (copiedTimerRef.current)
+            window.clearTimeout(copiedTimerRef.current);
+        copiedTimerRef.current = window.setTimeout(() => {
             setCopiedId((prev) => (prev === order.id ? null : prev));
         }, 2200);
     };
+    const runOrderAction = async (key, fn) => {
+        if (busyOrderAction)
+            return;
+        setBusyOrderAction(key);
+        try {
+            await fn();
+        }
+        finally {
+            setBusyOrderAction(null);
+        }
+    };
     const radius = 68;
     const circumference = 2 * Math.PI * radius;
-    let cumulativePercent = 0;
-    const donutSegments = financials.byModality
-        .filter((m) => m.totalAmount > 0)
-        .map((m) => {
-        const frac = financials.totalVolume > 0 ? m.totalAmount / financials.totalVolume : 0;
-        const strokeDasharray = `${frac * circumference} ${circumference}`;
-        const strokeDashoffset = -cumulativePercent * circumference;
-        cumulativePercent += frac;
-        return {
-            ...m,
-            strokeDasharray,
-            strokeDashoffset,
-        };
-    });
+    const donutSegments = (0, react_1.useMemo)(() => {
+        let cumulativePercent = 0;
+        return financials.byModality
+            .filter((m) => m.totalAmount > 0)
+            .map((m) => {
+            const frac = financials.totalVolume > 0 ? m.totalAmount / financials.totalVolume : 0;
+            const strokeDasharray = `${frac * circumference} ${circumference}`;
+            const strokeDashoffset = -cumulativePercent * circumference;
+            cumulativePercent += frac;
+            return {
+                ...m,
+                strokeDasharray,
+                strokeDashoffset,
+            };
+        });
+    }, [financials, circumference]);
     return (react_1.default.createElement("div", { className: "space-y-5 min-w-0" },
         react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-3 min-w-0" },
             react_1.default.createElement("div", { className: "min-w-0" },
@@ -6893,18 +7255,17 @@ const FinanceAnalyticsSection = ({ orders, financials, despesas, canEditDespesas
                             react_1.default.createElement("a", { href: (0, financeEngine_1.buildWhatsAppBillingUrl)(order), target: "_blank", rel: "noopener noreferrer", className: "liquid-glass-pill min-h-[44px] px-3.5 py-2 rounded-full text-xs font-bold text-slate-800 inline-flex items-center gap-1.5" },
                                 react_1.default.createElement(lucide_react_1.MessageCircle, { className: "w-4 h-4 text-emerald-600" }),
                                 react_1.default.createElement("span", null, "WhatsApp")),
-                            order.paymentStatus === 'sem_nota' && (react_1.default.createElement("button", { type: "button", onClick: () => onEmitBilling30d(order.id), className: "min-h-[44px] px-3.5 py-2 rounded-full text-xs font-bold bg-amber-500 text-white inline-flex items-center gap-1 cursor-pointer" },
-                                react_1.default.createElement(lucide_react_1.Sparkles, { className: "w-4 h-4" }),
+                            order.paymentStatus === 'sem_nota' && (react_1.default.createElement("button", { type: "button", disabled: Boolean(busyOrderAction), onClick: () => void runOrderAction(`bill:${order.id}`, () => onEmitBilling30d(order.id)), className: "min-h-[44px] px-3.5 py-2 rounded-full text-xs font-bold bg-amber-500 disabled:opacity-60 text-white inline-flex items-center gap-1 cursor-pointer" },
+                                busyOrderAction === `bill:${order.id}` ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-4 h-4 animate-spin" })) : (react_1.default.createElement(lucide_react_1.Sparkles, { className: "w-4 h-4" })),
                                 react_1.default.createElement("span", null, "Gerar 30d"))),
-                            react_1.default.createElement("button", { type: "button", onClick: () => onTogglePaid(order.id), className: `min-h-[44px] px-3.5 py-2 rounded-full text-xs font-bold inline-flex items-center gap-1 cursor-pointer ${order.paymentStatus === 'pago'
+                            react_1.default.createElement("button", { type: "button", disabled: Boolean(busyOrderAction), onClick: () => void runOrderAction(`paid:${order.id}`, () => onTogglePaid(order.id)), className: `min-h-[44px] px-3.5 py-2 rounded-full text-xs font-bold inline-flex items-center gap-1 disabled:opacity-60 cursor-pointer ${order.paymentStatus === 'pago'
                                     ? 'liquid-glass-pill text-slate-700'
-                                    : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm'}` }, order.paymentStatus === 'pago' ? (react_1.default.createElement(react_1.default.Fragment, null,
+                                    : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm'}` }, busyOrderAction === `paid:${order.id}` ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-4 h-4 animate-spin" })) : order.paymentStatus === 'pago' ? (react_1.default.createElement(react_1.default.Fragment, null,
                                 react_1.default.createElement(lucide_react_1.RotateCcw, { className: "w-4 h-4" }),
                                 react_1.default.createElement("span", null, "Reabrir"))) : (react_1.default.createElement(react_1.default.Fragment, null,
                                 react_1.default.createElement(lucide_react_1.Check, { className: "w-4 h-4" }),
                                 react_1.default.createElement("span", null, "Marcar como pago")))),
-                            react_1.default.createElement("button", { type: "button", onClick: () => onDeleteOrder(order.id), "aria-label": "Excluir esta OS", className: "btn-compact w-9 h-9 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0" },
-                                react_1.default.createElement(lucide_react_1.Trash2, { className: "w-4 h-4" })))));
+                            react_1.default.createElement("button", { type: "button", disabled: Boolean(busyOrderAction), onClick: () => void runOrderAction(`del:${order.id}`, () => onDeleteOrder(order.id)), "aria-label": "Excluir esta OS", className: "btn-compact w-9 h-9 rounded-full bg-white/60 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0" }, busyOrderAction === `del:${order.id}` ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-4 h-4 animate-spin text-rose-600" })) : (react_1.default.createElement(lucide_react_1.Trash2, { className: "w-4 h-4" }))))));
                 }))),
                 react_1.default.createElement("div", { className: "hidden md:block overflow-x-auto" },
                     react_1.default.createElement("table", { className: "w-full text-left border-collapse" },
@@ -6958,18 +7319,17 @@ const FinanceAnalyticsSection = ({ orders, financials, despesas, canEditDespesas
                                         react_1.default.createElement("a", { href: (0, financeEngine_1.buildWhatsAppBillingUrl)(order), target: "_blank", rel: "noopener noreferrer", className: "liquid-glass-pill px-3 py-1.5 rounded-full text-xs font-bold text-slate-800 hover:text-emerald-700 flex items-center gap-1.5 transition" },
                                             react_1.default.createElement(lucide_react_1.MessageCircle, { className: "w-3.5 h-3.5 text-emerald-600" }),
                                             react_1.default.createElement("span", null, "Cobrar no WhatsApp")),
-                                        order.paymentStatus === 'sem_nota' && (react_1.default.createElement("button", { type: "button", onClick: () => onEmitBilling30d(order.id), className: "px-3 py-1.5 rounded-full text-xs font-bold bg-amber-500 hover:bg-amber-400 text-white shadow-sm flex items-center gap-1 transition cursor-pointer" },
-                                            react_1.default.createElement(lucide_react_1.Sparkles, { className: "w-3.5 h-3.5" }),
+                                        order.paymentStatus === 'sem_nota' && (react_1.default.createElement("button", { type: "button", disabled: Boolean(busyOrderAction), onClick: () => void runOrderAction(`bill:${order.id}`, () => onEmitBilling30d(order.id)), className: "px-3 py-1.5 rounded-full text-xs font-bold bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-white shadow-sm flex items-center gap-1 transition cursor-pointer" },
+                                            busyOrderAction === `bill:${order.id}` ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-3.5 h-3.5 animate-spin" })) : (react_1.default.createElement(lucide_react_1.Sparkles, { className: "w-3.5 h-3.5" })),
                                             react_1.default.createElement("span", null, "Gerar 30d"))),
-                                        react_1.default.createElement("button", { type: "button", onClick: () => onTogglePaid(order.id), className: `px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1 transition cursor-pointer ${order.paymentStatus === 'pago'
+                                        react_1.default.createElement("button", { type: "button", disabled: Boolean(busyOrderAction), onClick: () => void runOrderAction(`paid:${order.id}`, () => onTogglePaid(order.id)), className: `px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1 disabled:opacity-60 transition cursor-pointer ${order.paymentStatus === 'pago'
                                                 ? 'liquid-glass-pill text-slate-700'
-                                                : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm'}` }, order.paymentStatus === 'pago' ? (react_1.default.createElement(react_1.default.Fragment, null,
+                                                : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm'}` }, busyOrderAction === `paid:${order.id}` ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-3.5 h-3.5 animate-spin" })) : order.paymentStatus === 'pago' ? (react_1.default.createElement(react_1.default.Fragment, null,
                                             react_1.default.createElement(lucide_react_1.RotateCcw, { className: "w-3 h-3" }),
                                             react_1.default.createElement("span", null, "Reabrir"))) : (react_1.default.createElement(react_1.default.Fragment, null,
                                             react_1.default.createElement(lucide_react_1.Check, { className: "w-3.5 h-3.5 stroke-[2.5]" }),
                                             react_1.default.createElement("span", null, "Marcar como pago")))),
-                                        react_1.default.createElement("button", { type: "button", onClick: () => onDeleteOrder(order.id), className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir esta OS", "aria-label": "Excluir esta OS" },
-                                            react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" }))))));
+                                        react_1.default.createElement("button", { type: "button", disabled: Boolean(busyOrderAction), onClick: () => void runOrderAction(`del:${order.id}`, () => onDeleteOrder(order.id)), className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir esta OS", "aria-label": "Excluir esta OS" }, busyOrderAction === `del:${order.id}` ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-3.5 h-3.5 animate-spin text-rose-600" })) : (react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" })))))));
                         }))))))))));
 };
 exports.FinanceAnalyticsSection = FinanceAnalyticsSection;
@@ -7029,27 +7389,56 @@ const DeliveriesLogisticsSection = ({ orders, deliveries, prefillOrder, onAddDel
         return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     });
     const [notes, setNotes] = (0, react_1.useState)('');
+    const [isSubmitting, setIsSubmitting] = (0, react_1.useState)(false);
+    const [deletingId, setDeletingId] = (0, react_1.useState)(null);
     (0, react_1.useEffect)(() => {
         if (prefillOrder) {
             setSelectedOrderId(prefillOrder.id);
         }
     }, [prefillOrder]);
+    (0, react_1.useEffect)(() => {
+        if (orders.length > 0 && !orders.some((o) => o.id === selectedOrderId)) {
+            const validPrefill = prefillOrder && orders.some((o) => o.id === prefillOrder.id)
+                ? prefillOrder.id
+                : orders[0].id;
+            setSelectedOrderId(validPrefill);
+        }
+    }, [orders, selectedOrderId, prefillOrder]);
     const selectedOrder = orders.find((o) => o.id === selectedOrderId);
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault();
-        if (!selectedOrder || !carrierName.trim())
+        if (isSubmitting || !selectedOrder || !carrierName.trim())
             return;
-        onAddDelivery({
-            orderId: selectedOrder.id,
-            toolDescription: selectedOrder.toolDescription,
-            companyName: selectedOrder.companyName,
-            method,
-            carrierOrPersonName: carrierName.trim(),
-            dispatchedAt: `${dispatchedDate} ${dispatchedTime}`,
-            notes: notes.trim() || undefined,
-        });
-        setCarrierName('');
-        setNotes('');
+        setIsSubmitting(true);
+        try {
+            const ok = await onAddDelivery({
+                orderId: selectedOrder.id,
+                toolDescription: selectedOrder.toolDescription,
+                companyName: selectedOrder.companyName,
+                method,
+                carrierOrPersonName: carrierName.trim(),
+                dispatchedAt: `${dispatchedDate} ${dispatchedTime}`,
+                notes: notes.trim() || undefined,
+            });
+            if (ok !== false) {
+                setCarrierName('');
+                setNotes('');
+            }
+        }
+        finally {
+            setIsSubmitting(false);
+        }
+    };
+    const handleDelete = async (deliveryId) => {
+        if (deletingId)
+            return;
+        setDeletingId(deliveryId);
+        try {
+            await onDeleteDelivery(deliveryId);
+        }
+        finally {
+            setDeletingId(null);
+        }
     };
     const inputClass = 'liquid-glass-pill w-full min-h-[44px] px-3.5 py-2.5 text-base rounded-2xl text-slate-900 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500/50 outline-none transition';
     return (react_1.default.createElement("div", { className: "space-y-5" },
@@ -7094,9 +7483,11 @@ const DeliveriesLogisticsSection = ({ orders, deliveries, prefillOrder, onAddDel
                 react_1.default.createElement("div", null,
                     react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "Observa\u00E7\u00E3o de Expedi\u00E7\u00E3o"),
                     react_1.default.createElement("input", { type: "text", value: notes, onChange: (e) => setNotes(e.target.value), placeholder: "Ex: Canhoto assinado, entregue com prote\u00E7\u00E3o de borracha", className: inputClass })),
-                react_1.default.createElement("button", { type: "submit", className: "w-full py-3 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 via-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white border border-white/40 shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition cursor-pointer active:scale-95" },
+                react_1.default.createElement("button", { type: "submit", disabled: isSubmitting || !selectedOrder, className: "w-full py-3 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 via-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 disabled:opacity-60 disabled:cursor-not-allowed text-white border border-white/40 shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition cursor-pointer active:scale-95" }, isSubmitting ? (react_1.default.createElement(react_1.default.Fragment, null,
+                    react_1.default.createElement(lucide_react_1.Loader2, { className: "w-4 h-4 animate-spin" }),
+                    react_1.default.createElement("span", null, "Registrando Sa\u00EDda..."))) : (react_1.default.createElement(react_1.default.Fragment, null,
                     react_1.default.createElement(lucide_react_1.Check, { className: "w-4 h-4 stroke-[2.5]" }),
-                    react_1.default.createElement("span", null, "Confirmar Registro de Sa\u00EDda"))),
+                    react_1.default.createElement("span", null, "Confirmar Registro de Sa\u00EDda"))))),
             react_1.default.createElement("div", { className: "lg:col-span-7 liquid-glass rounded-[28px] p-6 space-y-4" },
                 react_1.default.createElement("div", { className: "flex items-center justify-between pb-3 border-b border-white/60" },
                     react_1.default.createElement("div", null,
@@ -7105,6 +7496,7 @@ const DeliveriesLogisticsSection = ({ orders, deliveries, prefillOrder, onAddDel
                     react_1.default.createElement("span", { className: "px-2.5 py-1 rounded-full bg-white/65 border border-white/80 text-xs font-extrabold text-slate-800" }, deliveries.length)),
                 react_1.default.createElement("div", { className: "space-y-3" }, deliveries.length === 0 ? (react_1.default.createElement("div", { className: "p-10 rounded-2xl border border-dashed border-white/70 text-center text-xs font-medium text-slate-600" }, "Nenhuma entrega ou retirada registrada ainda.")) : (deliveries.map((del) => {
                     const meta = financeEngine_1.DELIVERY_METHOD_META[del.method];
+                    const isDeleting = deletingId === del.id;
                     return (react_1.default.createElement("div", { key: del.id, className: "p-4 rounded-2xl liquid-glass-subtle flex flex-col sm:flex-row sm:items-center justify-between gap-3" },
                         react_1.default.createElement("div", { className: "space-y-1" },
                             react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
@@ -7125,8 +7517,7 @@ const DeliveriesLogisticsSection = ({ orders, deliveries, prefillOrder, onAddDel
                                 react_1.default.createElement("span", { className: "text-xs font-extrabold text-emerald-700 flex items-center sm:justify-end gap-1 mt-0.5" },
                                     react_1.default.createElement(lucide_react_1.Clock, { className: "w-3 h-3" }),
                                     del.dispatchedAt)),
-                            react_1.default.createElement("button", { type: "button", onClick: () => onDeleteDelivery(del.id), className: "btn-compact w-9 h-9 rounded-2xl bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir registro de entrega", "aria-label": "Excluir registro de entrega" },
-                                react_1.default.createElement(lucide_react_1.Trash2, { className: "w-4 h-4" })))));
+                            react_1.default.createElement("button", { type: "button", disabled: Boolean(deletingId), onClick: () => void handleDelete(del.id), className: "btn-compact w-9 h-9 rounded-2xl bg-white/60 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir registro de entrega", "aria-label": "Excluir registro de entrega" }, isDeleting ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-4 h-4 animate-spin text-rose-600" })) : (react_1.default.createElement(lucide_react_1.Trash2, { className: "w-4 h-4" }))))));
                 })))))));
 };
 exports.DeliveriesLogisticsSection = DeliveriesLogisticsSection;
@@ -7182,27 +7573,64 @@ const WarrantyReturnsSection = ({ orders, returns, onAddReturn, onUpdateReturnSt
     const [technicalAction, setTechnicalAction] = (0, react_1.useState)('');
     const [adjustmentAmount, setAdjustmentAmount] = (0, react_1.useState)('0');
     const [status, setStatus] = (0, react_1.useState)('em_analise');
+    const [isSubmitting, setIsSubmitting] = (0, react_1.useState)(false);
+    const [busyKey, setBusyKey] = (0, react_1.useState)(null);
+    (0, react_1.useEffect)(() => {
+        if (orders.length > 0 && !orders.some((o) => o.id === selectedOrderId)) {
+            setSelectedOrderId(orders[0].id);
+        }
+    }, [orders, selectedOrderId]);
     const selectedOrder = orders.find((o) => o.id === selectedOrderId);
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault();
-        if (!selectedOrder || !reason.trim() || !technicalAction.trim())
+        if (isSubmitting || !selectedOrder || !reason.trim() || !technicalAction.trim())
             return;
         const val = parseFloat(adjustmentAmount.replace(',', '.')) || 0;
-        onAddReturn({
-            orderId: selectedOrder.id,
-            companyName: selectedOrder.companyName,
-            toolDescription: selectedOrder.toolDescription,
-            reason: reason.trim(),
-            technicalAction: technicalAction.trim(),
-            adjustmentAmount: val,
-            status,
-            createdAt: `${(0, financeEngine_1.toISODate)()}`,
-            updatedAt: (0, financeEngine_1.nowTimestampBR)(),
-        });
-        setReason('');
-        setTechnicalAction('');
-        setAdjustmentAmount('0');
-        setStatus('em_analise');
+        setIsSubmitting(true);
+        try {
+            const ok = await onAddReturn({
+                orderId: selectedOrder.id,
+                companyName: selectedOrder.companyName,
+                toolDescription: selectedOrder.toolDescription,
+                reason: reason.trim(),
+                technicalAction: technicalAction.trim(),
+                adjustmentAmount: val,
+                status,
+                createdAt: `${(0, financeEngine_1.toISODate)()}`,
+                updatedAt: (0, financeEngine_1.nowTimestampBR)(),
+            });
+            if (ok !== false) {
+                setReason('');
+                setTechnicalAction('');
+                setAdjustmentAmount('0');
+                setStatus('em_analise');
+            }
+        }
+        finally {
+            setIsSubmitting(false);
+        }
+    };
+    const handleStatusChange = async (id, nextStatus) => {
+        if (busyKey)
+            return;
+        setBusyKey(`st:${id}`);
+        try {
+            await onUpdateReturnStatus(id, nextStatus);
+        }
+        finally {
+            setBusyKey(null);
+        }
+    };
+    const handleDelete = async (id) => {
+        if (busyKey)
+            return;
+        setBusyKey(`del:${id}`);
+        try {
+            await onDeleteReturn(id);
+        }
+        finally {
+            setBusyKey(null);
+        }
     };
     const inputClass = 'liquid-glass-pill w-full min-h-[44px] px-3.5 py-2.5 text-base rounded-2xl text-slate-900 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500/50 outline-none transition';
     return (react_1.default.createElement("div", { className: "space-y-5" },
@@ -7239,9 +7667,11 @@ const WarrantyReturnsSection = ({ orders, returns, onAddReturn, onUpdateReturnSt
                     react_1.default.createElement("div", null,
                         react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "5. Status do Retorno"),
                         react_1.default.createElement("select", { value: status, onChange: (e) => setStatus(e.target.value), className: inputClass }, Object.entries(financeEngine_1.RETURN_STATUS_META).map(([k, v]) => (react_1.default.createElement("option", { key: k, value: k }, v.label)))))),
-                react_1.default.createElement("button", { type: "submit", className: "w-full py-3 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 via-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white border border-white/40 shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition cursor-pointer active:scale-95" },
+                react_1.default.createElement("button", { type: "submit", disabled: isSubmitting || !selectedOrder, className: "w-full py-3 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 via-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 disabled:opacity-60 disabled:cursor-not-allowed text-white border border-white/40 shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition cursor-pointer active:scale-95" }, isSubmitting ? (react_1.default.createElement(react_1.default.Fragment, null,
+                    react_1.default.createElement(lucide_react_1.Loader2, { className: "w-4 h-4 animate-spin" }),
+                    react_1.default.createElement("span", null, "Registrando Retorno..."))) : (react_1.default.createElement(react_1.default.Fragment, null,
                     react_1.default.createElement(lucide_react_1.Check, { className: "w-4 h-4 stroke-[2.5]" }),
-                    react_1.default.createElement("span", null, "Registrar Ocorr\u00EAncia de Retorno"))),
+                    react_1.default.createElement("span", null, "Registrar Ocorr\u00EAncia de Retorno"))))),
             react_1.default.createElement("div", { className: "lg:col-span-7 liquid-glass rounded-[28px] p-6 space-y-4" },
                 react_1.default.createElement("div", { className: "flex items-center justify-between pb-3 border-b border-white/60" },
                     react_1.default.createElement("div", null,
@@ -7253,6 +7683,7 @@ const WarrantyReturnsSection = ({ orders, returns, onAddReturn, onUpdateReturnSt
                     react_1.default.createElement(lucide_react_1.ShieldAlert, { className: "w-5 h-5 text-amber-600" })),
                 react_1.default.createElement("div", { className: "space-y-3.5" }, returns.length === 0 ? (react_1.default.createElement("div", { className: "p-10 rounded-2xl border border-dashed border-white/70 text-center text-xs font-medium text-slate-600" }, "Nenhum retorno ou ajuste registrado ainda.")) : (returns.map((ret) => {
                     const stMeta = financeEngine_1.RETURN_STATUS_META[ret.status];
+                    const isRowBusy = busyKey === `st:${ret.id}` || busyKey === `del:${ret.id}`;
                     return (react_1.default.createElement("div", { key: ret.id, className: "p-5 rounded-3xl liquid-glass-subtle space-y-3" },
                         react_1.default.createElement("div", { className: "flex flex-wrap items-start justify-between gap-2" },
                             react_1.default.createElement("div", null,
@@ -7273,8 +7704,7 @@ const WarrantyReturnsSection = ({ orders, returns, onAddReturn, onUpdateReturnSt
                                     react_1.default.createElement("span", { className: "text-[10px] font-medium text-slate-600" },
                                         "Atualizado: ",
                                         ret.updatedAt)),
-                                react_1.default.createElement("button", { type: "button", onClick: () => onDeleteReturn(ret.id), className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir registro de retorno", "aria-label": "Excluir registro de retorno" },
-                                    react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" })))),
+                                react_1.default.createElement("button", { type: "button", disabled: Boolean(busyKey), onClick: () => void handleDelete(ret.id), className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir registro de retorno", "aria-label": "Excluir registro de retorno" }, busyKey === `del:${ret.id}` ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-3.5 h-3.5 animate-spin text-rose-600" })) : (react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" }))))),
                         react_1.default.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-3 text-xs" },
                             react_1.default.createElement("div", { className: "p-3 rounded-2xl bg-white/55 border border-white/75" },
                                 react_1.default.createElement("span", { className: "text-[10px] font-extrabold uppercase text-indigo-700 block mb-0.5" }, "Motivo do Retorno:"),
@@ -7283,10 +7713,10 @@ const WarrantyReturnsSection = ({ orders, returns, onAddReturn, onUpdateReturnSt
                                 react_1.default.createElement("span", { className: "text-[10px] font-extrabold uppercase text-emerald-700 block mb-0.5" }, "O que foi feito e ajustado:"),
                                 react_1.default.createElement("p", { className: "text-slate-800 font-medium" }, ret.technicalAction))),
                         react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-2 pt-1" },
-                            react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-1.5" }, ['em_analise', 'em_ajuste', 'liberado'].map((st) => (react_1.default.createElement("button", { key: st, type: "button", onClick: () => onUpdateReturnStatus(ret.id, st), className: `px-2.5 py-1 rounded-full text-[11px] font-bold border transition cursor-pointer ${ret.status === st
+                            react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-1.5" }, ['em_analise', 'em_ajuste', 'liberado'].map((st) => (react_1.default.createElement("button", { key: st, type: "button", disabled: isRowBusy, onClick: () => void handleStatusChange(ret.id, st), className: `px-2.5 py-1 rounded-full text-[11px] font-bold border disabled:opacity-60 transition cursor-pointer ${ret.status === st
                                     ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white border-white/40 shadow-sm'
                                     : 'liquid-glass-pill text-slate-700'}` }, financeEngine_1.RETURN_STATUS_META[st].label)))),
-                            stMeta.next && (react_1.default.createElement("button", { type: "button", onClick: () => onUpdateReturnStatus(ret.id, stMeta.next), className: "px-3.5 py-1.5 rounded-full text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white border border-white/40 shadow-sm flex items-center gap-1 transition cursor-pointer" },
+                            stMeta.next && (react_1.default.createElement("button", { type: "button", disabled: isRowBusy, onClick: () => void handleStatusChange(ret.id, stMeta.next), className: "px-3.5 py-1.5 rounded-full text-xs font-bold bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white border border-white/40 shadow-sm flex items-center gap-1 transition cursor-pointer" },
                                 react_1.default.createElement("span", null,
                                     "Avan\u00E7ar p/ ",
                                     financeEngine_1.RETURN_STATUS_META[stMeta.next].label),
@@ -9589,7 +10019,6 @@ const SettingsBackupsSection = ({ empresaId, companyName, settings, backups, log
             });
             setPreviewOpen(false);
             await onRestored();
-            await onRefresh();
             setActionMsg({
                 type: 'ok',
                 text: 'Restauração concluída em transação! Um backup pré-restauração (90 dias) foi salvo automaticamente.',
@@ -9630,6 +10059,12 @@ const SettingsBackupsSection = ({ empresaId, companyName, settings, backups, log
                 setImportOpen(true);
             }
         };
+        reader.onerror = () => {
+            setImportError('Erro ao ler o arquivo JSON do dispositivo.');
+            setImportFileName(file.name);
+            setImportSnapshot(null);
+            setImportOpen(true);
+        };
         reader.readAsText(file, 'utf-8');
     };
     const handleConfirmImport = async () => {
@@ -9645,7 +10080,6 @@ const SettingsBackupsSection = ({ empresaId, companyName, settings, backups, log
             });
             setImportOpen(false);
             await onRestored();
-            await onRefresh();
             setActionMsg({
                 type: 'ok',
                 text: 'Importação JSON aplicada com sucesso após snapshot pré-restauração.',
@@ -9937,21 +10371,25 @@ const FastEntryModal = ({ isOpen, onClose, companies, nextOrderId, onSaveOrder, 
     const [amount, setAmount] = (0, react_1.useState)('');
     const [paymentModality, setPaymentModality] = (0, react_1.useState)('boleto');
     const [stage, setStage] = (0, react_1.useState)('arquivo_recebido');
+    const [isSubmitting, setIsSubmitting] = (0, react_1.useState)(false);
+    const wasOpenRef = (0, react_1.useRef)(false);
     (0, react_1.useEffect)(() => {
-        if (isOpen) {
+        if (isOpen && !wasOpenRef.current) {
             setSelectedCompanyId(companies[0]?.id || 'nova');
             setCustomCompanyName('');
             setToolDescription('');
             setAmount('');
             setPaymentModality('boleto');
             setStage('arquivo_recebido');
+            setIsSubmitting(false);
         }
+        wasOpenRef.current = isOpen;
     }, [isOpen, companies]);
     if (!isOpen)
         return null;
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault();
-        if (!toolDescription.trim())
+        if (isSubmitting || !toolDescription.trim())
             return;
         const existingComp = companies.find((c) => c.id === selectedCompanyId);
         const companyName = selectedCompanyId === 'nova'
@@ -9959,16 +10397,24 @@ const FastEntryModal = ({ isOpen, onClose, companies, nextOrderId, onSaveOrder, 
             : existingComp?.corporateName || 'Cliente';
         const companyPhone = existingComp?.phone || '(11) 99999-0000';
         const numericAmount = parseFloat(amount.replace(',', '.')) || 0;
-        onSaveOrder({
-            companyId: existingComp?.id || `EMP-${Date.now().toString().slice(-3)}`,
-            companyName,
-            companyPhone,
-            toolDescription: toolDescription.trim(),
-            amount: numericAmount,
-            paymentModality,
-            stage,
-        });
-        onClose();
+        setIsSubmitting(true);
+        try {
+            const ok = await onSaveOrder({
+                companyId: existingComp?.id || '__new__',
+                companyName,
+                companyPhone,
+                toolDescription: toolDescription.trim(),
+                amount: numericAmount,
+                paymentModality,
+                stage,
+            });
+            if (ok !== false) {
+                onClose();
+            }
+        }
+        finally {
+            setIsSubmitting(false);
+        }
     };
     const inputClass = 'liquid-glass-pill w-full min-h-[44px] px-3.5 py-2.5 text-base rounded-2xl text-slate-900 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500/50 outline-none transition';
     return (react_1.default.createElement("div", { className: "fixed inset-0 z-[60] flex items-end md:items-center justify-center bg-slate-900/35 backdrop-blur-md p-0 md:p-4" },
@@ -10026,12 +10472,14 @@ const FastEntryModal = ({ isOpen, onClose, companies, nextOrderId, onSaveOrder, 
                             react_1.default.createElement("strong", null, "N\u00E3o Pago"),
                             " at\u00E9 confirma\u00E7\u00E3o manual em \"Marcar como pago\"."))),
                 react_1.default.createElement("div", { className: "px-5 py-4 border-t border-white/60 bg-white/45 shrink-0 pb-[calc(1rem+env(safe-area-inset-bottom))]" },
-                    react_1.default.createElement("button", { type: "submit", className: "w-full min-h-[48px] py-3 rounded-full text-sm font-bold bg-gradient-to-r from-indigo-600 via-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white border border-white/40 shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition cursor-pointer active:scale-95" },
+                    react_1.default.createElement("button", { type: "submit", disabled: isSubmitting, className: "w-full min-h-[48px] py-3 rounded-full text-sm font-bold bg-gradient-to-r from-indigo-600 via-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 disabled:opacity-60 disabled:cursor-not-allowed text-white border border-white/40 shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition cursor-pointer active:scale-95" }, isSubmitting ? (react_1.default.createElement(react_1.default.Fragment, null,
+                        react_1.default.createElement(lucide_react_1.Loader2, { className: "w-4 h-4 animate-spin" }),
+                        react_1.default.createElement("span", null, "Registrando na Esteira..."))) : (react_1.default.createElement(react_1.default.Fragment, null,
                         react_1.default.createElement(lucide_react_1.Check, { className: "w-4 h-4 stroke-[2.5]" }),
                         react_1.default.createElement("span", null,
                             "Registrar ",
                             nextOrderId,
-                            " na Esteira")))))));
+                            " na Esteira")))))))));
 };
 exports.FastEntryModal = FastEntryModal;
 
@@ -10156,6 +10604,9 @@ const App = () => {
     const sessionRef = (0, react_1.useRef)(session);
     sessionRef.current = session;
     const autoBackupTimerRef = (0, react_1.useRef)(null);
+    const hydrationSeqRef = (0, react_1.useRef)(0);
+    const moveErrorTimerRef = (0, react_1.useRef)(null);
+    const printTimerRef = (0, react_1.useRef)(null);
     const [moveError, setMoveError] = (0, react_1.useState)(null);
     const [toast, setToast] = (0, react_1.useState)(null);
     const toastTimerRef = (0, react_1.useRef)(null);
@@ -10179,6 +10630,8 @@ const App = () => {
         setSettingsState((prev) => ({ ...prev, loading: true }));
         try {
             const res = await (0, supabaseDataService_1.dbLoadSettingsAndBackups)(empresaId);
+            if (!sessionRef.current?.isSuperAdmin)
+                return;
             setSettingsState({
                 settings: res.settings,
                 backups: res.backups,
@@ -10191,11 +10644,21 @@ const App = () => {
         }
     }, []);
     const hydrateFromSupabase = (0, react_1.useCallback)(async (activeSession) => {
+        if (activeSession.role === 'cliente') {
+            hydrationSeqRef.current += 1;
+            setDb(createEmptyDb());
+            setDbError(null);
+            setDbLoading(false);
+            return;
+        }
         const targetEmpresaId = activeSession.empresaId || activeSession.company_id;
+        const seq = ++hydrationSeqRef.current;
         setDbLoading(true);
         setDbError(null);
         try {
             const loaded = await (0, supabaseDataService_1.loadCompanyDatabaseFromSupabase)(targetEmpresaId, activeSession.role);
+            if (seq !== hydrationSeqRef.current)
+                return;
             setDb(loaded);
             setSelectedCompanyId((prev) => prev && loaded.companies.some((c) => c.id === prev)
                 ? prev
@@ -10205,11 +10668,15 @@ const App = () => {
             }
         }
         catch (err) {
+            if (seq !== hydrationSeqRef.current)
+                return;
             setDbError(err?.message ||
                 'Não foi possível carregar os dados da empresa no Supabase.');
         }
         finally {
-            setDbLoading(false);
+            if (seq === hydrationSeqRef.current) {
+                setDbLoading(false);
+            }
         }
     }, [refreshSettingsAndBackups]);
     // Schedule debounced automatic snapshot after data changes (~15s idle, 1h server throttle)
@@ -10219,23 +10686,26 @@ const App = () => {
             return;
         if (settingsState.settings.backup_automatico === false)
             return;
-        const empresaId = active.empresaId || active.company_id;
         if (autoBackupTimerRef.current) {
             window.clearTimeout(autoBackupTimerRef.current);
         }
         autoBackupTimerRef.current = window.setTimeout(async () => {
+            const latest = sessionRef.current;
+            if (!latest || latest.role !== 'admin')
+                return;
+            const empresaId = latest.empresaId || latest.company_id;
             try {
                 await (0, supabaseDataService_1.invokeBackupEngine)({
                     action: 'snapshot_company',
                     tipo: 'automatico',
                     debounced: true,
                 });
-                if (active.isSuperAdmin) {
+                if (sessionRef.current?.isSuperAdmin) {
                     await refreshSettingsAndBackups(empresaId, true);
                 }
             }
             catch {
-                if (active.isSuperAdmin) {
+                if (sessionRef.current?.isSuperAdmin) {
                     await refreshSettingsAndBackups(empresaId, true);
                 }
             }
@@ -10251,7 +10721,7 @@ const App = () => {
                 return;
             if (restored) {
                 setSession(restored);
-                setActiveSection(restored.role === 'operador' ? 'esteira' : 'bento_home');
+                setActiveSection(restored.role === 'admin' ? 'bento_home' : 'esteira');
                 await hydrateFromSupabase(restored);
             }
         })
@@ -10263,9 +10733,21 @@ const App = () => {
             if (!mounted)
                 return;
             if (event === 'SIGNED_OUT') {
+                hydrationSeqRef.current += 1;
                 if (autoBackupTimerRef.current) {
                     window.clearTimeout(autoBackupTimerRef.current);
                 }
+                if (toastTimerRef.current) {
+                    window.clearTimeout(toastTimerRef.current);
+                }
+                if (moveErrorTimerRef.current) {
+                    window.clearTimeout(moveErrorTimerRef.current);
+                }
+                if (printTimerRef.current) {
+                    window.clearTimeout(printTimerRef.current);
+                }
+                pendingOrderIdsRef.current.clear();
+                setPendingOrderIds([]);
                 setSession(null);
                 setDb(createEmptyDb());
             }
@@ -10275,6 +10757,15 @@ const App = () => {
             authListener?.subscription?.unsubscribe();
             if (autoBackupTimerRef.current) {
                 window.clearTimeout(autoBackupTimerRef.current);
+            }
+            if (toastTimerRef.current) {
+                window.clearTimeout(toastTimerRef.current);
+            }
+            if (moveErrorTimerRef.current) {
+                window.clearTimeout(moveErrorTimerRef.current);
+            }
+            if (printTimerRef.current) {
+                window.clearTimeout(printTimerRef.current);
             }
         };
     }, [hydrateFromSupabase]);
@@ -10292,27 +10783,44 @@ const App = () => {
     // Realtime listener (read-only UI sync per empresa_id; no ping-pong writebacks)
     (0, react_1.useEffect)(() => {
         window.__facasflowChannelCount = realtimeEngine_1.getActiveRealtimeChannelCount;
-        const empresaId = session?.empresaId || session?.company_id;
-        if (!empresaId)
+        const targetEmpresaId = session?.empresaId || session?.company_id;
+        if (!targetEmpresaId || session?.role === 'cliente')
             return;
-        const unsubscribe = (0, realtimeEngine_1.subscribeToCompanyRealtime)(empresaId, (remoteEvent) => {
+        const unsubscribe = (0, realtimeEngine_1.subscribeToCompanyRealtime)(targetEmpresaId, (remoteEvent) => {
             setDb((prev) => {
+                const delUuids = new Set(remoteEvent.deletedOrderUuids || []);
+                if (remoteEvent.deletedOrderUuid)
+                    delUuids.add(remoteEvent.deletedOrderUuid);
+                const delIds = new Set(remoteEvent.deletedOrderIds || []);
+                if (remoteEvent.deletedOrderId)
+                    delIds.add(remoteEvent.deletedOrderId);
+                if (delUuids.size > 0 || delIds.size > 0) {
+                    const removedIds = new Set(delIds);
+                    for (const o of prev.orders) {
+                        if (o.dbUuid && delUuids.has(o.dbUuid))
+                            removedIds.add(o.id);
+                    }
+                    return {
+                        ...prev,
+                        orders: prev.orders.filter((o) => !((o.dbUuid && delUuids.has(o.dbUuid)) || removedIds.has(o.id))),
+                        deliveries: prev.deliveries.filter((d) => !removedIds.has(d.orderId)),
+                        returns: prev.returns.filter((r) => !removedIds.has(r.orderId)),
+                    };
+                }
                 if (remoteEvent.order) {
                     const incoming = remoteEvent.order;
                     if (pendingOrderIdsRef.current.has(incoming.id)) {
                         return prev;
                     }
-                    const existing = prev.orders.find((o) => (incoming.dbUuid && o.dbUuid === incoming.dbUuid) ||
-                        o.id === incoming.id);
+                    const existing = prev.orders.find((o) => incoming.dbUuid && o.dbUuid ? o.dbUuid === incoming.dbUuid : o.id === incoming.id);
                     if (existing && !isNewerOrder(incoming, existing)) {
                         return prev;
                     }
                     const nextOrders = existing
-                        ? prev.orders.map((o) => (incoming.dbUuid && o.dbUuid === incoming.dbUuid) ||
-                            o.id === incoming.id
+                        ? prev.orders.map((o) => (incoming.dbUuid && o.dbUuid ? o.dbUuid === incoming.dbUuid : o.id === incoming.id)
                             ? { ...o, ...incoming }
                             : o)
-                        : [incoming, ...prev.orders];
+                        : [incoming, ...prev.orders.filter((o) => o.id !== incoming.id)];
                     return { ...prev, orders: nextOrders };
                 }
                 return prev;
@@ -10323,21 +10831,35 @@ const App = () => {
         return () => {
             unsubscribe();
         };
-    }, [session?.empresaId, session?.company_id]);
+    }, [session?.empresaId, session?.company_id, session?.role]);
     const handleAuthenticated = async (newSession) => {
         setSession(newSession);
         setSelectedCompanyId(null);
-        setActiveSection(newSession.role === 'operador' ? 'esteira' : 'bento_home');
+        setActiveSection(newSession.role === 'admin' ? 'bento_home' : 'esteira');
         setSearchQuery('');
         await hydrateFromSupabase(newSession);
         showToast(newSession.role === 'operador'
             ? `Acesso de Produção liberado (${newSession.ownerName})`
             : 'Sessão iniciada com sucesso!');
     };
-    const handleLogout = async () => {
+    const handleLogout = (0, react_1.useCallback)(async () => {
+        hydrationSeqRef.current += 1;
         if (autoBackupTimerRef.current) {
             window.clearTimeout(autoBackupTimerRef.current);
         }
+        if (toastTimerRef.current) {
+            window.clearTimeout(toastTimerRef.current);
+        }
+        if (moveErrorTimerRef.current) {
+            window.clearTimeout(moveErrorTimerRef.current);
+        }
+        if (printTimerRef.current) {
+            window.clearTimeout(printTimerRef.current);
+        }
+        pendingOrderIdsRef.current.clear();
+        setPendingOrderIds([]);
+        setMoveError(null);
+        setToast(null);
         try {
             await (0, supabaseDataService_1.signOutSupabase)();
         }
@@ -10359,19 +10881,23 @@ const App = () => {
             logs: [],
             loading: false,
         });
-    };
-    const handleSelectSection = (target) => {
-        if (target === 'configuracoes' && !session?.isSuperAdmin) {
-            setActiveSection(session?.role === 'operador' ? 'esteira' : 'bento_home');
+    }, []);
+    const handleSelectSection = (0, react_1.useCallback)((target) => {
+        const currentSession = sessionRef.current;
+        if (!currentSession || currentSession.role === 'cliente') {
             return;
         }
-        if (session?.role === 'operador' &&
+        if (target === 'configuracoes' && !currentSession.isSuperAdmin) {
+            setActiveSection(currentSession.role === 'operador' ? 'esteira' : 'bento_home');
+            return;
+        }
+        if (currentSession.role === 'operador' &&
             !OPERATOR_ALLOWED_SECTIONS.includes(target)) {
             setActiveSection('esteira');
             return;
         }
         setActiveSection(target);
-    };
+    }, []);
     const empresaId = session?.empresaId || session?.company_id || '';
     // Search filtering
     const filteredOrders = (0, react_1.useMemo)(() => {
@@ -10390,20 +10916,15 @@ const App = () => {
             c.cnpj.toLowerCase().includes(q) ||
             c.contactName.toLowerCase().includes(q));
     }, [db.companies, searchQuery]);
-    const financials = (0, react_1.useMemo)(() => (0, financeEngine_1.computeFinancialBreakdown)(filteredOrders), [filteredOrders]);
+    const financials = (0, react_1.useMemo)(() => (0, financeEngine_1.computeFinancialBreakdown)(db.orders), [db.orders]);
     const nextOrderId = (0, react_1.useMemo)(() => (0, storageAdapter_1.getNextOrderId)(db), [db]);
     // CRUD Handlers — Direct Supabase Persistence (Soft Delete)
     const handleAddCompany = async (newCompData) => {
-        if (!session || session.role !== 'admin')
-            return;
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
+            return false;
         try {
-            let maxNum = 0;
-            for (const c of db.companies) {
-                const n = parseInt(c.id.replace(/\D/g, ''), 10);
-                if (!Number.isNaN(n) && n > maxNum)
-                    maxNum = n;
-            }
-            const newCode = `EMP-${String(maxNum + 1).padStart(2, '0')}`;
+            const newCode = (0, storageAdapter_1.getNextCompanyCode)(dbRef.current.companies);
             const created = await (0, supabaseDataService_1.dbCreateCompany)(empresaId, newCode, newCompData);
             setDb((prev) => ({
                 ...prev,
@@ -10412,32 +10933,40 @@ const App = () => {
             setSelectedCompanyId(created.id);
             scheduleAutoBackup();
             showToast(`Empresa "${created.corporateName}" cadastrada!`);
+            return true;
         }
         catch (err) {
             showToast(err?.message || 'Erro ao cadastrar empresa.', 'err');
+            return false;
         }
     };
     const handleDeleteCompany = async (companyId) => {
-        if (!session || session.role !== 'admin')
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
             return;
-        const comp = db.companies.find((c) => c.id === companyId);
+        const targetEmpresaId = active.empresaId || active.company_id;
+        const snap = dbRef.current;
+        const comp = snap.companies.find((c) => c.id === companyId);
         if (!comp?.dbUuid)
             return;
         try {
-            const removedOrders = db.orders.filter((o) => o.companyId === companyId);
+            const removedOrders = snap.orders.filter((o) => o.companyId === companyId);
             const removedOrderIds = new Set(removedOrders.map((o) => o.id));
+            const returnUuids = snap.returns
+                .filter((r) => removedOrderIds.has(r.orderId) && r.dbUuid)
+                .map((r) => r.dbUuid);
+            const deliveryUuids = snap.deliveries
+                .filter((d) => removedOrderIds.has(d.orderId) && d.dbUuid)
+                .map((d) => d.dbUuid);
+            const orderUuids = removedOrders
+                .filter((o) => o.dbUuid)
+                .map((o) => o.dbUuid);
             await Promise.all([
-                ...db.returns
-                    .filter((r) => removedOrderIds.has(r.orderId) && r.dbUuid)
-                    .map((r) => (0, supabaseDataService_1.dbSoftDeleteReturn)(empresaId, r.dbUuid)),
-                ...db.deliveries
-                    .filter((d) => removedOrderIds.has(d.orderId) && d.dbUuid)
-                    .map((d) => (0, supabaseDataService_1.dbSoftDeleteDelivery)(empresaId, d.dbUuid)),
-                ...removedOrders
-                    .filter((o) => o.dbUuid)
-                    .map((o) => (0, supabaseDataService_1.dbSoftDeleteOrder)(empresaId, o.dbUuid)),
+                (0, supabaseDataService_1.dbBulkSoftDeleteReturns)(targetEmpresaId, returnUuids),
+                (0, supabaseDataService_1.dbBulkSoftDeleteDeliveries)(targetEmpresaId, deliveryUuids),
+                (0, supabaseDataService_1.dbBulkSoftDeleteOrders)(targetEmpresaId, orderUuids),
             ]);
-            await (0, supabaseDataService_1.dbSoftDeleteCompany)(empresaId, comp.dbUuid);
+            await (0, supabaseDataService_1.dbSoftDeleteCompany)(targetEmpresaId, comp.dbUuid);
             setDb((prev) => {
                 const nextCompanies = prev.companies.filter((c) => c.id !== companyId);
                 return {
@@ -10448,8 +10977,18 @@ const App = () => {
                     returns: prev.returns.filter((r) => !removedOrderIds.has(r.orderId)),
                 };
             });
-            if (selectedCompanyId === companyId) {
-                setSelectedCompanyId(null);
+            setSelectedCompanyId((prev) => (prev === companyId ? null : prev));
+            setPrefillDeliveryOrder((prev) => prev && removedOrderIds.has(prev.id) ? null : prev);
+            if (removedOrders.length > 0) {
+                (0, realtimeEngine_1.publishRealtimeUpdate)({
+                    company_id: targetEmpresaId,
+                    section: 'esteira',
+                    actionLabel: '',
+                    actorName: active.ownerName,
+                    actorRole: active.role,
+                    deletedOrderUuids: orderUuids,
+                    deletedOrderIds: Array.from(removedOrderIds),
+                });
             }
             scheduleAutoBackup();
             showToast(`Empresa "${comp.corporateName}" apagada!`);
@@ -10459,20 +10998,20 @@ const App = () => {
         }
     };
     const handleCreateOrderFull = async (payload) => {
-        if (!session)
-            return;
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin') {
+            showToast('Apenas administradores podem cadastrar novas OS.', 'err');
+            return false;
+        }
         try {
             const stamp = (0, financeEngine_1.nowTimestampBR)();
-            let existingComp = db.companies.find((c) => c.id === payload.companyId);
+            const snap = dbRef.current;
+            let existingComp = payload.companyId && payload.companyId !== '__new__'
+                ? snap.companies.find((c) => c.id === payload.companyId)
+                : undefined;
             let newCompCreated = null;
             if (!existingComp) {
-                let maxNum = 0;
-                for (const c of db.companies) {
-                    const n = parseInt(c.id.replace(/\D/g, ''), 10);
-                    if (!Number.isNaN(n) && n > maxNum)
-                        maxNum = n;
-                }
-                const compCode = `EMP-${String(maxNum + 1).padStart(2, '0')}`;
+                const compCode = (0, storageAdapter_1.getNextCompanyCode)(snap.companies);
                 newCompCreated = await (0, supabaseDataService_1.dbCreateCompany)(empresaId, compCode, {
                     corporateName: payload.companyName,
                     cnpj: 'Não informado',
@@ -10481,7 +11020,7 @@ const App = () => {
                 });
                 existingComp = newCompCreated;
             }
-            const createdOrder = await (0, supabaseDataService_1.dbCreateOrder)(empresaId, nextOrderId, {
+            const createdOrder = await (0, supabaseDataService_1.dbCreateOrder)(empresaId, 'AUTO', {
                 companyId: existingComp.id,
                 companyUuid: existingComp.dbUuid,
                 companyName: existingComp.corporateName,
@@ -10499,21 +11038,30 @@ const App = () => {
                     : prev.companies,
                 orders: [createdOrder, ...prev.orders],
             }));
-            if (!selectedCompanyId) {
-                setSelectedCompanyId(existingComp.id);
-            }
+            setSelectedCompanyId((prev) => prev || existingComp.id);
+            (0, realtimeEngine_1.publishRealtimeUpdate)({
+                company_id: empresaId,
+                section: 'esteira',
+                actionLabel: '',
+                actorName: active.ownerName,
+                actorRole: active.role,
+                order: createdOrder,
+            });
             const stageLabel = financeEngine_1.PRODUCTION_STAGES.find((s) => s.id === payload.stage)?.label ||
                 payload.stage;
             scheduleAutoBackup();
             showToast(`${createdOrder.id} criada em "${stageLabel}"!`);
+            return true;
         }
         catch (err) {
             showToast(err?.message || 'Erro ao criar Ordem de Serviço.', 'err');
+            return false;
         }
     };
     // Seção 2 • Esteira Física de Produção (Optimistic single card + RPC mover_faca_v2)
     const handleMoveStage = (0, react_1.useCallback)(async (orderId, targetStage) => {
-        if (!session)
+        const active = sessionRef.current;
+        if (!active || active.role === 'cliente')
             return;
         const currentOrder = dbRef.current.orders.find((o) => o.id === orderId);
         if (!currentOrder || currentOrder.stage === targetStage)
@@ -10524,7 +11072,13 @@ const App = () => {
             return;
         const stamp = (0, financeEngine_1.nowTimestampBR)();
         const nowIso = new Date().toISOString();
-        const previousOrder = { ...currentOrder };
+        const previousStageState = {
+            stage: currentOrder.stage,
+            stageUpdatedAt: currentOrder.stageUpdatedAt,
+            stageHistory: currentOrder.stageHistory,
+            version: currentOrder.version,
+            updatedAt: currentOrder.updatedAt,
+        };
         const optimisticOrder = {
             ...currentOrder,
             stage: targetStage,
@@ -10554,33 +11108,37 @@ const App = () => {
             setPendingOrderIds(Array.from(pendingOrderIdsRef.current));
             setDb((prev) => ({
                 ...prev,
-                orders: prev.orders.map((o) => o.id === orderId ? authoritativeOrder : o),
+                orders: prev.orders.map((o) => o.id === orderId ? { ...o, ...authoritativeOrder } : o),
             }));
             (0, realtimeEngine_1.publishRealtimeUpdate)({
                 company_id: empresaId,
                 section: 'esteira',
                 actionLabel: '',
-                actorName: session.ownerName,
-                actorRole: session.role,
+                actorName: active.ownerName,
+                actorRole: active.role,
                 order: authoritativeOrder,
             });
             scheduleAutoBackup();
         }
-        catch {
+        catch (err) {
             pendingOrderIdsRef.current.delete(orderId);
             setPendingOrderIds(Array.from(pendingOrderIdsRef.current));
             setDb((prev) => ({
                 ...prev,
-                orders: prev.orders.map((o) => o.id === orderId ? previousOrder : o),
+                orders: prev.orders.map((o) => o.id === orderId ? { ...o, ...previousStageState } : o),
             }));
-            setMoveError(`Não foi possível mover ${orderId}. Estado restaurado.`);
-            window.setTimeout(() => setMoveError(null), 4000);
+            setMoveError(err?.message || `Não foi possível mover ${orderId}. Estado restaurado.`);
+            if (moveErrorTimerRef.current) {
+                window.clearTimeout(moveErrorTimerRef.current);
+            }
+            moveErrorTimerRef.current = window.setTimeout(() => setMoveError(null), 4000);
         }
-    }, [session, empresaId, scheduleAutoBackup]);
+    }, [empresaId, scheduleAutoBackup]);
     const handleTogglePaid = async (orderId) => {
-        if (!session)
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
             return;
-        const order = db.orders.find((o) => o.id === orderId);
+        const order = dbRef.current.orders.find((o) => o.id === orderId);
         if (!order?.dbUuid)
             return;
         const today = (0, financeEngine_1.toISODate)();
@@ -10616,9 +11174,10 @@ const App = () => {
         }
     };
     const handleEmitBilling30d = async (orderId) => {
-        if (!session)
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
             return;
-        const order = db.orders.find((o) => o.id === orderId);
+        const order = dbRef.current.orders.find((o) => o.id === orderId);
         if (!order?.dbUuid)
             return;
         const today = (0, financeEngine_1.toISODate)();
@@ -10649,73 +11208,128 @@ const App = () => {
             showToast(err?.message || 'Erro ao gerar faturamento.', 'err');
         }
     };
-    const handleDeleteOrder = async (orderId) => {
-        if (!session)
+    const handleDeleteOrder = (0, react_1.useCallback)(async (orderId) => {
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
             return;
-        const target = db.orders.find((o) => o.id === orderId);
+        if (pendingOrderIdsRef.current.has(orderId))
+            return;
+        const targetEmpresaId = active.empresaId || active.company_id;
+        const snap = dbRef.current;
+        const target = snap.orders.find((o) => o.id === orderId);
         if (!target?.dbUuid)
             return;
+        pendingOrderIdsRef.current.add(orderId);
+        setPendingOrderIds(Array.from(pendingOrderIdsRef.current));
         try {
+            const deliveryUuids = snap.deliveries
+                .filter((d) => d.orderId === orderId && d.dbUuid)
+                .map((d) => d.dbUuid);
+            const returnUuids = snap.returns
+                .filter((r) => r.orderId === orderId && r.dbUuid)
+                .map((r) => r.dbUuid);
             await Promise.all([
-                ...db.deliveries
-                    .filter((d) => d.orderId === orderId && d.dbUuid)
-                    .map((d) => (0, supabaseDataService_1.dbSoftDeleteDelivery)(empresaId, d.dbUuid)),
-                ...db.returns
-                    .filter((r) => r.orderId === orderId && r.dbUuid)
-                    .map((r) => (0, supabaseDataService_1.dbSoftDeleteReturn)(empresaId, r.dbUuid)),
+                (0, supabaseDataService_1.dbBulkSoftDeleteDeliveries)(targetEmpresaId, deliveryUuids),
+                (0, supabaseDataService_1.dbBulkSoftDeleteReturns)(targetEmpresaId, returnUuids),
             ]);
-            await (0, supabaseDataService_1.dbSoftDeleteOrder)(empresaId, target.dbUuid);
+            await (0, supabaseDataService_1.dbSoftDeleteOrder)(targetEmpresaId, target.dbUuid);
             setDb((prev) => ({
                 ...prev,
                 orders: prev.orders.filter((o) => o.id !== orderId),
                 deliveries: prev.deliveries.filter((d) => d.orderId !== orderId),
                 returns: prev.returns.filter((r) => r.orderId !== orderId),
             }));
+            setPrefillDeliveryOrder((prev) => (prev?.id === orderId ? null : prev));
+            (0, realtimeEngine_1.publishRealtimeUpdate)({
+                company_id: targetEmpresaId,
+                section: 'esteira',
+                actionLabel: '',
+                actorName: active.ownerName,
+                actorRole: active.role,
+                deletedOrderUuid: target.dbUuid,
+                deletedOrderId: target.id,
+            });
             scheduleAutoBackup();
             showToast(`Ordem ${orderId} removida com sucesso!`);
         }
         catch (err) {
             showToast(err?.message || 'Erro ao apagar OS.', 'err');
         }
-    };
+        finally {
+            pendingOrderIdsRef.current.delete(orderId);
+            setPendingOrderIds(Array.from(pendingOrderIdsRef.current));
+        }
+    }, [scheduleAutoBackup, showToast]);
+    const handleQuickRegisterDelivery = (0, react_1.useCallback)((order) => {
+        setPrefillDeliveryOrder(order);
+        handleSelectSection('entregas');
+    }, [handleSelectSection]);
     // Seção 4 • Entregas
     const handleAddDelivery = async (deliveryData) => {
-        if (!session)
-            return;
+        const active = sessionRef.current;
+        if (!active || active.role === 'cliente')
+            return false;
         try {
-            const code = (0, storageAdapter_1.getNextDeliveryId)(db);
-            const ord = db.orders.find((o) => o.id === deliveryData.orderId);
+            const snap = dbRef.current;
+            const code = (0, storageAdapter_1.getNextDeliveryId)(snap);
+            const ord = snap.orders.find((o) => o.id === deliveryData.orderId);
             const created = await (0, supabaseDataService_1.dbCreateDelivery)(empresaId, code, deliveryData, ord?.dbUuid);
-            let movedVer = ord?.version || 1;
-            const stamp = (0, financeEngine_1.nowTimestampBR)();
-            if (ord?.dbUuid && ord.stage !== 'faca_pronta') {
-                const rpcRes = await (0, supabaseDataService_1.dbMoveOrderStage)(ord.dbUuid, 'faca_pronta', stamp);
-                movedVer = rpcRes.version ?? movedVer + 1;
-            }
             setDb((prev) => ({
                 ...prev,
                 deliveries: [created, ...prev.deliveries],
-                orders: prev.orders.map((o) => o.id === deliveryData.orderId
-                    ? {
-                        ...o,
+            }));
+            let stageWarning = null;
+            if (ord?.dbUuid && ord.stage !== 'faca_pronta') {
+                const stamp = (0, financeEngine_1.nowTimestampBR)();
+                try {
+                    const rpcRes = await (0, supabaseDataService_1.dbMoveOrderStage)(ord.dbUuid, 'faca_pronta', stamp);
+                    const updatedOrder = {
+                        ...ord,
                         stage: 'faca_pronta',
                         stageUpdatedAt: stamp,
-                        version: movedVer,
-                        updatedAt: new Date().toISOString(),
-                    }
-                    : o),
-            }));
+                        stageHistory: [
+                            ...(ord.stageHistory || []),
+                            { stage: 'faca_pronta', timestamp: stamp },
+                        ],
+                        version: rpcRes.version ?? (Number(ord.version) || 1) + 1,
+                        updatedAt: rpcRes.updatedAt ?? new Date().toISOString(),
+                    };
+                    setDb((prev) => ({
+                        ...prev,
+                        orders: prev.orders.map((o) => o.id === deliveryData.orderId ? { ...o, ...updatedOrder } : o),
+                    }));
+                    (0, realtimeEngine_1.publishRealtimeUpdate)({
+                        company_id: empresaId,
+                        section: 'esteira',
+                        actionLabel: '',
+                        actorName: active.ownerName,
+                        actorRole: active.role,
+                        order: updatedOrder,
+                    });
+                }
+                catch (moveErr) {
+                    stageWarning = moveErr?.message || 'não foi possível atualizar etapa na esteira';
+                }
+            }
             scheduleAutoBackup();
-            showToast(`Saída logística da ${deliveryData.orderId} registrada!`);
+            if (stageWarning) {
+                showToast(`Saída logística registrada, porém: ${stageWarning}.`, 'err');
+            }
+            else {
+                showToast(`Saída logística da ${deliveryData.orderId} registrada!`);
+            }
+            return true;
         }
         catch (err) {
             showToast(err?.message || 'Erro ao registrar entrega.', 'err');
+            return false;
         }
     };
     const handleDeleteDelivery = async (deliveryId) => {
-        if (!session)
+        const active = sessionRef.current;
+        if (!active || active.role === 'cliente')
             return;
-        const del = db.deliveries.find((d) => d.id === deliveryId);
+        const del = dbRef.current.deliveries.find((d) => d.id === deliveryId);
         if (!del?.dbUuid)
             return;
         try {
@@ -10733,11 +11347,13 @@ const App = () => {
     };
     // Seção 5 • Retornos e Ajustes
     const handleAddReturn = async (retData) => {
-        if (!session)
-            return;
+        const active = sessionRef.current;
+        if (!active || active.role === 'cliente')
+            return false;
         try {
-            const code = (0, storageAdapter_1.getNextReturnId)(db);
-            const ord = db.orders.find((o) => o.id === retData.orderId);
+            const snap = dbRef.current;
+            const code = (0, storageAdapter_1.getNextReturnId)(snap);
+            const ord = snap.orders.find((o) => o.id === retData.orderId);
             const created = await (0, supabaseDataService_1.dbCreateReturn)(empresaId, code, retData, ord?.dbUuid);
             setDb((prev) => ({
                 ...prev,
@@ -10745,15 +11361,18 @@ const App = () => {
             }));
             scheduleAutoBackup();
             showToast(`Retorno de garantia (${retData.orderId}) registrado!`);
+            return true;
         }
         catch (err) {
             showToast(err?.message || 'Erro ao registrar retorno.', 'err');
+            return false;
         }
     };
     const handleUpdateReturnStatus = async (id, nextStatus) => {
-        if (!session)
+        const active = sessionRef.current;
+        if (!active || active.role === 'cliente')
             return;
-        const target = db.returns.find((r) => r.id === id);
+        const target = dbRef.current.returns.find((r) => r.id === id);
         if (!target?.dbUuid)
             return;
         try {
@@ -10771,9 +11390,10 @@ const App = () => {
         }
     };
     const handleDeleteReturn = async (returnId) => {
-        if (!session)
+        const active = sessionRef.current;
+        if (!active || active.role === 'cliente')
             return;
-        const target = db.returns.find((r) => r.id === returnId);
+        const target = dbRef.current.returns.find((r) => r.id === returnId);
         if (!target?.dbUuid)
             return;
         try {
@@ -10791,10 +11411,11 @@ const App = () => {
     };
     // Seção 6 • Estoque (CRUD restrito a admin; consumo rápido e estorno liberados para admin e operador)
     const handleAddStockItem = async (payload) => {
-        if (!session || session.role !== 'admin')
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
             return;
         try {
-            const code = (0, storageAdapter_1.getNextStockId)(db);
+            const code = (0, storageAdapter_1.getNextStockId)(dbRef.current);
             const created = await (0, supabaseDataService_1.dbCreateStockItem)(empresaId, code, payload);
             setDb((prev) => ({
                 ...prev,
@@ -10808,9 +11429,10 @@ const App = () => {
         }
     };
     const handleUpdateStockItem = async (id, payload) => {
-        if (!session || session.role !== 'admin')
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
             return;
-        const target = (db.stock || []).find((item) => item.id === id);
+        const target = (dbRef.current.stock || []).find((item) => item.id === id);
         if (!target?.dbUuid)
             return;
         try {
@@ -10827,9 +11449,10 @@ const App = () => {
         }
     };
     const handleDeleteStockItem = async (id) => {
-        if (!session || session.role !== 'admin')
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
             return;
-        const target = (db.stock || []).find((item) => item.id === id);
+        const target = (dbRef.current.stock || []).find((item) => item.id === id);
         if (!target?.dbUuid)
             return;
         try {
@@ -10846,7 +11469,8 @@ const App = () => {
         }
     };
     const handleRevertStockMovement = async (movement) => {
-        if (!session || session.role === 'cliente')
+        const active = sessionRef.current;
+        if (!active || active.role === 'cliente')
             return;
         const currentItem = (dbRef.current.stock || []).find((i) => i.dbUuid === movement.stockItemUuid);
         if (!currentItem) {
@@ -10854,7 +11478,7 @@ const App = () => {
             return;
         }
         try {
-            const { updatedItem, revertedAt, estornoMovement } = await (0, supabaseDataService_1.dbRevertStockMovement)(empresaId, movement, currentItem, session.ownerName);
+            const { updatedItem, revertedAt, estornoMovement } = await (0, supabaseDataService_1.dbRevertStockMovement)(empresaId, movement, currentItem, active.ownerName);
             setDb((prev) => ({
                 ...prev,
                 stock: (prev.stock || []).map((it) => it.dbUuid === updatedItem.dbUuid ? updatedItem : it),
@@ -10871,10 +11495,11 @@ const App = () => {
         }
     };
     const handleQuickConsumeStock = async (item, quantity, note) => {
-        if (!session || session.role === 'cliente')
+        const active = sessionRef.current;
+        if (!active || active.role === 'cliente')
             return;
         try {
-            const { updatedItem, movement } = await (0, supabaseDataService_1.dbRegisterStockMovement)(empresaId, item, -Math.abs(quantity), session.ownerName, note);
+            const { updatedItem, movement } = await (0, supabaseDataService_1.dbRegisterStockMovement)(empresaId, item, -Math.abs(quantity), active.ownerName, note);
             setDb((prev) => ({
                 ...prev,
                 stock: (prev.stock || []).map((it) => it.dbUuid === updatedItem.dbUuid ? updatedItem : it),
@@ -10894,10 +11519,11 @@ const App = () => {
         }
     };
     const handleQuickReplenishStock = async (item, quantity, note) => {
-        if (!session || session.role !== 'admin')
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
             return;
         try {
-            const { updatedItem, movement } = await (0, supabaseDataService_1.dbRegisterStockMovement)(empresaId, item, Math.abs(quantity), session.ownerName, note);
+            const { updatedItem, movement } = await (0, supabaseDataService_1.dbRegisterStockMovement)(empresaId, item, Math.abs(quantity), active.ownerName, note);
             setDb((prev) => ({
                 ...prev,
                 stock: (prev.stock || []).map((it) => it.dbUuid === updatedItem.dbUuid ? updatedItem : it),
@@ -10918,6 +11544,10 @@ const App = () => {
     };
     // Finanças -> Despesas (Seção 3 - CRUD completo com Soft Delete + RBAC Admin)
     const handleCreateExpense = async (payload) => {
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin') {
+            throw new Error('Apenas administradores podem cadastrar despesas.');
+        }
         const created = await (0, supabaseDataService_1.dbCreateExpense)(empresaId, payload);
         setDb((prev) => ({
             ...prev,
@@ -10928,6 +11558,10 @@ const App = () => {
         return created;
     };
     const handleUpdateExpense = async (id, payload) => {
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin') {
+            throw new Error('Apenas administradores podem editar despesas.');
+        }
         const updated = await (0, supabaseDataService_1.dbUpdateExpense)(empresaId, id, payload);
         setDb((prev) => ({
             ...prev,
@@ -10938,6 +11572,10 @@ const App = () => {
         return updated;
     };
     const handleDeleteExpense = async (id) => {
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin') {
+            throw new Error('Apenas administradores podem excluir despesas.');
+        }
         await (0, supabaseDataService_1.dbSoftDeleteExpense)(empresaId, id);
         setDb((prev) => ({
             ...prev,
@@ -10948,49 +11586,59 @@ const App = () => {
     };
     // Finanças -> Prestadores, Folha, Investimentos
     const handleAddProvider = async (payload) => {
-        if (session?.role !== 'admin')
-            return;
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
+            return false;
+        const targetEmpresaId = active.empresaId || active.company_id;
         try {
-            const code = (0, storageAdapter_1.getNextProviderId)(db);
-            const created = await (0, supabaseDataService_1.dbCreateProvider)(empresaId, code, payload);
+            const code = (0, storageAdapter_1.getNextProviderId)(dbRef.current);
+            const created = await (0, supabaseDataService_1.dbCreateProvider)(targetEmpresaId, code, payload);
             setDb((prev) => ({
                 ...prev,
                 serviceProviders: [created, ...(prev.serviceProviders || [])],
             }));
             scheduleAutoBackup();
             showToast(`Prestador "${created.name}" cadastrado!`);
+            return true;
         }
         catch (err) {
             showToast(err?.message || 'Erro ao cadastrar prestador.', 'err');
+            return false;
         }
     };
     const handleUpdateProvider = async (id, payload) => {
-        if (session?.role !== 'admin')
-            return;
-        const target = (db.serviceProviders || []).find((p) => p.id === id);
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
+            return false;
+        const targetEmpresaId = active.empresaId || active.company_id;
+        const target = (dbRef.current.serviceProviders || []).find((p) => p.id === id);
         if (!target?.dbUuid)
-            return;
+            return false;
         try {
-            const updated = await (0, supabaseDataService_1.dbUpdateProvider)(empresaId, target.dbUuid, payload);
+            const updated = await (0, supabaseDataService_1.dbUpdateProvider)(targetEmpresaId, target.dbUuid, payload);
             setDb((prev) => ({
                 ...prev,
                 serviceProviders: (prev.serviceProviders || []).map((p) => p.id === id ? updated : p),
             }));
             scheduleAutoBackup();
             showToast('Prestador atualizado!');
+            return true;
         }
         catch (err) {
             showToast(err?.message || 'Erro ao atualizar prestador.', 'err');
+            return false;
         }
     };
     const handleDeleteProvider = async (id) => {
-        if (session?.role !== 'admin')
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
             return;
-        const target = (db.serviceProviders || []).find((p) => p.id === id);
+        const targetEmpresaId = active.empresaId || active.company_id;
+        const target = (dbRef.current.serviceProviders || []).find((p) => p.id === id);
         if (!target?.dbUuid)
             return;
         try {
-            await (0, supabaseDataService_1.dbSoftDeleteProvider)(empresaId, target.dbUuid);
+            await (0, supabaseDataService_1.dbSoftDeleteProvider)(targetEmpresaId, target.dbUuid);
             setDb((prev) => ({
                 ...prev,
                 serviceProviders: (prev.serviceProviders || []).filter((p) => p.id !== id),
@@ -11003,49 +11651,59 @@ const App = () => {
         }
     };
     const handleAddPayrollEmployee = async (payload) => {
-        if (session?.role !== 'admin')
-            return;
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
+            return false;
+        const targetEmpresaId = active.empresaId || active.company_id;
         try {
-            const code = (0, storageAdapter_1.getNextPayrollEmployeeId)(db);
-            const created = await (0, supabaseDataService_1.dbCreatePayrollEmployee)(empresaId, code, payload);
+            const code = (0, storageAdapter_1.getNextPayrollEmployeeId)(dbRef.current);
+            const created = await (0, supabaseDataService_1.dbCreatePayrollEmployee)(targetEmpresaId, code, payload);
             setDb((prev) => ({
                 ...prev,
                 payrollEmployees: [created, ...(prev.payrollEmployees || [])],
             }));
             scheduleAutoBackup();
             showToast(`Funcionário "${created.name}" cadastrado!`);
+            return true;
         }
         catch (err) {
             showToast(err?.message || 'Erro ao cadastrar funcionário.', 'err');
+            return false;
         }
     };
     const handleUpdatePayrollEmployee = async (id, payload) => {
-        if (session?.role !== 'admin')
-            return;
-        const target = (db.payrollEmployees || []).find((e) => e.id === id);
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
+            return false;
+        const targetEmpresaId = active.empresaId || active.company_id;
+        const target = (dbRef.current.payrollEmployees || []).find((e) => e.id === id);
         if (!target?.dbUuid)
-            return;
+            return false;
         try {
-            const updated = await (0, supabaseDataService_1.dbUpdatePayrollEmployee)(empresaId, target.dbUuid, payload);
+            const updated = await (0, supabaseDataService_1.dbUpdatePayrollEmployee)(targetEmpresaId, target.dbUuid, payload);
             setDb((prev) => ({
                 ...prev,
                 payrollEmployees: (prev.payrollEmployees || []).map((e) => e.id === id ? updated : e),
             }));
             scheduleAutoBackup();
             showToast('Funcionário atualizado!');
+            return true;
         }
         catch (err) {
             showToast(err?.message || 'Erro ao atualizar funcionário.', 'err');
+            return false;
         }
     };
     const handleDeletePayrollEmployee = async (id) => {
-        if (session?.role !== 'admin')
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
             return;
-        const target = (db.payrollEmployees || []).find((e) => e.id === id);
+        const targetEmpresaId = active.empresaId || active.company_id;
+        const target = (dbRef.current.payrollEmployees || []).find((e) => e.id === id);
         if (!target?.dbUuid)
             return;
         try {
-            await (0, supabaseDataService_1.dbSoftDeletePayrollEmployee)(empresaId, target.dbUuid);
+            await (0, supabaseDataService_1.dbSoftDeletePayrollEmployee)(targetEmpresaId, target.dbUuid);
             setDb((prev) => ({
                 ...prev,
                 payrollEmployees: (prev.payrollEmployees || []).filter((e) => e.id !== id),
@@ -11058,49 +11716,59 @@ const App = () => {
         }
     };
     const handleAddInvestment = async (payload) => {
-        if (session?.role !== 'admin')
-            return;
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
+            return false;
+        const targetEmpresaId = active.empresaId || active.company_id;
         try {
-            const code = (0, storageAdapter_1.getNextInvestmentId)(db);
-            const created = await (0, supabaseDataService_1.dbCreateInvestment)(empresaId, code, payload);
+            const code = (0, storageAdapter_1.getNextInvestmentId)(dbRef.current);
+            const created = await (0, supabaseDataService_1.dbCreateInvestment)(targetEmpresaId, code, payload);
             setDb((prev) => ({
                 ...prev,
                 investments: [created, ...(prev.investments || [])],
             }));
             scheduleAutoBackup();
             showToast(`Investimento "${created.assetName}" adicionado!`);
+            return true;
         }
         catch (err) {
             showToast(err?.message || 'Erro ao adicionar investimento.', 'err');
+            return false;
         }
     };
     const handleUpdateInvestment = async (id, payload) => {
-        if (session?.role !== 'admin')
-            return;
-        const target = (db.investments || []).find((inv) => inv.id === id);
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
+            return false;
+        const targetEmpresaId = active.empresaId || active.company_id;
+        const target = (dbRef.current.investments || []).find((inv) => inv.id === id);
         if (!target?.dbUuid)
-            return;
+            return false;
         try {
-            const updated = await (0, supabaseDataService_1.dbUpdateInvestment)(empresaId, target.dbUuid, payload);
+            const updated = await (0, supabaseDataService_1.dbUpdateInvestment)(targetEmpresaId, target.dbUuid, payload);
             setDb((prev) => ({
                 ...prev,
                 investments: (prev.investments || []).map((inv) => inv.id === id ? updated : inv),
             }));
             scheduleAutoBackup();
             showToast('Investimento atualizado!');
+            return true;
         }
         catch (err) {
             showToast(err?.message || 'Erro ao atualizar investimento.', 'err');
+            return false;
         }
     };
     const handleDeleteInvestment = async (id) => {
-        if (session?.role !== 'admin')
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
             return;
-        const target = (db.investments || []).find((inv) => inv.id === id);
+        const targetEmpresaId = active.empresaId || active.company_id;
+        const target = (dbRef.current.investments || []).find((inv) => inv.id === id);
         if (!target?.dbUuid)
             return;
         try {
-            await (0, supabaseDataService_1.dbSoftDeleteInvestment)(empresaId, target.dbUuid);
+            await (0, supabaseDataService_1.dbSoftDeleteInvestment)(targetEmpresaId, target.dbUuid);
             setDb((prev) => ({
                 ...prev,
                 investments: (prev.investments || []).filter((inv) => inv.id !== id),
@@ -11115,10 +11783,11 @@ const App = () => {
     // Seção Notas (Admin & Operador)
     const nextNoteNumber = (0, react_1.useMemo)(() => (0, storageAdapter_1.getNextNoteNumber)(db), [db]);
     const handleSaveNote = async (payload, editingId) => {
-        if (!session || session.role === 'cliente')
+        const active = sessionRef.current;
+        if (!active || active.role === 'cliente')
             return null;
         try {
-            const saved = await (0, supabaseDataService_1.dbSaveNote)(empresaId, session.ownerName, payload, editingId);
+            const saved = await (0, supabaseDataService_1.dbSaveNote)(empresaId, active.ownerName, payload, editingId);
             setDb((prev) => {
                 const current = prev.notas || [];
                 const nextNotas = editingId
@@ -11140,7 +11809,8 @@ const App = () => {
         }
     };
     const handleMarkNotePrinted = async (id) => {
-        if (!session || session.role === 'cliente')
+        const active = sessionRef.current;
+        if (!active || active.role === 'cliente')
             return;
         try {
             await (0, supabaseDataService_1.dbUpdateNoteStatus)(empresaId, id, 'impressa');
@@ -11154,7 +11824,8 @@ const App = () => {
         }
     };
     const handleDeleteNote = async (id) => {
-        if (!session || session.role === 'cliente')
+        const active = sessionRef.current;
+        if (!active || active.role === 'cliente')
             return;
         try {
             await (0, supabaseDataService_1.dbSoftDeleteNote)(empresaId, id);
@@ -11169,15 +11840,19 @@ const App = () => {
             showToast(err?.message || 'Erro ao remover pedido.', 'err');
         }
     };
-    const handleTriggerPrint = (note, emitter) => {
+    const handleTriggerPrint = (0, react_1.useCallback)((note, emitter) => {
         setPrintJob({ note, emitter });
-        window.setTimeout(() => {
+        if (printTimerRef.current) {
+            window.clearTimeout(printTimerRef.current);
+        }
+        printTimerRef.current = window.setTimeout(() => {
             window.print();
         }, 120);
-    };
+    }, []);
     // Equipe (Edge Function manage-team - sem service_role no frontend)
     const handleAddEmployee = async (payload) => {
-        if (!session || session.role !== 'admin') {
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin') {
             return { error: 'Apenas administradores podem adicionar membros.' };
         }
         try {
@@ -11185,7 +11860,7 @@ const App = () => {
                 action: 'create_member',
                 ...payload,
             });
-            await hydrateFromSupabase(session);
+            await hydrateFromSupabase(active);
             showToast(`Funcionário "${payload.ownerName}" cadastrado no Supabase!`);
             return {};
         }
@@ -11194,7 +11869,8 @@ const App = () => {
         }
     };
     const handleToggleEmployeeRole = async (memberId, nextRole) => {
-        if (!session || session.role !== 'admin')
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
             return;
         try {
             await (0, supabaseDataService_1.invokeManageTeam)({
@@ -11213,7 +11889,8 @@ const App = () => {
         }
     };
     const handleDeleteEmployee = async (memberId) => {
-        if (!session || session.role !== 'admin')
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
             return;
         try {
             await (0, supabaseDataService_1.invokeManageTeam)({
@@ -11230,8 +11907,8 @@ const App = () => {
             showToast(err?.message || 'Erro ao remover funcionário.', 'err');
         }
     };
-    const unDismissedAlerts = settingsState.logs.filter((l) => l.status === 'erro' && !l.alerta_dispensado);
-    const counts = {
+    const unDismissedAlerts = (0, react_1.useMemo)(() => settingsState.logs.filter((l) => l.status === 'erro' && !l.alerta_dispensado), [settingsState.logs]);
+    const counts = (0, react_1.useMemo)(() => ({
         companies: db.companies.length,
         inProduction: db.orders.filter((o) => o.stage !== 'faca_pronta').length,
         overdue: financials.overdueCount,
@@ -11241,7 +11918,17 @@ const App = () => {
         notas: (db.notas || []).length,
         employees: (db.employees || []).length,
         backupAlerts: unDismissedAlerts.length,
-    };
+    }), [
+        db.companies.length,
+        db.orders,
+        financials.overdueCount,
+        db.deliveries.length,
+        db.returns,
+        db.stock,
+        db.notas,
+        db.employees,
+        unDismissedAlerts.length,
+    ]);
     if (authChecking) {
         return (react_1.default.createElement("div", { className: "min-h-[100dvh] flex flex-col items-center justify-center p-6 text-slate-800 relative" },
             react_1.default.createElement("div", { className: "blob blob-1" }),
@@ -11259,6 +11946,19 @@ const App = () => {
             react_1.default.createElement("div", { className: "blob blob-5" }),
             react_1.default.createElement("div", { className: "relative z-10" },
                 react_1.default.createElement(AuthLoginScreen_1.AuthLoginScreen, { onAuthenticated: handleAuthenticated }))));
+    }
+    if (session.role === 'cliente') {
+        return (react_1.default.createElement("div", { className: "min-h-[100dvh] flex flex-col items-center justify-center p-6 text-slate-800 relative" },
+            react_1.default.createElement("div", { className: "blob blob-1" }),
+            react_1.default.createElement("div", { className: "blob blob-2" }),
+            react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] max-w-md w-full p-8 text-center space-y-4 relative z-10 shadow-xl" },
+                react_1.default.createElement(lucide_react_1.AlertTriangle, { className: "w-8 h-8 text-amber-600 mx-auto" }),
+                react_1.default.createElement("h2", { className: "text-lg font-extrabold text-slate-900" }, "Acesso Restrito ao Painel Interno"),
+                react_1.default.createElement("p", { className: "text-xs font-medium text-slate-600 leading-relaxed" },
+                    "Seu usu\u00E1rio possui perfil ",
+                    react_1.default.createElement("strong", null, "Cliente"),
+                    ". Solicite ao administrador da facaria a libera\u00E7\u00E3o para Operador ou Administrador caso precise acessar a esteira."),
+                react_1.default.createElement("button", { type: "button", onClick: handleLogout, className: "min-h-[44px] px-6 py-2.5 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow-md transition cursor-pointer" }, "Sair da conta"))));
     }
     // Enforce RBAC + Super Admin section access
     const effectiveSection = activeSection === 'configuracoes' && !session.isSuperAdmin
@@ -11303,8 +12003,8 @@ const App = () => {
                         dbLoading && db.orders.length === 0 && db.companies.length === 0 ? (react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-10 flex flex-col items-center gap-3 text-xs font-bold text-slate-700" },
                             react_1.default.createElement(lucide_react_1.Loader2, { className: "w-6 h-6 animate-spin text-indigo-600" }),
                             react_1.default.createElement("span", null, "Carregando dados da empresa no Supabase..."))) : null,
-                        session.role === 'admin' && effectiveSection === 'bento_home' && (react_1.default.createElement(BentoOverviewSection_1.BentoOverviewSection, { companies: filteredCompanies, orders: filteredOrders, deliveries: db.deliveries, returns: db.returns, stock: db.stock || [], financials: financials, onNavigate: handleSelectSection, onOpenNewOrder: () => setIsNewModalOpen(true), onSelectCompany: (id) => setSelectedCompanyId(id) })),
-                        session.role === 'admin' && effectiveSection === 'empresas' && (react_1.default.createElement(CompaniesCrmSection_1.CompaniesCrmSection, { companies: filteredCompanies, orders: filteredOrders, selectedCompanyId: selectedCompanyId, onSelectCompany: setSelectedCompanyId, onAddCompany: handleAddCompany, onDeleteCompany: handleDeleteCompany, onDeleteOrder: handleDeleteOrder, onAddDieForCompany: (comp, desc, val, mod) => handleCreateOrderFull({
+                        session.role === 'admin' && effectiveSection === 'bento_home' && (react_1.default.createElement(BentoOverviewSection_1.BentoOverviewSection, { companies: db.companies, orders: db.orders, deliveries: db.deliveries, returns: db.returns, stock: db.stock || [], financials: financials, onNavigate: handleSelectSection, onOpenNewOrder: () => setIsNewModalOpen(true), onSelectCompany: (id) => setSelectedCompanyId(id) })),
+                        session.role === 'admin' && effectiveSection === 'empresas' && (react_1.default.createElement(CompaniesCrmSection_1.CompaniesCrmSection, { companies: filteredCompanies, orders: db.orders, selectedCompanyId: selectedCompanyId, onSelectCompany: setSelectedCompanyId, onAddCompany: handleAddCompany, onDeleteCompany: handleDeleteCompany, onDeleteOrder: handleDeleteOrder, onAddDieForCompany: (comp, desc, val, mod) => handleCreateOrderFull({
                                 companyId: comp.id,
                                 companyName: comp.corporateName,
                                 companyPhone: comp.phone,
@@ -11313,15 +12013,12 @@ const App = () => {
                                 paymentModality: mod,
                                 stage: 'arquivo_recebido',
                             }) })),
-                        effectiveSection === 'esteira' && (react_1.default.createElement(ProductionKanban_1.ProductionKanban, { orders: filteredOrders, pendingOrderIds: pendingOrderIds, moveError: moveError, onMoveStage: handleMoveStage, onDeleteOrder: handleDeleteOrder, onQuickRegisterDelivery: (order) => {
-                                setPrefillDeliveryOrder(order);
-                                handleSelectSection('entregas');
-                            } })),
+                        effectiveSection === 'esteira' && (react_1.default.createElement(ProductionKanban_1.ProductionKanban, { orders: filteredOrders, userRole: session.role, pendingOrderIds: pendingOrderIds, moveError: moveError, onMoveStage: handleMoveStage, onDeleteOrder: handleDeleteOrder, onQuickRegisterDelivery: handleQuickRegisterDelivery })),
                         session.role === 'admin' && effectiveSection === 'financeiro' && (react_1.default.createElement(FinanceAnalyticsSection_1.FinanceAnalyticsSection, { orders: filteredOrders, financials: financials, despesas: db.despesas || [], canEditDespesas: session.role === 'admin', serviceProviders: db.serviceProviders || [], payrollEmployees: db.payrollEmployees || [], investments: db.investments || [], onTogglePaid: handleTogglePaid, onEmitBilling30d: handleEmitBilling30d, onDeleteOrder: handleDeleteOrder, onCreateExpense: handleCreateExpense, onUpdateExpense: handleUpdateExpense, onDeleteExpense: handleDeleteExpense, onAddProvider: handleAddProvider, onUpdateProvider: handleUpdateProvider, onDeleteProvider: handleDeleteProvider, onAddPayrollEmployee: handleAddPayrollEmployee, onUpdatePayrollEmployee: handleUpdatePayrollEmployee, onDeletePayrollEmployee: handleDeletePayrollEmployee, onAddInvestment: handleAddInvestment, onUpdateInvestment: handleUpdateInvestment, onDeleteInvestment: handleDeleteInvestment })),
                         effectiveSection === 'entregas' && (react_1.default.createElement(DeliveriesLogisticsSection_1.DeliveriesLogisticsSection, { orders: db.orders, deliveries: db.deliveries, prefillOrder: prefillDeliveryOrder, onAddDelivery: handleAddDelivery, onDeleteDelivery: handleDeleteDelivery })),
                         effectiveSection === 'retornos' && (react_1.default.createElement(WarrantyReturnsSection_1.WarrantyReturnsSection, { orders: db.orders, returns: db.returns, onAddReturn: handleAddReturn, onUpdateReturnStatus: handleUpdateReturnStatus, onDeleteReturn: handleDeleteReturn })),
                         effectiveSection === 'estoque' && (react_1.default.createElement(StockSection_1.StockSection, { userRole: session.role, items: db.stock || [], movements: db.stockMovements || [], globalSearchQuery: searchQuery, onAddItem: handleAddStockItem, onUpdateItem: handleUpdateStockItem, onDeleteItem: handleDeleteStockItem, onQuickConsume: handleQuickConsumeStock, onQuickReplenish: handleQuickReplenishStock, onRevertMovement: handleRevertStockMovement })),
-                        effectiveSection === 'notas' && session.role !== 'cliente' && (react_1.default.createElement(NotesSection_1.NotesSection, { notas: db.notas || [], companies: db.companies, orders: db.orders, nextNoteNumber: nextNoteNumber, tenantKey: empresaId, currentUserName: session.ownerName, globalSearchQuery: searchQuery, onSaveNote: handleSaveNote, onMarkNotePrinted: handleMarkNotePrinted, onDeleteNote: handleDeleteNote, onTriggerPrint: handleTriggerPrint, onSyncPrintPreview: setPrintJob })),
+                        effectiveSection === 'notas' && (react_1.default.createElement(NotesSection_1.NotesSection, { notas: db.notas || [], companies: db.companies, orders: db.orders, nextNoteNumber: nextNoteNumber, tenantKey: empresaId, currentUserName: session.ownerName, globalSearchQuery: searchQuery, onSaveNote: handleSaveNote, onMarkNotePrinted: handleMarkNotePrinted, onDeleteNote: handleDeleteNote, onTriggerPrint: handleTriggerPrint, onSyncPrintPreview: setPrintJob })),
                         session.role === 'admin' && effectiveSection === 'equipe' && (react_1.default.createElement(TeamManagementSection_1.TeamManagementSection, { session: session, employees: db.employees || [], onAddEmployee: handleAddEmployee, onToggleEmployeeRole: handleToggleEmployeeRole, onDeleteEmployee: handleDeleteEmployee })),
                         session.isSuperAdmin &&
                             effectiveSection === 'configuracoes' && (react_1.default.createElement(SettingsBackupsSection_1.SettingsBackupsSection, { empresaId: empresaId, companyName: session.companyName, settings: settingsState.settings, backups: settingsState.backups, logs: settingsState.logs, loading: settingsState.loading, onRefresh: () => refreshSettingsAndBackups(empresaId, session.isSuperAdmin), onUpdateSettings: async (updates) => {

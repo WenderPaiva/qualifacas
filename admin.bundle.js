@@ -999,6 +999,7 @@ exports.authenticateTenantWithServerFallback = authenticateTenantWithServerFallb
 exports.saveEnterpriseDatabaseLocalOnly = saveEnterpriseDatabaseLocalOnly;
 exports.saveEnterpriseDatabase = saveEnterpriseDatabase;
 exports.moveOrderStageOnServer = moveOrderStageOnServer;
+exports.getNextCompanyCode = getNextCompanyCode;
 exports.getNextOrderId = getNextOrderId;
 exports.getNextDeliveryId = getNextDeliveryId;
 exports.getNextReturnId = getNextReturnId;
@@ -1676,68 +1677,44 @@ async function moveOrderStageOnServer(params) {
     const data = await res.json();
     return data?.order || null;
 }
-function getNextOrderId(db) {
+function getNextPrefixedCode(items, prefix, padLength = 3) {
+    const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const matcher = new RegExp(`^${escaped}-(\\d+)$`, 'i');
     let max = 0;
-    for (const o of db.orders) {
-        const num = parseInt(o.id.replace(/\D/g, ''), 10);
-        if (!Number.isNaN(num) && num > max)
-            max = num;
+    for (const item of items || []) {
+        const idStr = String(item?.id || '').trim();
+        const match = matcher.exec(idStr);
+        if (match) {
+            const num = parseInt(match[1], 10);
+            if (!Number.isNaN(num) && num > max)
+                max = num;
+        }
     }
-    return `OS-${String(max + 1).padStart(3, '0')}`;
+    return `${prefix}-${String(max + 1).padStart(padLength, '0')}`;
+}
+function getNextCompanyCode(companies) {
+    return getNextPrefixedCode(companies, 'EMP', 3);
+}
+function getNextOrderId(db) {
+    return getNextPrefixedCode(db.orders, 'OS', 3);
 }
 function getNextDeliveryId(db) {
-    let max = 0;
-    for (const d of db.deliveries) {
-        const num = parseInt(d.id.replace(/\D/g, ''), 10);
-        if (!Number.isNaN(num) && num > max)
-            max = num;
-    }
-    return `ENT-${String(max + 1).padStart(3, '0')}`;
+    return getNextPrefixedCode(db.deliveries, 'ENT', 3);
 }
 function getNextReturnId(db) {
-    let max = 0;
-    for (const r of db.returns) {
-        const num = parseInt(r.id.replace(/\D/g, ''), 10);
-        if (!Number.isNaN(num) && num > max)
-            max = num;
-    }
-    return `RET-${String(max + 1).padStart(3, '0')}`;
+    return getNextPrefixedCode(db.returns, 'RET', 3);
 }
 function getNextStockId(db) {
-    let max = 0;
-    for (const s of db.stock || []) {
-        const num = parseInt(s.id.replace(/\D/g, ''), 10);
-        if (!Number.isNaN(num) && num > max)
-            max = num;
-    }
-    return `EST-${String(max + 1).padStart(3, '0')}`;
+    return getNextPrefixedCode(db.stock, 'EST', 3);
 }
 function getNextProviderId(db) {
-    let max = 0;
-    for (const p of db.serviceProviders || []) {
-        const num = parseInt(p.id.replace(/\D/g, ''), 10);
-        if (!Number.isNaN(num) && num > max)
-            max = num;
-    }
-    return `PST-${String(max + 1).padStart(3, '0')}`;
+    return getNextPrefixedCode(db.serviceProviders, 'PST', 3);
 }
 function getNextPayrollEmployeeId(db) {
-    let max = 0;
-    for (const e of db.payrollEmployees || []) {
-        const num = parseInt(e.id.replace(/\D/g, ''), 10);
-        if (!Number.isNaN(num) && num > max)
-            max = num;
-    }
-    return `FUN-${String(max + 1).padStart(3, '0')}`;
+    return getNextPrefixedCode(db.payrollEmployees, 'FUN', 3);
 }
 function getNextInvestmentId(db) {
-    let max = 0;
-    for (const i of db.investments || []) {
-        const num = parseInt(i.id.replace(/\D/g, ''), 10);
-        if (!Number.isNaN(num) && num > max)
-            max = num;
-    }
-    return `INV-${String(max + 1).padStart(3, '0')}`;
+    return getNextPrefixedCode(db.investments, 'INV', 3);
 }
 function getNextNoteNumber(db) {
     let max = Number(db.noteSequence) || 0;
@@ -1795,6 +1772,7 @@ let activeSupabaseChannel = null;
 let activeSupabaseClient = null;
 let activeBroadcastChannel = null;
 let activeSubscriptionCount = 0;
+let supabaseChannelChain = Promise.resolve();
 function getActiveRealtimeChannelCount() {
     return activeSubscriptionCount;
 }
@@ -1861,6 +1839,10 @@ function publishRealtimeUpdate(params) {
         actorRole: params.actorRole,
         timestamp: new Date().toISOString(),
         order: params.order,
+        deletedOrderUuid: params.deletedOrderUuid,
+        deletedOrderId: params.deletedOrderId,
+        deletedOrderUuids: params.deletedOrderUuids,
+        deletedOrderIds: params.deletedOrderIds,
         db: params.db,
     };
     // 1. Native BroadcastChannel (Instant cross-tab sync)
@@ -1928,7 +1910,11 @@ function subscribeToCompanyRealtime(company_id, onRemoteUpdate, onConnectionStat
                     seenEvents.delete(first);
             }
         }
-        if (!rawEvent.order && (!rawEvent.db || !Array.isArray(rawEvent.db.orders))) {
+        const hasDeletePayload = Boolean(rawEvent.deletedOrderUuid) ||
+            Boolean(rawEvent.deletedOrderId) ||
+            (Array.isArray(rawEvent.deletedOrderUuids) && rawEvent.deletedOrderUuids.length > 0) ||
+            (Array.isArray(rawEvent.deletedOrderIds) && rawEvent.deletedOrderIds.length > 0);
+        if (!rawEvent.order && !hasDeletePayload && (!rawEvent.db || !Array.isArray(rawEvent.db.orders))) {
             return;
         }
         onRemoteUpdate(rawEvent);
@@ -1990,121 +1976,156 @@ function subscribeToCompanyRealtime(company_id, onRemoteUpdate, onConnectionStat
                     // ignore
                 }
             };
+            sseSource.onerror = () => {
+                sseSource?.close();
+                sseSource = null;
+            };
         }
         catch {
             // ignore
         }
     }
     // 4. Supabase Realtime Channel (ordens_servico changes + broadcast)
-    try {
-        const client = (0, supabaseClient_1.getSupabaseClient)();
-        localSupabaseClient = client;
-        activeSupabaseClient = client;
-        if (activeSupabaseChannel) {
-            try {
-                client.removeChannel(activeSupabaseChannel);
+    supabaseChannelChain = supabaseChannelChain
+        .then(async () => {
+        if (isDisposed)
+            return;
+        try {
+            const client = (0, supabaseClient_1.getSupabaseClient)();
+            localSupabaseClient = client;
+            activeSupabaseClient = client;
+            if (activeSupabaseChannel) {
+                const prevChannel = activeSupabaseChannel;
+                activeSupabaseChannel = null;
+                try {
+                    await client.removeChannel(prevChannel);
+                }
+                catch {
+                    // ignore
+                }
             }
-            catch {
-                // ignore
-            }
-            activeSupabaseChannel = null;
-        }
-        const channel = client
-            .channel(`facasflow_company_${company_id}`, {
-            config: { broadcast: { self: false } },
-        })
-            .on('broadcast', { event: 'facasflow_sync' }, (payload) => {
-            if (payload?.payload) {
-                handleIncoming(payload.payload);
-            }
-        })
-            .on('broadcast', { event: 'facasflow_sync_request' }, (payload) => {
-            if (isDisposed || !getLocalSnapshotForPeer)
+            if (isDisposed)
                 return;
-            const req = payload?.payload;
-            const requesterId = req?.requesterId;
-            if (!requesterId ||
-                requesterId === exports.CLIENT_INSTANCE_ID ||
-                req?.company_id !== company_id ||
-                repliedRequesters.has(requesterId)) {
-                return;
-            }
-            repliedRequesters.add(requesterId);
-            if (repliedRequesters.size > 50) {
-                const first = repliedRequesters.values().next().value;
-                if (first)
-                    repliedRequesters.delete(first);
-            }
-            const snap = getLocalSnapshotForPeer();
-            if (snap && Array.isArray(snap.orders) && snap.orders.length > 0) {
-                channel.send({
-                    type: 'broadcast',
-                    event: 'facasflow_sync',
-                    payload: {
-                        eventId: `peer_sync_${exports.CLIENT_INSTANCE_ID}_${requesterId}`,
-                        senderInstanceId: exports.CLIENT_INSTANCE_ID,
+            const channel = client
+                .channel(`facasflow_company_${company_id}`, {
+                config: { broadcast: { self: false } },
+            })
+                .on('broadcast', { event: 'facasflow_sync' }, (payload) => {
+                if (payload?.payload) {
+                    handleIncoming(payload.payload);
+                }
+            })
+                .on('broadcast', { event: 'facasflow_sync_request' }, (payload) => {
+                if (isDisposed || !getLocalSnapshotForPeer)
+                    return;
+                const req = payload?.payload;
+                const requesterId = req?.requesterId;
+                if (!requesterId ||
+                    requesterId === exports.CLIENT_INSTANCE_ID ||
+                    req?.company_id !== company_id ||
+                    repliedRequesters.has(requesterId)) {
+                    return;
+                }
+                repliedRequesters.add(requesterId);
+                if (repliedRequesters.size > 50) {
+                    const first = repliedRequesters.values().next().value;
+                    if (first)
+                        repliedRequesters.delete(first);
+                }
+                const snap = getLocalSnapshotForPeer();
+                if (snap && Array.isArray(snap.orders) && snap.orders.length > 0) {
+                    channel.send({
+                        type: 'broadcast',
+                        event: 'facasflow_sync',
+                        payload: {
+                            eventId: `peer_sync_${exports.CLIENT_INSTANCE_ID}_${requesterId}`,
+                            senderInstanceId: exports.CLIENT_INSTANCE_ID,
+                            company_id,
+                            section: 'all',
+                            actionLabel: '',
+                            actorName: '',
+                            actorRole: 'admin',
+                            timestamp: new Date().toISOString(),
+                            db: snap,
+                        },
+                    });
+                }
+            })
+                .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'ordens_servico',
+                filter: `empresa_id=eq.${company_id}`,
+            }, (change) => {
+                const row = change?.new;
+                const oldRow = change?.old;
+                if (change?.eventType === 'DELETE' || row?.deleted_at) {
+                    const deletedUuid = row?.id || oldRow?.id;
+                    if (deletedUuid) {
+                        handleIncoming({
+                            eventId: `pg_order_del_${deletedUuid}_${Date.now()}`,
+                            company_id,
+                            section: 'esteira',
+                            actionLabel: '',
+                            actorName: '',
+                            actorRole: 'operador',
+                            timestamp: row?.deleted_at || new Date().toISOString(),
+                            deletedOrderUuid: deletedUuid,
+                            deletedOrderId: row?.numero_os || oldRow?.numero_os,
+                        });
+                    }
+                    return;
+                }
+                if (row && row.id && row.etapa && !row.deleted_at) {
+                    handleIncoming({
+                        eventId: `pg_order_${row.id}_v${row.version || row.updated_at || Date.now()}`,
                         company_id,
-                        section: 'all',
+                        section: 'esteira',
                         actionLabel: '',
                         actorName: '',
-                        actorRole: 'admin',
-                        timestamp: new Date().toISOString(),
-                        db: snap,
-                    },
-                });
-            }
-        })
-            .on('postgres_changes', {
-            event: '*',
-            schema: 'public',
-            table: 'ordens_servico',
-            filter: `empresa_id=eq.${company_id}`,
-        }, (change) => {
-            const row = change?.new;
-            if (row && row.id && row.etapa && !row.deleted_at) {
-                handleIncoming({
-                    eventId: `pg_order_${row.id}_v${row.version || row.updated_at || Date.now()}`,
-                    company_id,
-                    section: 'esteira',
-                    actionLabel: '',
-                    actorName: '',
-                    actorRole: 'operador',
-                    timestamp: row.updated_at || new Date().toISOString(),
-                    order: {
-                        id: row.numero_os || row.id,
-                        dbUuid: row.id,
-                        company_id: row.empresa_id,
-                        companyId: row.cliente_codigo_legado || row.cliente_empresa_id || '',
-                        companyUuid: row.cliente_empresa_id || undefined,
-                        companyName: row.cliente_nome || '',
-                        companyPhone: row.cliente_telefone || '',
-                        toolDescription: row.descricao_ferramenta || '',
-                        amount: Number(row.valor) || 0,
-                        paymentModality: row.forma_pagamento,
-                        paymentStatus: row.status_pagamento,
-                        stage: row.etapa,
-                        stageUpdatedAt: row.etapa_atualizada_em || '',
-                        stageHistory: Array.isArray(row.historico_etapas) ? row.historico_etapas : [],
-                        version: Number(row.version) || 1,
-                        updatedAt: row.updated_at || new Date().toISOString(),
-                        createdAt: String(row.created_at || '').slice(0, 10),
-                        dueDate: String(row.data_vencimento || '').slice(0, 10),
-                        paidAt: row.data_pagamento ? String(row.data_pagamento).slice(0, 10) : undefined,
-                    },
-                });
-            }
-        })
-            .subscribe((status) => {
-            if (status === 'SUBSCRIBED' && !isDisposed) {
-                onConnectionStatusChange?.('supabase_live');
-            }
-        });
-        localSupabaseChannel = channel;
-        activeSupabaseChannel = channel;
-    }
-    catch {
-        // Fallback to local BroadcastChannel / SSE
-    }
+                        actorRole: 'operador',
+                        timestamp: row.updated_at || new Date().toISOString(),
+                        order: {
+                            id: row.numero_os || row.id,
+                            dbUuid: row.id,
+                            company_id: row.empresa_id,
+                            companyId: row.cliente_codigo_legado || row.cliente_empresa_id || '',
+                            companyUuid: row.cliente_empresa_id || undefined,
+                            companyName: row.cliente_nome || '',
+                            companyPhone: row.cliente_telefone || '',
+                            toolDescription: row.descricao_ferramenta || '',
+                            bladeMeters: row.blade_meters != null ? Number(row.blade_meters) : undefined,
+                            woodMm: row.wood_mm || undefined,
+                            amount: Number(row.valor) || 0,
+                            paymentModality: row.forma_pagamento,
+                            paymentStatus: row.status_pagamento,
+                            stage: row.etapa,
+                            stageUpdatedAt: row.etapa_atualizada_em || '',
+                            stageHistory: Array.isArray(row.historico_etapas) ? row.historico_etapas : [],
+                            version: Number(row.version) || 1,
+                            updatedAt: row.updated_at || new Date().toISOString(),
+                            createdAt: String(row.created_at || '').slice(0, 10),
+                            dueDate: String(row.data_vencimento || '').slice(0, 10),
+                            paidAt: row.data_pagamento ? String(row.data_pagamento).slice(0, 10) : undefined,
+                        },
+                    });
+                }
+            })
+                .subscribe((status) => {
+                if (status === 'SUBSCRIBED' && !isDisposed) {
+                    onConnectionStatusChange?.('supabase_live');
+                }
+            });
+            localSupabaseChannel = channel;
+            activeSupabaseChannel = channel;
+        }
+        catch {
+            // Fallback to local BroadcastChannel / SSE
+        }
+    })
+        .catch(() => {
+        // ignore chain rejection
+    });
     return () => {
         isDisposed = true;
         activeSubscriptionCount = Math.max(0, activeSubscriptionCount - 1);
@@ -2120,17 +2141,25 @@ function subscribeToCompanyRealtime(company_id, onRemoteUpdate, onConnectionStat
             }
             localBroadcast = null;
         }
-        if (localSupabaseClient && localSupabaseChannel) {
-            try {
-                localSupabaseClient.removeChannel(localSupabaseChannel);
-            }
-            catch {
+        const clientToClose = localSupabaseClient;
+        const chanToClose = localSupabaseChannel;
+        if (chanToClose && activeSupabaseChannel === chanToClose) {
+            activeSupabaseChannel = null;
+        }
+        localSupabaseChannel = null;
+        if (clientToClose && chanToClose) {
+            supabaseChannelChain = supabaseChannelChain
+                .then(async () => {
+                try {
+                    await clientToClose.removeChannel(chanToClose);
+                }
+                catch {
+                    // ignore
+                }
+            })
+                .catch(() => {
                 // ignore
-            }
-            if (activeSupabaseChannel === localSupabaseChannel) {
-                activeSupabaseChannel = null;
-            }
-            localSupabaseChannel = null;
+            });
         }
     };
 }
