@@ -60,6 +60,7 @@ __moduleFactories["./utils/financeEngine"] = Object.assign(
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.RETURN_STATUS_META = exports.DELIVERY_METHOD_META = exports.INVESTMENT_TYPE_META = exports.EXPENSE_STATUS_META = exports.EXPENSE_PAYMENT_META = exports.EXPENSE_CATEGORY_MAP = exports.EXPENSE_CATEGORIES = exports.PAYMENT_MODALITY_META = exports.PRODUCTION_STAGES = void 0;
+exports.normalizeExpenseCategory = normalizeExpenseCategory;
 exports.normalizeInvestmentType = normalizeInvestmentType;
 exports.createEmptyExpensesMap = createEmptyExpensesMap;
 exports.formatCurrencyMask = formatCurrencyMask;
@@ -93,6 +94,9 @@ exports.formatCpfCnpjMask = formatCpfCnpjMask;
 exports.isValidCPF = isValidCPF;
 exports.isValidCpfOrCnpj = isValidCpfOrCnpj;
 exports.formatQuantityBR = formatQuantityBR;
+exports.formatStockInt = formatStockInt;
+exports.sanitizeStockIntInput = sanitizeStockIntInput;
+exports.resolveMonthPaymentDate = resolveMonthPaymentDate;
 exports.PRODUCTION_STAGES = [
     {
         id: 'arquivo_recebido',
@@ -192,8 +196,9 @@ exports.EXPENSE_CATEGORIES = [
     { key: 'energia', label: 'Energia', colorHex: '#eab308', badgeClass: 'bg-yellow-500/15 text-yellow-800 border-yellow-300/60' },
     { key: 'internet', label: 'Internet', colorHex: '#06b6d4', badgeClass: 'bg-cyan-500/15 text-cyan-800 border-cyan-300/60' },
     { key: 'alimentacao', label: 'Alimentação', colorHex: '#f97316', badgeClass: 'bg-orange-500/15 text-orange-800 border-orange-300/60' },
-    { key: 'combustivel', label: 'Combustível', colorHex: '#ef4444', badgeClass: 'bg-red-500/15 text-red-800 border-red-300/60' },
+    { key: 'transportes', label: 'Transportes', colorHex: '#d97706', badgeClass: 'bg-amber-500/15 text-amber-800 border-amber-300/60' },
     { key: 'manutencao', label: 'Manutenção', colorHex: '#8b5cf6', badgeClass: 'bg-violet-500/15 text-violet-800 border-violet-300/60' },
+    { key: 'custo_depreciacao', label: 'Custo de Depreciação', colorHex: '#7c3aed', badgeClass: 'bg-purple-500/15 text-purple-800 border-purple-300/60' },
     { key: 'contador', label: 'Contador', colorHex: '#6366f1', badgeClass: 'bg-indigo-500/15 text-indigo-800 border-indigo-300/60' },
     { key: 'marketing', label: 'Marketing', colorHex: '#ec4899', badgeClass: 'bg-pink-500/15 text-pink-800 border-pink-300/60' },
     { key: 'financiamento', label: 'Financiamento', colorHex: '#64748b', badgeClass: 'bg-slate-500/15 text-slate-800 border-slate-300/60' },
@@ -203,9 +208,22 @@ exports.EXPENSE_CATEGORIES = [
     { key: 'impostos', label: 'Impostos', colorHex: '#dc2626', badgeClass: 'bg-rose-500/15 text-rose-800 border-rose-300/60' },
     { key: 'flow_dashboard', label: 'Flow Dashboard', colorHex: '#4338ca', badgeClass: 'bg-indigo-500/15 text-indigo-900 border-indigo-400/60' },
     { key: 'taxas_bancarias', label: 'Taxas Bancárias', colorHex: '#0f766e', badgeClass: 'bg-teal-500/15 text-teal-900 border-teal-400/60' },
+    { key: 'folha_colaboradores', label: 'Folha / Colaboradores', colorHex: '#0284c7', badgeClass: 'bg-sky-500/15 text-sky-900 border-sky-400/60' },
+    { key: 'prestadores_servico', label: 'Prestação de Serviços', colorHex: '#0ea5e9', badgeClass: 'bg-cyan-500/15 text-cyan-900 border-cyan-400/60' },
     { key: 'outros', label: 'Outros', colorHex: '#71717a', badgeClass: 'bg-zinc-500/15 text-zinc-800 border-zinc-300/60' },
 ];
 exports.EXPENSE_CATEGORY_MAP = Object.fromEntries(exports.EXPENSE_CATEGORIES.map((c) => [c.key, c]));
+function normalizeExpenseCategory(raw) {
+    const clean = String(raw || '').trim();
+    if (!clean)
+        return 'outros';
+    const lower = clean.toLowerCase();
+    if (lower === 'combustivel' || lower === 'combustível')
+        return 'transportes';
+    if (lower in exports.EXPENSE_CATEGORY_MAP)
+        return lower;
+    return 'outros';
+}
 exports.EXPENSE_PAYMENT_META = {
     pix: { label: 'Pix', short: 'Pix' },
     boleto_15: { label: 'Boleto 15 dias', short: 'Boleto 15d' },
@@ -264,8 +282,9 @@ function createEmptyExpensesMap() {
         energia: 0,
         internet: 0,
         alimentacao: 0,
-        combustivel: 0,
+        transportes: 0,
         manutencao: 0,
+        custo_depreciacao: 0,
         contador: 0,
         marketing: 0,
         financiamento: 0,
@@ -275,6 +294,8 @@ function createEmptyExpensesMap() {
         impostos: 0,
         flow_dashboard: 0,
         taxas_bancarias: 0,
+        folha_colaboradores: 0,
+        prestadores_servico: 0,
         outros: 0,
     };
 }
@@ -467,8 +488,9 @@ function computeExpensesSummary(expenses, todayGoiasIso = getTodayGoiasISO()) {
         else {
             totalPendente = roundCurrencyBRL(totalPendente + val);
         }
-        const cur = catTotals.get(exp.categoria) || { amount: 0, count: 0 };
-        catTotals.set(exp.categoria, {
+        const curCat = normalizeExpenseCategory(exp.categoria);
+        const cur = catTotals.get(curCat) || { amount: 0, count: 0 };
+        catTotals.set(curCat, {
             amount: roundCurrencyBRL(cur.amount + val),
             count: cur.count + 1,
         });
@@ -524,7 +546,8 @@ function buildExpensesCsvContent(expenses, todayGoiasIso = getTodayGoiasISO()) {
     ].join(';');
     const rows = expenses.map((exp) => {
         const eff = computeExpenseEffectiveStatus(exp, todayGoiasIso);
-        const catLabel = exports.EXPENSE_CATEGORY_MAP[exp.categoria]?.label || exp.categoria;
+        const normCat = normalizeExpenseCategory(exp.categoria);
+        const catLabel = exports.EXPENSE_CATEGORY_MAP[normCat]?.label || exp.categoria;
         const payLabel = exports.EXPENSE_PAYMENT_META[exp.forma_pagamento]?.label || exp.forma_pagamento;
         const statusLabel = exports.EXPENSE_STATUS_META[eff]?.label || eff;
         return [
@@ -848,6 +871,26 @@ function formatQuantityBR(value) {
         maximumFractionDigits: 2,
     });
 }
+function formatStockInt(val) {
+    const num = Number(val);
+    if (!Number.isFinite(num))
+        return '0';
+    return String(Math.max(0, Math.round(num)));
+}
+function sanitizeStockIntInput(raw) {
+    return String(raw ?? '').replace(/\D/g, '');
+}
+function resolveMonthPaymentDate(yearMonth, day) {
+    const cleanYm = /^\d{4}-\d{2}$/.test(String(yearMonth || '').trim())
+        ? String(yearMonth).trim()
+        : getTodayGoiasISO().slice(0, 7);
+    const [yrStr, moStr] = cleanYm.split('-');
+    const yr = Number(yrStr) || new Date().getFullYear();
+    const mo = Math.min(12, Math.max(1, Number(moStr) || 1));
+    const maxDay = new Date(yr, mo, 0).getDate();
+    const safeDay = Math.min(maxDay, Math.max(1, Math.round(Number(day) || 1)));
+    return `${yr}-${String(mo).padStart(2, '0')}-${String(safeDay).padStart(2, '0')}`;
+}
 
   },
   { dir: "./utils" }
@@ -997,6 +1040,7 @@ exports.dbBulkSoftDeleteOrders = dbBulkSoftDeleteOrders;
 exports.dbBulkSoftDeleteDeliveries = dbBulkSoftDeleteDeliveries;
 exports.dbBulkSoftDeleteReturns = dbBulkSoftDeleteReturns;
 exports.dbCreateOrder = dbCreateOrder;
+exports.dbUpdateOrderFull = dbUpdateOrderFull;
 exports.dbMoveOrderStage = dbMoveOrderStage;
 exports.dbUpdateOrderPayment = dbUpdateOrderPayment;
 exports.dbSoftDeleteOrder = dbSoftDeleteOrder;
@@ -1016,6 +1060,8 @@ exports.dbSoftDeleteNote = dbSoftDeleteNote;
 exports.dbCreateExpense = dbCreateExpense;
 exports.dbUpdateExpense = dbUpdateExpense;
 exports.dbSoftDeleteExpense = dbSoftDeleteExpense;
+exports.dbSyncCollaboratorExpense = dbSyncCollaboratorExpense;
+exports.dbSoftDeleteCollaboratorLinkedExpenses = dbSoftDeleteCollaboratorLinkedExpenses;
 exports.dbCreateProvider = dbCreateProvider;
 exports.dbUpdateProvider = dbUpdateProvider;
 exports.dbSoftDeleteProvider = dbSoftDeleteProvider;
@@ -1044,6 +1090,113 @@ function fromExpensePayment(pm) {
         return pm;
     }
     return 'pix';
+}
+function toStockInt(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num))
+        return 0;
+    return Math.max(0, Math.round(num));
+}
+function mapOrderRow(o) {
+    const createdDate = String(o.created_at || (0, financeEngine_1.toISODate)()).slice(0, 10);
+    const woodNum = o.wood_mm != null ? Number(o.wood_mm) : undefined;
+    return {
+        id: o.numero_os,
+        dbUuid: o.id,
+        company_id: o.empresa_id,
+        companyId: o.cliente_codigo_legado || o.cliente_empresa_id || '',
+        companyUuid: o.cliente_empresa_id || undefined,
+        companyName: o.cliente_nome,
+        companyPhone: o.cliente_telefone || '',
+        toolDescription: o.descricao_ferramenta,
+        bladeMeters: o.blade_meters != null ? Number(o.blade_meters) : undefined,
+        woodMm: woodNum === 15 || woodNum === 18 || woodNum === 22 ? woodNum : undefined,
+        amount: Number(o.valor) || 0,
+        paymentModality: o.forma_pagamento,
+        paymentStatus: o.status_pagamento,
+        stage: o.etapa,
+        stageUpdatedAt: o.etapa_atualizada_em || '',
+        stageHistory: Array.isArray(o.historico_etapas) ? o.historico_etapas : [],
+        version: Number(o.version) || 1,
+        updatedAt: o.updated_at || o.created_at,
+        createdAt: createdDate,
+        dueDate: String(o.data_vencimento || createdDate).slice(0, 10),
+        paidAt: o.data_pagamento ? String(o.data_pagamento).slice(0, 10) : undefined,
+        financialNotes: o.observacao_financeira || undefined,
+    };
+}
+function mapExpenseRow(d) {
+    return {
+        ...d,
+        categoria: (0, financeEngine_1.normalizeExpenseCategory)(d.categoria),
+        descricao: d.descricao || '',
+        valor: (0, financeEngine_1.roundCurrencyBRL)(Number(d.valor) || 0),
+        data_competencia: String(d.data_competencia || '').slice(0, 10),
+        data_vencimento: d.data_vencimento ? String(d.data_vencimento).slice(0, 10) : undefined,
+        data_pagamento: d.data_pagamento ? String(d.data_pagamento).slice(0, 10) : undefined,
+        fornecedor: d.fornecedor || undefined,
+        observacao: d.observacao || undefined,
+        origem_tipo: d.origem_tipo === 'funcionario' || d.origem_tipo === 'prestador'
+            ? d.origem_tipo
+            : null,
+        origem_id: d.origem_id || null,
+        competencia_referencia: d.competencia_referencia || null,
+    };
+}
+function mapProviderRow(p) {
+    const dueDate = String(p.data_vencimento || (0, financeEngine_1.toISODate)()).slice(0, 10);
+    const parsedDay = Number(p.dia_pagamento);
+    const derivedDay = Number.isInteger(parsedDay) && parsedDay >= 1 && parsedDay <= 31
+        ? parsedDay
+        : Number(dueDate.slice(8, 10)) || 5;
+    return {
+        id: p.codigo_legado || p.id,
+        dbUuid: p.id,
+        company_id: p.empresa_id,
+        name: p.nome,
+        service: p.servico,
+        amount: Number(p.valor) || 0,
+        paymentModality: fromExpensePayment(p.forma_pagamento),
+        dueDate,
+        paymentDay: derivedDay,
+        status: p.status,
+        updatedAt: String(p.updated_at || ''),
+    };
+}
+function mapPayrollEmployeeRow(e) {
+    const rawDay = Number(e.dia_pagamento);
+    const paymentDay = Number.isInteger(rawDay) && rawDay >= 1 && rawDay <= 31 ? rawDay : 5;
+    return {
+        id: e.codigo_legado || e.id,
+        dbUuid: e.id,
+        company_id: e.empresa_id,
+        name: e.nome,
+        roleTitle: e.cargo,
+        salary: Number(e.salario) || 0,
+        admissionDate: String(e.data_admissao || (0, financeEngine_1.toISODate)()).slice(0, 10),
+        paymentDay,
+        paymentStatus: e.status_pagamento === 'pago' ? 'pago' : 'pendente',
+        paymentModality: fromExpensePayment(e.forma_pagamento || 'pix'),
+        paidAt: e.data_pagamento ? String(e.data_pagamento).slice(0, 10) : undefined,
+        paidCompetence: e.competencia_paga || undefined,
+        updatedAt: String(e.updated_at || ''),
+    };
+}
+function mapStockItemRow(s) {
+    return {
+        id: s.codigo_legado || s.id,
+        dbUuid: s.id,
+        company_id: s.empresa_id,
+        category: s.categoria === 'laminas' ? 'laminas' : 'madeiras',
+        name: s.nome,
+        quantity: toStockInt(s.quantidade),
+        unit: s.unidade,
+        minStock: toStockInt(s.estoque_minimo),
+        supplier: s.fornecedor || 'Não informado',
+        unitCost: Number(s.custo_unitario) || 0,
+        entryDate: String(s.data_entrada || '').slice(0, 10),
+        updatedAt: String(s.updated_at || ''),
+    };
 }
 function toFriendlySupabaseError(err, fallback) {
     const code = String(err?.code || '').trim().toUpperCase();
@@ -1355,29 +1508,7 @@ async function loadCompanyDatabaseFromSupabase(empresaId, role) {
         contactName: c.contato_nome || '',
         city: c.cidade || undefined,
     }));
-    const orders = (ordersRes.data || []).map((o) => ({
-        id: o.numero_os,
-        dbUuid: o.id,
-        company_id: o.empresa_id,
-        companyId: o.cliente_codigo_legado || o.cliente_empresa_id || '',
-        companyUuid: o.cliente_empresa_id || undefined,
-        companyName: o.cliente_nome,
-        companyPhone: o.cliente_telefone || '',
-        toolDescription: o.descricao_ferramenta,
-        bladeMeters: o.blade_meters != null ? Number(o.blade_meters) : undefined,
-        woodMm: o.wood_mm || undefined,
-        amount: Number(o.valor) || 0,
-        paymentModality: o.forma_pagamento,
-        paymentStatus: o.status_pagamento,
-        stage: o.etapa,
-        stageUpdatedAt: o.etapa_atualizada_em || '',
-        stageHistory: Array.isArray(o.historico_etapas) ? o.historico_etapas : [],
-        version: Number(o.version) || 1,
-        updatedAt: o.updated_at || o.created_at,
-        createdAt: String(o.created_at || '').slice(0, 10),
-        dueDate: String(o.data_vencimento || '').slice(0, 10),
-        paidAt: o.data_pagamento ? String(o.data_pagamento).slice(0, 10) : undefined,
-    }));
+    const orders = (ordersRes.data || []).map(mapOrderRow);
     const deliveries = (deliveriesRes.data || []).map((d) => ({
         id: d.codigo_legado || d.id,
         dbUuid: d.id,
@@ -1404,20 +1535,7 @@ async function loadCompanyDatabaseFromSupabase(empresaId, role) {
         createdAt: r.data_retorno || String(r.created_at || '').slice(0, 10),
         updatedAt: String(r.updated_at || ''),
     }));
-    const stock = (stockRes.data || []).map((s) => ({
-        id: s.codigo_legado || s.id,
-        dbUuid: s.id,
-        company_id: s.empresa_id,
-        category: s.categoria === 'laminas' ? 'laminas' : 'madeiras',
-        name: s.nome,
-        quantity: Number(s.quantidade) || 0,
-        unit: s.unidade,
-        minStock: Number(s.estoque_minimo) || 0,
-        supplier: s.fornecedor || 'Não informado',
-        unitCost: Number(s.custo_unitario) || 0,
-        entryDate: String(s.data_entrada || '').slice(0, 10),
-        updatedAt: String(s.updated_at || ''),
-    }));
+    const stock = (stockRes.data || []).map(mapStockItemRow);
     const stockMovements = (stockMovRes.data || []).map((m) => ({
         id: m.id,
         empresa_id: m.empresa_id,
@@ -1427,9 +1545,9 @@ async function loadCompanyDatabaseFromSupabase(empresaId, role) {
         category: m.categoria === 'laminas' ? 'laminas' : 'madeiras',
         unit: m.unidade || 'un',
         type: m.tipo,
-        quantity: Number(m.quantidade) || 0,
-        previousBalance: Number(m.saldo_anterior) || 0,
-        newBalance: Number(m.saldo_posterior) || 0,
+        quantity: Math.max(1, toStockInt(m.quantidade)),
+        previousBalance: toStockInt(m.saldo_anterior),
+        newBalance: toStockInt(m.saldo_posterior),
         actorName: m.responsavel_nome || 'Equipe',
         note: m.observacao || undefined,
         revertedAt: m.estornado_em || null,
@@ -1467,47 +1585,9 @@ async function loadCompanyDatabaseFromSupabase(empresaId, role) {
         criadoPor: n.criado_por || '',
         criadoEm: n.created_at || '',
     }));
-    const despesas = (despesasRes.data || []).map((d) => ({
-        id: d.id,
-        empresa_id: d.empresa_id,
-        categoria: d.categoria,
-        descricao: d.descricao || '',
-        valor: (0, financeEngine_1.roundCurrencyBRL)(Number(d.valor) || 0),
-        data_competencia: String(d.data_competencia || '').slice(0, 10),
-        data_vencimento: d.data_vencimento ? String(d.data_vencimento).slice(0, 10) : undefined,
-        data_pagamento: d.data_pagamento ? String(d.data_pagamento).slice(0, 10) : undefined,
-        status: d.status,
-        forma_pagamento: d.forma_pagamento,
-        fornecedor: d.fornecedor || undefined,
-        observacao: d.observacao || undefined,
-        created_by: d.created_by,
-        updated_by: d.updated_by,
-        created_at: d.created_at,
-        updated_at: d.updated_at,
-        deleted_at: d.deleted_at,
-    }));
-    const serviceProviders = (providersRes.data || []).map((p) => ({
-        id: p.codigo_legado || p.id,
-        dbUuid: p.id,
-        company_id: p.empresa_id,
-        name: p.nome,
-        service: p.servico,
-        amount: Number(p.valor) || 0,
-        paymentModality: fromExpensePayment(p.forma_pagamento),
-        dueDate: String(p.data_vencimento || '').slice(0, 10),
-        status: p.status,
-        updatedAt: String(p.updated_at || ''),
-    }));
-    const payrollEmployees = (payrollRes.data || []).map((e) => ({
-        id: e.codigo_legado || e.id,
-        dbUuid: e.id,
-        company_id: e.empresa_id,
-        name: e.nome,
-        roleTitle: e.cargo,
-        salary: Number(e.salario) || 0,
-        admissionDate: String(e.data_admissao || '').slice(0, 10),
-        updatedAt: String(e.updated_at || ''),
-    }));
+    const despesas = (despesasRes.data || []).map(mapExpenseRow);
+    const serviceProviders = (providersRes.data || []).map(mapProviderRow);
+    const payrollEmployees = (payrollRes.data || []).map(mapPayrollEmployeeRow);
     const investments = (investmentsRes.data || []).map((i) => ({
         id: i.codigo_legado || i.id,
         dbUuid: i.id,
@@ -1640,7 +1720,7 @@ async function dbCreateOrder(empresaId, numeroOs, payload) {
     // Regra 5.1: Toda OS nasce obrigatoriamente como "Não Pago", independentemente
     // da forma de pagamento selecionada. Só muda para "Pago" ao clicar em "Marcar como pago".
     const payStatus = 'nao_pago';
-    const dueDate = (0, financeEngine_1.addDays)(today, days);
+    const dueDate = payload.dueDate?.trim() ? payload.dueDate.slice(0, 10) : (0, financeEngine_1.addDays)(today, days);
     const paidAt = null;
     const hist = [{ stage: payload.stage, timestamp: payload.stageUpdatedAt }];
     const { data, error } = await sb
@@ -1654,6 +1734,10 @@ async function dbCreateOrder(empresaId, numeroOs, payload) {
         cliente_nome: payload.companyName,
         cliente_telefone: payload.companyPhone,
         descricao_ferramenta: payload.toolDescription,
+        blade_meters: payload.bladeMeters != null && Number.isFinite(Number(payload.bladeMeters)) && Number(payload.bladeMeters) > 0
+            ? Number(payload.bladeMeters)
+            : null,
+        wood_mm: payload.woodMm || null,
         valor: (0, financeEngine_1.roundCurrencyBRL)(payload.amount),
         forma_pagamento: payload.paymentModality,
         status_pagamento: payStatus,
@@ -1663,32 +1747,50 @@ async function dbCreateOrder(empresaId, numeroOs, payload) {
         version: 1,
         data_vencimento: dueDate,
         data_pagamento: paidAt,
+        observacao_financeira: payload.financialNotes?.trim() || null,
     })
         .select('*')
         .single();
     if (error)
         throw new Error(toFriendlySupabaseError(error, 'Erro ao registrar Ordem de Serviço.'));
-    return {
-        id: data.numero_os,
-        dbUuid: data.id,
-        company_id: data.empresa_id,
-        companyId: data.cliente_codigo_legado || payload.companyId,
-        companyUuid: data.cliente_empresa_id || undefined,
-        companyName: data.cliente_nome,
-        companyPhone: data.cliente_telefone,
-        toolDescription: data.descricao_ferramenta,
-        amount: Number(data.valor) || 0,
-        paymentModality: data.forma_pagamento,
-        paymentStatus: data.status_pagamento,
-        stage: data.etapa,
-        stageUpdatedAt: data.etapa_atualizada_em,
-        stageHistory: data.historico_etapas || hist,
-        version: Number(data.version) || 1,
-        updatedAt: data.updated_at,
-        createdAt: String(data.created_at || today).slice(0, 10),
-        dueDate: String(data.data_vencimento || dueDate).slice(0, 10),
-        paidAt: data.data_pagamento ? String(data.data_pagamento).slice(0, 10) : undefined,
+    return mapOrderRow(data);
+}
+async function dbUpdateOrderFull(empresaId, orderUuid, payload) {
+    const sb = (0, supabaseClient_1.getSupabaseClient)();
+    const nextVersion = (Number(payload.currentVersion) || 1) + 1;
+    const updateBody = {
+        cliente_empresa_id: payload.companyUuid || null,
+        cliente_codigo_legado: payload.companyId,
+        cliente_nome: payload.companyName,
+        cliente_telefone: payload.companyPhone,
+        descricao_ferramenta: payload.toolDescription,
+        blade_meters: payload.bladeMeters != null && Number.isFinite(Number(payload.bladeMeters)) && Number(payload.bladeMeters) > 0
+            ? Number(payload.bladeMeters)
+            : null,
+        wood_mm: payload.woodMm || null,
+        valor: (0, financeEngine_1.roundCurrencyBRL)(payload.amount),
+        forma_pagamento: payload.paymentModality,
+        etapa: payload.stage,
+        version: nextVersion,
     };
+    if (payload.dueDate?.trim()) {
+        updateBody.data_vencimento = payload.dueDate.slice(0, 10);
+    }
+    if (payload.stageChanged) {
+        updateBody.etapa_atualizada_em = payload.stageUpdatedAt;
+        updateBody.historico_etapas = payload.stageHistory;
+    }
+    const { data, error } = await sb
+        .from('ordens_servico')
+        .update(updateBody)
+        .eq('id', orderUuid)
+        .eq('empresa_id', empresaId)
+        .is('deleted_at', null)
+        .select('*')
+        .single();
+    if (error)
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao atualizar Ordem de Serviço.'));
+    return mapOrderRow(data);
 }
 async function dbMoveOrderStage(ordemUuid, targetStage, stamp) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
@@ -1706,18 +1808,36 @@ async function dbMoveOrderStage(ordemUuid, targetStage, stamp) {
 }
 async function dbUpdateOrderPayment(empresaId, ordemUuid, updates) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
-    const { error } = await sb
-        .from('ordens_servico')
-        .update({
+    const body = {
         status_pagamento: updates.status_pagamento,
-        data_pagamento: updates.data_pagamento ?? null,
-        ...(updates.data_vencimento ? { data_vencimento: updates.data_vencimento } : {}),
         version: updates.version,
-    })
+    };
+    if (updates.data_pagamento !== undefined) {
+        body.data_pagamento = updates.data_pagamento;
+    }
+    if (updates.data_vencimento) {
+        body.data_vencimento = updates.data_vencimento.slice(0, 10);
+    }
+    if (updates.valor !== undefined) {
+        body.valor = (0, financeEngine_1.roundCurrencyBRL)(updates.valor);
+    }
+    if (updates.forma_pagamento) {
+        body.forma_pagamento = updates.forma_pagamento;
+    }
+    if (updates.observacao_financeira !== undefined) {
+        body.observacao_financeira = updates.observacao_financeira?.trim() || null;
+    }
+    const { data, error } = await sb
+        .from('ordens_servico')
+        .update(body)
         .eq('id', ordemUuid)
-        .eq('empresa_id', empresaId);
+        .eq('empresa_id', empresaId)
+        .is('deleted_at', null)
+        .select('*')
+        .single();
     if (error)
-        throw new Error(toFriendlySupabaseError(error, 'Erro ao atualizar pagamento da OS.'));
+        throw new Error(toFriendlySupabaseError(error, 'Erro ao atualizar dados financeiros da OS.'));
+    return mapOrderRow(data);
 }
 async function dbSoftDeleteOrder(empresaId, ordemUuid) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
@@ -1830,9 +1950,11 @@ async function dbSoftDeleteReturn(empresaId, dbUuid) {
     if (error)
         throw new Error(toFriendlySupabaseError(error, 'Erro ao excluir retorno.'));
 }
-// ESTOQUE (preserva todas as regras de negócio; persistência real + soft delete no Supabase)
+// ESTOQUE (preserva todas as regras de negócio; persistência real + soft delete no Supabase + quantidades inteiras)
 async function dbCreateStockItem(empresaId, codigoLegado, payload) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
+    const intQty = toStockInt(payload.quantity);
+    const intMin = toStockInt(payload.minStock);
     const { data, error } = await sb
         .from('estoque_itens')
         .insert({
@@ -1841,9 +1963,9 @@ async function dbCreateStockItem(empresaId, codigoLegado, payload) {
         codigo_legado: codigoLegado,
         categoria: payload.category,
         nome: payload.name,
-        quantidade: payload.quantity,
+        quantidade: intQty,
         unidade: payload.unit,
-        estoque_minimo: payload.minStock,
+        estoque_minimo: intMin,
         fornecedor: payload.supplier,
         custo_unitario: payload.unitCost,
         data_entrada: payload.entryDate || (0, financeEngine_1.toISODate)(),
@@ -1852,31 +1974,20 @@ async function dbCreateStockItem(empresaId, codigoLegado, payload) {
         .single();
     if (error)
         throw new Error(toFriendlySupabaseError(error, 'Erro ao cadastrar item de estoque.'));
-    return {
-        id: data.codigo_legado || data.id,
-        dbUuid: data.id,
-        company_id: data.empresa_id,
-        category: data.categoria,
-        name: data.nome,
-        quantity: Number(data.quantidade) || 0,
-        unit: data.unidade,
-        minStock: Number(data.estoque_minimo) || 0,
-        supplier: data.fornecedor,
-        unitCost: Number(data.custo_unitario) || 0,
-        entryDate: String(data.data_entrada || '').slice(0, 10),
-        updatedAt: data.updated_at,
-    };
+    return mapStockItemRow(data);
 }
 async function dbUpdateStockItem(empresaId, dbUuid, payload) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
+    const intQty = toStockInt(payload.quantity);
+    const intMin = toStockInt(payload.minStock);
     const { data, error } = await sb
         .from('estoque_itens')
         .update({
         categoria: payload.category,
         nome: payload.name,
-        quantidade: payload.quantity,
+        quantidade: intQty,
         unidade: payload.unit,
-        estoque_minimo: payload.minStock,
+        estoque_minimo: intMin,
         fornecedor: payload.supplier,
         custo_unitario: payload.unitCost,
         data_entrada: payload.entryDate || (0, financeEngine_1.toISODate)(),
@@ -1887,20 +1998,7 @@ async function dbUpdateStockItem(empresaId, dbUuid, payload) {
         .single();
     if (error)
         throw new Error(toFriendlySupabaseError(error, 'Erro ao atualizar item de estoque.'));
-    return {
-        id: data.codigo_legado || data.id,
-        dbUuid: data.id,
-        company_id: data.empresa_id,
-        category: data.categoria,
-        name: data.nome,
-        quantity: Number(data.quantidade) || 0,
-        unit: data.unidade,
-        minStock: Number(data.estoque_minimo) || 0,
-        supplier: data.fornecedor,
-        unitCost: Number(data.custo_unitario) || 0,
-        entryDate: String(data.data_entrada || '').slice(0, 10),
-        updatedAt: data.updated_at,
-    };
+    return mapStockItemRow(data);
 }
 async function dbSoftDeleteStockItem(empresaId, dbUuid) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
@@ -1917,9 +2015,11 @@ async function dbRegisterStockMovement(empresaId, item, delta, actorName, note) 
         throw new Error('Item de estoque sem identificador no Supabase.');
     }
     const sb = (0, supabaseClient_1.getSupabaseClient)();
-    const previousBalance = Number(item.quantity) || 0;
-    const nextBalance = Math.max(0, Number((previousBalance + delta).toFixed(2)));
-    const movedQty = Math.abs(Number((nextBalance - previousBalance).toFixed(2)));
+    const previousBalance = toStockInt(item.quantity);
+    const absDelta = Math.max(1, toStockInt(Math.abs(delta)));
+    const intDelta = delta < 0 ? -absDelta : absDelta;
+    const nextBalance = Math.max(0, previousBalance + intDelta);
+    const movedQty = Math.abs(nextBalance - previousBalance);
     if (movedQty <= 0) {
         throw new Error('Saldo já está zerado para este insumo.');
     }
@@ -1955,20 +2055,7 @@ async function dbRegisterStockMovement(empresaId, item, delta, actorName, note) 
     if (movErr)
         throw new Error(toFriendlySupabaseError(movErr, 'Erro ao registrar movimentação de estoque.'));
     return {
-        updatedItem: {
-            id: stockRow.codigo_legado || stockRow.id,
-            dbUuid: stockRow.id,
-            company_id: stockRow.empresa_id,
-            category: stockRow.categoria === 'laminas' ? 'laminas' : 'madeiras',
-            name: stockRow.nome,
-            quantity: Number(stockRow.quantidade) || 0,
-            unit: stockRow.unidade,
-            minStock: Number(stockRow.estoque_minimo) || 0,
-            supplier: stockRow.fornecedor,
-            unitCost: Number(stockRow.custo_unitario) || 0,
-            entryDate: String(stockRow.data_entrada || '').slice(0, 10),
-            updatedAt: stockRow.updated_at,
-        },
+        updatedItem: mapStockItemRow(stockRow),
         movement: {
             id: movRow.id,
             empresa_id: movRow.empresa_id,
@@ -1978,9 +2065,9 @@ async function dbRegisterStockMovement(empresaId, item, delta, actorName, note) 
             category: (movRow.categoria === 'laminas' ? 'laminas' : 'madeiras'),
             unit: movRow.unidade,
             type: movRow.tipo,
-            quantity: Number(movRow.quantidade) || movedQty,
-            previousBalance: Number(movRow.saldo_anterior) || previousBalance,
-            newBalance: Number(movRow.saldo_posterior) || nextBalance,
+            quantity: Math.max(1, toStockInt(movRow.quantidade)),
+            previousBalance: toStockInt(movRow.saldo_anterior),
+            newBalance: toStockInt(movRow.saldo_posterior),
             actorName: movRow.responsavel_nome || actorName,
             note: movRow.observacao || undefined,
             revertedAt: movRow.estornado_em || null,
@@ -1993,9 +2080,10 @@ async function dbRevertStockMovement(empresaId, movement, currentItem, actorName
         throw new Error('Item de estoque não localizado para estorno.');
     }
     const sb = (0, supabaseClient_1.getSupabaseClient)();
-    const prevBalance = Number(currentItem.quantity) || 0;
-    const reverseDelta = movement.type === 'consumo' ? movement.quantity : -movement.quantity;
-    const nextBalance = Math.max(0, Number((prevBalance + reverseDelta).toFixed(2)));
+    const prevBalance = toStockInt(currentItem.quantity);
+    const movQtyInt = Math.max(1, toStockInt(movement.quantity));
+    const reverseDelta = movement.type === 'consumo' ? movQtyInt : -movQtyInt;
+    const nextBalance = Math.max(0, prevBalance + reverseDelta);
     const nowIso = new Date().toISOString();
     const { data: stockRow, error: upErr } = await sb
         .from('estoque_itens')
@@ -2024,7 +2112,7 @@ async function dbRevertStockMovement(empresaId, movement, currentItem, actorName
         categoria: currentItem.category,
         unidade: currentItem.unit,
         tipo: 'estorno',
-        quantidade: movement.quantity,
+        quantidade: movQtyInt,
         saldo_anterior: prevBalance,
         saldo_posterior: nextBalance,
         responsavel_nome: actorName,
@@ -2035,20 +2123,7 @@ async function dbRevertStockMovement(empresaId, movement, currentItem, actorName
     if (estErr)
         throw new Error(toFriendlySupabaseError(estErr, 'Erro ao registrar estorno de estoque.'));
     return {
-        updatedItem: {
-            id: stockRow.codigo_legado || stockRow.id,
-            dbUuid: stockRow.id,
-            company_id: stockRow.empresa_id,
-            category: stockRow.categoria === 'laminas' ? 'laminas' : 'madeiras',
-            name: stockRow.nome,
-            quantity: Number(stockRow.quantidade) || 0,
-            unit: stockRow.unidade,
-            minStock: Number(stockRow.estoque_minimo) || 0,
-            supplier: stockRow.fornecedor,
-            unitCost: Number(stockRow.custo_unitario) || 0,
-            entryDate: String(stockRow.data_entrada || '').slice(0, 10),
-            updatedAt: stockRow.updated_at,
-        },
+        updatedItem: mapStockItemRow(stockRow),
         revertedAt: nowIso,
         estornoMovement: {
             id: estRow.id,
@@ -2059,9 +2134,9 @@ async function dbRevertStockMovement(empresaId, movement, currentItem, actorName
             category: (estRow.categoria === 'laminas' ? 'laminas' : 'madeiras'),
             unit: estRow.unidade,
             type: 'estorno',
-            quantity: Number(estRow.quantidade) || movement.quantity,
-            previousBalance: Number(estRow.saldo_anterior) || prevBalance,
-            newBalance: Number(estRow.saldo_posterior) || nextBalance,
+            quantity: Math.max(1, toStockInt(estRow.quantidade)),
+            previousBalance: toStockInt(estRow.saldo_anterior),
+            newBalance: toStockInt(estRow.saldo_posterior),
             actorName: estRow.responsavel_nome || actorName,
             note: estRow.observacao || undefined,
             revertedAt: null,
@@ -2218,7 +2293,7 @@ async function dbCreateExpense(empresaId, payload) {
         .insert({
         id: generateUuid(),
         empresa_id: empresaId,
-        categoria: payload.categoria,
+        categoria: (0, financeEngine_1.normalizeExpenseCategory)(payload.categoria),
         descricao: payload.descricao.trim() || null,
         valor: roundedVal,
         data_competencia: payload.data_competencia,
@@ -2228,21 +2303,17 @@ async function dbCreateExpense(empresaId, payload) {
         forma_pagamento: payload.forma_pagamento,
         fornecedor: payload.fornecedor?.trim() || null,
         observacao: payload.observacao?.trim() || null,
+        ...(payload.origem_tipo ? { origem_tipo: payload.origem_tipo } : {}),
+        ...(payload.origem_id ? { origem_id: payload.origem_id } : {}),
+        ...(payload.competencia_referencia
+            ? { competencia_referencia: payload.competencia_referencia }
+            : {}),
     })
         .select('*')
         .single();
     if (error)
         throw new Error(toFriendlySupabaseError(error, 'Erro ao cadastrar despesa.'));
-    return {
-        ...data,
-        descricao: data.descricao || '',
-        valor: (0, financeEngine_1.roundCurrencyBRL)(Number(data.valor)),
-        data_competencia: String(data.data_competencia).slice(0, 10),
-        data_vencimento: data.data_vencimento ? String(data.data_vencimento).slice(0, 10) : undefined,
-        data_pagamento: data.data_pagamento ? String(data.data_pagamento).slice(0, 10) : undefined,
-        fornecedor: data.fornecedor || undefined,
-        observacao: data.observacao || undefined,
-    };
+    return mapExpenseRow(data);
 }
 async function dbUpdateExpense(empresaId, expenseId, payload) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
@@ -2250,7 +2321,7 @@ async function dbUpdateExpense(empresaId, expenseId, payload) {
     const { data, error } = await sb
         .from('despesas')
         .update({
-        categoria: payload.categoria,
+        categoria: (0, financeEngine_1.normalizeExpenseCategory)(payload.categoria),
         descricao: payload.descricao.trim() || null,
         valor: roundedVal,
         data_competencia: payload.data_competencia,
@@ -2267,16 +2338,7 @@ async function dbUpdateExpense(empresaId, expenseId, payload) {
         .single();
     if (error)
         throw new Error(toFriendlySupabaseError(error, 'Erro ao atualizar despesa.'));
-    return {
-        ...data,
-        descricao: data.descricao || '',
-        valor: (0, financeEngine_1.roundCurrencyBRL)(Number(data.valor)),
-        data_competencia: String(data.data_competencia).slice(0, 10),
-        data_vencimento: data.data_vencimento ? String(data.data_vencimento).slice(0, 10) : undefined,
-        data_pagamento: data.data_pagamento ? String(data.data_pagamento).slice(0, 10) : undefined,
-        fornecedor: data.fornecedor || undefined,
-        observacao: data.observacao || undefined,
-    };
+    return mapExpenseRow(data);
 }
 async function dbSoftDeleteExpense(empresaId, expenseId) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
@@ -2288,9 +2350,175 @@ async function dbSoftDeleteExpense(empresaId, expenseId) {
     if (error)
         throw new Error(toFriendlySupabaseError(error, 'Erro ao excluir despesa.'));
 }
+async function dbSyncCollaboratorExpense(empresaId, params) {
+    const sb = (0, supabaseClient_1.getSupabaseClient)();
+    const cleanComp = params.competencia.slice(0, 7);
+    const { data: existingRows, error: qErr } = await sb
+        .from('despesas')
+        .select('*')
+        .eq('empresa_id', empresaId)
+        .eq('origem_tipo', params.origemTipo)
+        .eq('origem_id', params.origemId)
+        .eq('competencia_referencia', cleanComp)
+        .is('deleted_at', null)
+        .order('created_at', { ascending: true });
+    if (qErr) {
+        throw new Error(toFriendlySupabaseError(qErr, 'Erro ao consultar vínculo financeiro do colaborador.'));
+    }
+    const rows = existingRows || [];
+    if (!params.isPaid) {
+        const removedIds = rows.map((r) => String(r.id));
+        if (removedIds.length > 0) {
+            const { error: delErr } = await sb
+                .from('despesas')
+                .update({ deleted_at: new Date().toISOString() })
+                .eq('empresa_id', empresaId)
+                .in('id', removedIds)
+                .is('deleted_at', null);
+            if (delErr) {
+                throw new Error(toFriendlySupabaseError(delErr, 'Erro ao estornar despesa vinculada do colaborador.'));
+            }
+        }
+        return { removedIds };
+    }
+    const valor = (0, financeEngine_1.roundCurrencyBRL)(params.valor);
+    if (valor <= 0) {
+        throw new Error('Informe um valor maior que R$ 0,00 antes de marcar como Pago.');
+    }
+    const categoria = params.origemTipo === 'funcionario' ? 'folha_colaboradores' : 'prestadores_servico';
+    const cleanSub = params.subtitulo.trim();
+    const descricao = params.origemTipo === 'funcionario'
+        ? `Folha — ${params.nome}${cleanSub ? ` (${cleanSub})` : ''}`
+        : `Prestador — ${params.nome}${cleanSub ? ` (${cleanSub})` : ''}`;
+    const dataCompetencia = (params.dataVencimento || (0, financeEngine_1.toISODate)()).slice(0, 10);
+    const dataPagamento = (params.dataPagamento || (0, financeEngine_1.toISODate)()).slice(0, 10);
+    const formaPag = toExpensePayment(params.formaPagamento || 'pix');
+    const obs = `Pagamento automático (${cleanComp})`;
+    const removedIds = [];
+    if (rows.length > 1) {
+        const extraIds = rows.slice(1).map((r) => String(r.id));
+        removedIds.push(...extraIds);
+        await sb
+            .from('despesas')
+            .update({ deleted_at: new Date().toISOString() })
+            .eq('empresa_id', empresaId)
+            .in('id', extraIds)
+            .is('deleted_at', null);
+    }
+    if (rows.length > 0) {
+        const targetId = rows[0].id;
+        const { data: upRow, error: upErr } = await sb
+            .from('despesas')
+            .update({
+            categoria,
+            descricao,
+            valor,
+            data_competencia: dataCompetencia,
+            data_vencimento: dataCompetencia,
+            data_pagamento: dataPagamento,
+            status: 'pago',
+            forma_pagamento: formaPag,
+            fornecedor: params.nome.trim() || null,
+            observacao: obs,
+        })
+            .eq('id', targetId)
+            .eq('empresa_id', empresaId)
+            .select('*')
+            .single();
+        if (upErr) {
+            throw new Error(toFriendlySupabaseError(upErr, 'Erro ao atualizar despesa vinculada ao colaborador.'));
+        }
+        return { upserted: mapExpenseRow(upRow), removedIds };
+    }
+    const { data: insRow, error: insErr } = await sb
+        .from('despesas')
+        .insert({
+        id: generateUuid(),
+        empresa_id: empresaId,
+        categoria,
+        descricao,
+        valor,
+        data_competencia: dataCompetencia,
+        data_vencimento: dataCompetencia,
+        data_pagamento: dataPagamento,
+        status: 'pago',
+        forma_pagamento: formaPag,
+        fornecedor: params.nome.trim() || null,
+        observacao: obs,
+        origem_tipo: params.origemTipo,
+        origem_id: params.origemId,
+        competencia_referencia: cleanComp,
+    })
+        .select('*')
+        .single();
+    if (insErr) {
+        if (String(insErr?.code || '') === '23505') {
+            const { data: conflictRow } = await sb
+                .from('despesas')
+                .select('*')
+                .eq('empresa_id', empresaId)
+                .eq('origem_tipo', params.origemTipo)
+                .eq('origem_id', params.origemId)
+                .eq('competencia_referencia', cleanComp)
+                .is('deleted_at', null)
+                .maybeSingle();
+            if (conflictRow) {
+                const { data: mergedRow, error: mergeErr } = await sb
+                    .from('despesas')
+                    .update({
+                    categoria,
+                    descricao,
+                    valor,
+                    data_competencia: dataCompetencia,
+                    data_vencimento: dataCompetencia,
+                    data_pagamento: dataPagamento,
+                    status: 'pago',
+                    forma_pagamento: formaPag,
+                    fornecedor: params.nome.trim() || null,
+                    observacao: obs,
+                })
+                    .eq('id', conflictRow.id)
+                    .eq('empresa_id', empresaId)
+                    .select('*')
+                    .single();
+                if (mergeErr) {
+                    throw new Error(toFriendlySupabaseError(mergeErr, 'Erro ao sincronizar pagamento do colaborador.'));
+                }
+                return { upserted: mapExpenseRow(mergedRow), removedIds };
+            }
+        }
+        throw new Error(toFriendlySupabaseError(insErr, 'Erro ao registrar despesa automática do colaborador.'));
+    }
+    return { upserted: mapExpenseRow(insRow), removedIds };
+}
+async function dbSoftDeleteCollaboratorLinkedExpenses(empresaId, origemTipo, origemId) {
+    const sb = (0, supabaseClient_1.getSupabaseClient)();
+    const { data: activeRows } = await sb
+        .from('despesas')
+        .select('id')
+        .eq('empresa_id', empresaId)
+        .eq('origem_tipo', origemTipo)
+        .eq('origem_id', origemId)
+        .is('deleted_at', null);
+    const ids = (activeRows || []).map((r) => String(r.id));
+    if (ids.length > 0) {
+        const { error } = await sb
+            .from('despesas')
+            .update({ deleted_at: new Date().toISOString() })
+            .eq('empresa_id', empresaId)
+            .in('id', ids)
+            .is('deleted_at', null);
+        if (error) {
+            throw new Error(toFriendlySupabaseError(error, 'Erro ao remover despesas vinculadas ao colaborador.'));
+        }
+    }
+    return ids;
+}
 // PRESTADORES, FUNCIONÁRIOS FOLHA, INVESTIMENTOS
 async function dbCreateProvider(empresaId, codigoLegado, payload) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
+    const dueDate = payload.dueDate || (0, financeEngine_1.toISODate)();
+    const dayNum = Math.min(31, Math.max(1, Math.round(Number(payload.paymentDay) || Number(dueDate.slice(8, 10)) || 5)));
     const { data, error } = await sb
         .from('prestadores_servico')
         .insert({
@@ -2301,28 +2529,20 @@ async function dbCreateProvider(empresaId, codigoLegado, payload) {
         servico: payload.service,
         valor: (0, financeEngine_1.roundCurrencyBRL)(payload.amount),
         forma_pagamento: toExpensePayment(payload.paymentModality),
-        data_vencimento: payload.dueDate || (0, financeEngine_1.toISODate)(),
+        data_vencimento: dueDate,
+        dia_pagamento: dayNum,
         status: payload.status,
     })
         .select('*')
         .single();
     if (error)
         throw new Error(toFriendlySupabaseError(error, 'Erro ao cadastrar prestador.'));
-    return {
-        id: data.codigo_legado || data.id,
-        dbUuid: data.id,
-        company_id: data.empresa_id,
-        name: data.nome,
-        service: data.servico,
-        amount: Number(data.valor),
-        paymentModality: fromExpensePayment(data.forma_pagamento),
-        dueDate: String(data.data_vencimento).slice(0, 10),
-        status: data.status,
-        updatedAt: data.updated_at,
-    };
+    return mapProviderRow(data);
 }
 async function dbUpdateProvider(empresaId, dbUuid, payload) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
+    const dueDate = payload.dueDate || (0, financeEngine_1.toISODate)();
+    const dayNum = Math.min(31, Math.max(1, Math.round(Number(payload.paymentDay) || Number(dueDate.slice(8, 10)) || 5)));
     const { data, error } = await sb
         .from('prestadores_servico')
         .update({
@@ -2330,7 +2550,8 @@ async function dbUpdateProvider(empresaId, dbUuid, payload) {
         servico: payload.service,
         valor: (0, financeEngine_1.roundCurrencyBRL)(payload.amount),
         forma_pagamento: toExpensePayment(payload.paymentModality),
-        data_vencimento: payload.dueDate || (0, financeEngine_1.toISODate)(),
+        data_vencimento: dueDate,
+        dia_pagamento: dayNum,
         status: payload.status,
     })
         .eq('id', dbUuid)
@@ -2339,18 +2560,7 @@ async function dbUpdateProvider(empresaId, dbUuid, payload) {
         .single();
     if (error)
         throw new Error(toFriendlySupabaseError(error, 'Erro ao atualizar prestador.'));
-    return {
-        id: data.codigo_legado || data.id,
-        dbUuid: data.id,
-        company_id: data.empresa_id,
-        name: data.nome,
-        service: data.servico,
-        amount: Number(data.valor),
-        paymentModality: fromExpensePayment(data.forma_pagamento),
-        dueDate: String(data.data_vencimento).slice(0, 10),
-        status: data.status,
-        updatedAt: data.updated_at,
-    };
+    return mapProviderRow(data);
 }
 async function dbSoftDeleteProvider(empresaId, dbUuid) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
@@ -2364,6 +2574,12 @@ async function dbSoftDeleteProvider(empresaId, dbUuid) {
 }
 async function dbCreatePayrollEmployee(empresaId, codigoLegado, payload) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
+    const dayNum = Math.min(31, Math.max(1, Math.round(Number(payload.paymentDay) || 5)));
+    const isPaid = payload.paymentStatus === 'pago';
+    const paidCompetence = isPaid
+        ? (payload.paidCompetence || (0, financeEngine_1.toISODate)().slice(0, 7)).slice(0, 7)
+        : null;
+    const paidAt = isPaid ? (payload.paidAt || (0, financeEngine_1.toISODate)()).slice(0, 10) : null;
     const { data, error } = await sb
         .from('funcionarios_folha')
         .insert({
@@ -2374,24 +2590,26 @@ async function dbCreatePayrollEmployee(empresaId, codigoLegado, payload) {
         cargo: payload.roleTitle,
         salario: (0, financeEngine_1.roundCurrencyBRL)(payload.salary),
         data_admissao: payload.admissionDate || (0, financeEngine_1.toISODate)(),
+        dia_pagamento: dayNum,
+        status_pagamento: isPaid ? 'pago' : 'pendente',
+        forma_pagamento: toExpensePayment(payload.paymentModality || 'pix'),
+        data_pagamento: paidAt,
+        competencia_paga: paidCompetence,
     })
         .select('*')
         .single();
     if (error)
         throw new Error(toFriendlySupabaseError(error, 'Erro ao cadastrar colaborador na folha.'));
-    return {
-        id: data.codigo_legado || data.id,
-        dbUuid: data.id,
-        company_id: data.empresa_id,
-        name: data.nome,
-        roleTitle: data.cargo,
-        salary: Number(data.salario),
-        admissionDate: String(data.data_admissao).slice(0, 10),
-        updatedAt: data.updated_at,
-    };
+    return mapPayrollEmployeeRow(data);
 }
 async function dbUpdatePayrollEmployee(empresaId, dbUuid, payload) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
+    const dayNum = Math.min(31, Math.max(1, Math.round(Number(payload.paymentDay) || 5)));
+    const isPaid = payload.paymentStatus === 'pago';
+    const paidCompetence = isPaid
+        ? (payload.paidCompetence || (0, financeEngine_1.toISODate)().slice(0, 7)).slice(0, 7)
+        : null;
+    const paidAt = isPaid ? (payload.paidAt || (0, financeEngine_1.toISODate)()).slice(0, 10) : null;
     const { data, error } = await sb
         .from('funcionarios_folha')
         .update({
@@ -2399,6 +2617,11 @@ async function dbUpdatePayrollEmployee(empresaId, dbUuid, payload) {
         cargo: payload.roleTitle,
         salario: (0, financeEngine_1.roundCurrencyBRL)(payload.salary),
         data_admissao: payload.admissionDate || (0, financeEngine_1.toISODate)(),
+        dia_pagamento: dayNum,
+        status_pagamento: isPaid ? 'pago' : 'pendente',
+        forma_pagamento: toExpensePayment(payload.paymentModality || 'pix'),
+        data_pagamento: paidAt,
+        competencia_paga: paidCompetence,
     })
         .eq('id', dbUuid)
         .eq('empresa_id', empresaId)
@@ -2406,16 +2629,7 @@ async function dbUpdatePayrollEmployee(empresaId, dbUuid, payload) {
         .single();
     if (error)
         throw new Error(toFriendlySupabaseError(error, 'Erro ao atualizar colaborador na folha.'));
-    return {
-        id: data.codigo_legado || data.id,
-        dbUuid: data.id,
-        company_id: data.empresa_id,
-        name: data.nome,
-        roleTitle: data.cargo,
-        salary: Number(data.salario),
-        admissionDate: String(data.data_admissao).slice(0, 10),
-        updatedAt: data.updated_at,
-    };
+    return mapPayrollEmployeeRow(data);
 }
 async function dbSoftDeletePayrollEmployee(empresaId, dbUuid) {
     const sb = (0, supabaseClient_1.getSupabaseClient)();
@@ -4948,12 +5162,13 @@ const react_1 = __importStar(require("react"));
 const lucide_react_1 = require("lucide-react");
 const financeEngine_1 = require("../utils/financeEngine");
 const ACTIVE_PRODUCTION_STAGES = financeEngine_1.PRODUCTION_STAGES.filter((s) => s.id !== 'faca_pronta');
-const OrderKanbanCard = react_1.default.memo(({ order, userRole, isPending, isExpanded, onToggleExpand, onDragStart, onDragEnd, onMoveStage, onQuickRegisterDelivery, onDeleteOrder, }) => {
+const OrderKanbanCard = react_1.default.memo(({ order, userRole, isPending, isExpanded, onToggleExpand, onDragStart, onDragEnd, onMoveStage, onQuickRegisterDelivery, onEditOrder, onDeleteOrder, }) => {
     const prevStage = (0, financeEngine_1.getPrevStage)(order.stage);
     const nextStage = (0, financeEngine_1.getNextStage)(order.stage);
     const modMeta = financeEngine_1.PAYMENT_MODALITY_META[order.paymentModality];
     const isFinalizingStep = nextStage === 'faca_pronta';
     const canDeleteOrder = userRole !== 'operador' && userRole !== 'cliente';
+    const canEditOrder = userRole !== 'operador' && userRole !== 'cliente' && Boolean(onEditOrder);
     return (react_1.default.createElement("div", { draggable: !isPending, onDragStart: () => onDragStart(order.id), onDragEnd: onDragEnd, className: `rounded-2xl p-3 liquid-glass-subtle hover:bg-white/45 transition-colors cursor-grab active:cursor-grabbing flex flex-col gap-2 overflow-hidden min-w-0 ${isPending ? 'opacity-75 ring-1 ring-indigo-400/70' : ''}` },
         react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-1 min-w-0" },
             react_1.default.createElement("div", { className: "flex items-center gap-1 min-w-0 flex-wrap" },
@@ -4961,6 +5176,8 @@ const OrderKanbanCard = react_1.default.memo(({ order, userRole, isPending, isEx
                 react_1.default.createElement("span", { className: `px-1.5 py-0.5 rounded-full text-[9px] font-bold border truncate max-w-[92px] ${modMeta?.badgeClass}`, title: modMeta?.label }, modMeta?.short)),
             react_1.default.createElement("div", { className: "flex items-center gap-1 shrink-0" },
                 react_1.default.createElement("button", { type: "button", onClick: () => onToggleExpand(order.id), className: "btn-compact w-6 h-6 rounded-lg bg-white/65 hover:bg-white/95 text-slate-600 hover:text-indigo-700 border border-white/80 flex items-center justify-center transition-colors cursor-pointer shrink-0", title: isExpanded ? 'Recolher detalhes' : 'Exibir mais detalhes', "aria-label": isExpanded ? 'Recolher detalhes' : 'Exibir mais detalhes' }, isExpanded ? (react_1.default.createElement(lucide_react_1.ChevronUp, { className: "w-3 h-3" })) : (react_1.default.createElement(lucide_react_1.ChevronDown, { className: "w-3 h-3" }))),
+                canEditOrder && (react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onEditOrder?.(order), className: "btn-compact w-6 h-6 rounded-lg bg-white/65 hover:bg-indigo-500/20 disabled:opacity-50 text-slate-500 hover:text-indigo-700 border border-white/80 flex items-center justify-center transition-colors cursor-pointer shrink-0", title: "Editar esta OS", "aria-label": "Editar esta OS" },
+                    react_1.default.createElement(lucide_react_1.Edit3, { className: "w-3 h-3" }))),
                 canDeleteOrder && (react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onDeleteOrder(order.id), className: "btn-compact w-6 h-6 rounded-lg bg-white/65 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/80 flex items-center justify-center transition-colors cursor-pointer shrink-0", title: "Excluir esta OS", "aria-label": "Excluir esta OS" },
                     react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3 h-3" }))))),
         react_1.default.createElement("div", { className: "min-w-0" },
@@ -4978,7 +5195,21 @@ const OrderKanbanCard = react_1.default.memo(({ order, userRole, isPending, isEx
             react_1.default.createElement("div", null,
                 react_1.default.createElement("strong", null, "Pagamento:"),
                 ' ',
-                order.paymentStatus === 'pago' ? 'Pago' : 'Não Pago'))),
+                order.paymentStatus === 'pago' ? 'Pago' : 'Não Pago'),
+            order.bladeMeters !== undefined && order.bladeMeters !== null && (react_1.default.createElement("div", null,
+                react_1.default.createElement("strong", null, "L\u00E2mina:"),
+                " ",
+                order.bladeMeters,
+                " m")),
+            order.woodMm && (react_1.default.createElement("div", null,
+                react_1.default.createElement("strong", null, "Madeira:"),
+                " ",
+                order.woodMm,
+                " mm")),
+            order.financialNotes?.trim() && (react_1.default.createElement("div", { className: "break-words" },
+                react_1.default.createElement("strong", null, "Obs. Financeira:"),
+                " ",
+                order.financialNotes)))),
         react_1.default.createElement("div", { className: "flex items-center justify-between gap-1 text-[10px] text-slate-700 bg-white/55 px-2 py-1.5 rounded-xl border border-white/70 min-w-0" },
             react_1.default.createElement("span", { className: "flex items-center gap-1 font-semibold truncate min-w-0" },
                 react_1.default.createElement(lucide_react_1.Clock, { className: "w-3 h-3 text-indigo-600 shrink-0" }),
@@ -4997,13 +5228,14 @@ const OrderKanbanCard = react_1.default.memo(({ order, userRole, isPending, isEx
                 react_1.default.createElement(lucide_react_1.Truck, { className: "w-3 h-3 shrink-0" }),
                 react_1.default.createElement("span", { className: "truncate" }, "Despachar"))))));
 });
-const ProductionKanban = ({ orders, userRole, pendingOrderIds = [], moveError, onMoveStage, onQuickRegisterDelivery, onDeleteOrder, }) => {
+const ProductionKanban = ({ orders, userRole, pendingOrderIds = [], moveError, onMoveStage, onQuickRegisterDelivery, onEditOrder, onDeleteOrder, }) => {
     const [activeView, setActiveView] = (0, react_1.useState)('producao');
     const [draggedId, setDraggedId] = (0, react_1.useState)(null);
     const [dragOverStage, setDragOverStage] = (0, react_1.useState)(null);
     const [expandedOrderIds, setExpandedOrderIds] = (0, react_1.useState)(() => new Set());
     const pendingSet = (0, react_1.useMemo)(() => new Set(pendingOrderIds), [pendingOrderIds]);
     const canDeleteOrder = userRole !== 'operador' && userRole !== 'cliente';
+    const canEditOrder = userRole !== 'operador' && userRole !== 'cliente' && Boolean(onEditOrder);
     const activeOrders = (0, react_1.useMemo)(() => orders.filter((o) => o.stage !== 'faca_pronta'), [orders]);
     const readyOrders = (0, react_1.useMemo)(() => orders.filter((o) => o.stage === 'faca_pronta'), [orders]);
     const readyTotalVolume = (0, react_1.useMemo)(() => readyOrders.reduce((acc, o) => acc + (o.amount || 0), 0), [readyOrders]);
@@ -5098,7 +5330,7 @@ const ProductionKanban = ({ orders, userRole, pendingOrderIds = [], moveError, o
                         react_1.default.createElement("span", { className: "font-extrabold text-emerald-700" }, (0, financeEngine_1.formatBRL)(colTotal)))),
                 react_1.default.createElement("div", { className: "space-y-2.5 flex-1 min-w-0" }, colOrders.length === 0 ? (react_1.default.createElement("div", { className: "h-32 rounded-2xl border border-dashed border-white/75 bg-white/20 flex items-center justify-center text-xs font-medium text-slate-600 text-center px-2" },
                     "Sem facas em ",
-                    stage.label)) : (colOrders.map((order) => (react_1.default.createElement(OrderKanbanCard, { key: order.id, order: order, userRole: userRole, isPending: pendingSet.has(order.id), isExpanded: expandedOrderIds.has(order.id), onToggleExpand: handleToggleExpand, onDragStart: setDraggedId, onDragEnd: handleDragEnd, onMoveStage: onMoveStage, onQuickRegisterDelivery: onQuickRegisterDelivery, onDeleteOrder: onDeleteOrder })))))));
+                    stage.label)) : (colOrders.map((order) => (react_1.default.createElement(OrderKanbanCard, { key: order.id, order: order, userRole: userRole, isPending: pendingSet.has(order.id), isExpanded: expandedOrderIds.has(order.id), onToggleExpand: handleToggleExpand, onDragStart: setDraggedId, onDragEnd: handleDragEnd, onMoveStage: onMoveStage, onQuickRegisterDelivery: onQuickRegisterDelivery, onEditOrder: onEditOrder, onDeleteOrder: onDeleteOrder })))))));
         }))) : (
         /* Subseção Dedicada: Facas Prontas / Concluídas */
         react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-5 sm:p-6 space-y-4 min-w-0" },
@@ -5133,6 +5365,8 @@ const ProductionKanban = ({ orders, userRole, pendingOrderIds = [], moveError, o
                                         : 'bg-white/70 text-slate-700 border-white/80'}` }, order.paymentStatus === 'pago' ? 'Pago' : 'Não Pago')),
                             react_1.default.createElement("div", { className: "flex items-center gap-1 shrink-0" },
                                 react_1.default.createElement("button", { type: "button", onClick: () => handleToggleExpand(order.id), className: "btn-compact w-7 h-7 rounded-lg bg-white/65 hover:bg-white/95 text-slate-600 hover:text-indigo-700 border border-white/80 flex items-center justify-center transition cursor-pointer shrink-0", title: isExpanded ? 'Recolher detalhes' : 'Exibir mais detalhes', "aria-label": isExpanded ? 'Recolher detalhes' : 'Exibir mais detalhes' }, isExpanded ? (react_1.default.createElement(lucide_react_1.ChevronUp, { className: "w-3.5 h-3.5" })) : (react_1.default.createElement(lucide_react_1.ChevronDown, { className: "w-3.5 h-3.5" }))),
+                                canEditOrder && (react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onEditOrder?.(order), className: "btn-compact w-7 h-7 rounded-lg bg-white/65 hover:bg-indigo-500/20 disabled:opacity-50 text-slate-500 hover:text-indigo-700 border border-white/80 flex items-center justify-center transition cursor-pointer shrink-0", title: "Editar esta OS", "aria-label": "Editar esta OS" },
+                                    react_1.default.createElement(lucide_react_1.Edit3, { className: "w-3.5 h-3.5" }))),
                                 canDeleteOrder && (react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onDeleteOrder(order.id), className: "btn-compact w-7 h-7 rounded-lg bg-white/65 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/80 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir esta OS", "aria-label": "Excluir esta OS" },
                                     react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" }))))),
                         react_1.default.createElement("div", { className: "min-w-0" },
@@ -5150,7 +5384,21 @@ const ProductionKanban = ({ orders, userRole, pendingOrderIds = [], moveError, o
                             react_1.default.createElement("div", null,
                                 react_1.default.createElement("strong", null, "Telefone:"),
                                 " ",
-                                order.companyPhone || 'Não informado'))),
+                                order.companyPhone || 'Não informado'),
+                            order.bladeMeters !== undefined && order.bladeMeters !== null && (react_1.default.createElement("div", null,
+                                react_1.default.createElement("strong", null, "L\u00E2mina:"),
+                                " ",
+                                order.bladeMeters,
+                                " m")),
+                            order.woodMm && (react_1.default.createElement("div", null,
+                                react_1.default.createElement("strong", null, "Madeira:"),
+                                " ",
+                                order.woodMm,
+                                " mm")),
+                            order.financialNotes?.trim() && (react_1.default.createElement("div", { className: "break-words" },
+                                react_1.default.createElement("strong", null, "Obs. Financeira:"),
+                                " ",
+                                order.financialNotes)))),
                         react_1.default.createElement("div", { className: "flex items-center justify-between text-[11px] text-slate-700 bg-white/55 px-2.5 py-1.5 rounded-xl border border-white/70" },
                             react_1.default.createElement("span", { className: "flex items-center gap-1 font-semibold truncate" },
                                 react_1.default.createElement(lucide_react_1.Clock, { className: "w-3.5 h-3.5 text-emerald-600 shrink-0" }),
@@ -5317,11 +5565,47 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ExpensesSection = void 0;
+exports.ExpensesSection = exports.EXPENSE_CATEGORY_GROUPS = void 0;
 const react_1 = __importStar(require("react"));
 const lucide_react_1 = require("lucide-react");
 const financeEngine_1 = require("../utils/financeEngine");
 const ResponsiveCategoryChart_1 = require("./ResponsiveCategoryChart");
+exports.EXPENSE_CATEGORY_GROUPS = [
+    {
+        groupLabel: 'Insumos de Produção',
+        keys: ['madeira', 'laminas'],
+    },
+    {
+        groupLabel: 'Instalações, Veículos & Utilidades',
+        keys: [
+            'aluguel',
+            'agua',
+            'energia',
+            'internet',
+            'alimentacao',
+            'transportes',
+            'seguros',
+            'manutencao',
+            'custo_depreciacao',
+        ],
+    },
+    {
+        groupLabel: 'Folha & Prestadores',
+        keys: ['folha_colaboradores', 'prestadores_servico'],
+    },
+    {
+        groupLabel: 'Administrativo, Impostos & Financeiro',
+        keys: [
+            'contador',
+            'marketing',
+            'financiamento',
+            'impostos',
+            'taxas_bancarias',
+            'flow_dashboard',
+            'outros',
+        ],
+    },
+];
 const makeInitialFormState = (todayIso) => ({
     categoria: 'laminas',
     descricao: '',
@@ -5372,7 +5656,8 @@ const ExpensesSection = ({ expenses, canEdit, onCreateExpense, onUpdateExpense, 
     const filteredExpenses = (0, react_1.useMemo)(() => {
         const q = searchQuery.trim().toLowerCase();
         const list = periodExpenses.filter((exp) => {
-            if (categoryFilter !== 'todas' && exp.categoria !== categoryFilter) {
+            const effCat = (0, financeEngine_1.normalizeExpenseCategory)(exp.categoria);
+            if (categoryFilter !== 'todas' && effCat !== categoryFilter) {
                 return false;
             }
             const eff = (0, financeEngine_1.computeExpenseEffectiveStatus)(exp, todayGoiasIso);
@@ -5383,7 +5668,7 @@ const ExpensesSection = ({ expenses, canEdit, onCreateExpense, onUpdateExpense, 
                 const desc = (exp.descricao || '').toLowerCase();
                 const forn = (exp.fornecedor || '').toLowerCase();
                 const obs = (exp.observacao || '').toLowerCase();
-                const cat = (financeEngine_1.EXPENSE_CATEGORY_MAP[exp.categoria]?.label || '').toLowerCase();
+                const cat = (financeEngine_1.EXPENSE_CATEGORY_MAP[effCat]?.label || '').toLowerCase();
                 if (!desc.includes(q) &&
                     !forn.includes(q) &&
                     !obs.includes(q) &&
@@ -5402,6 +5687,11 @@ const ExpensesSection = ({ expenses, canEdit, onCreateExpense, onUpdateExpense, 
                 const sa = (0, financeEngine_1.computeExpenseEffectiveStatus)(a, todayGoiasIso);
                 const sb = (0, financeEngine_1.computeExpenseEffectiveStatus)(b, todayGoiasIso);
                 cmp = sa.localeCompare(sb, 'pt-BR');
+            }
+            else if (sortField === 'categoria') {
+                const ca = financeEngine_1.EXPENSE_CATEGORY_MAP[(0, financeEngine_1.normalizeExpenseCategory)(a.categoria)]?.label || '';
+                const cb = financeEngine_1.EXPENSE_CATEGORY_MAP[(0, financeEngine_1.normalizeExpenseCategory)(b.categoria)]?.label || '';
+                cmp = ca.localeCompare(cb, 'pt-BR');
             }
             else {
                 const va = String(a[sortField] || '');
@@ -5441,7 +5731,7 @@ const ExpensesSection = ({ expenses, canEdit, onCreateExpense, onUpdateExpense, 
         setEditingId(exp.id);
         const val = (0, financeEngine_1.roundCurrencyBRL)(exp.valor);
         setFormState({
-            categoria: exp.categoria,
+            categoria: (0, financeEngine_1.normalizeExpenseCategory)(exp.categoria),
             descricao: exp.descricao || '',
             valorDisplay: (0, financeEngine_1.formatCurrencyMask)(val),
             valorNum: val,
@@ -5639,7 +5929,12 @@ const ExpensesSection = ({ expenses, canEdit, onCreateExpense, onUpdateExpense, 
                             react_1.default.createElement(lucide_react_1.Filter, { className: "w-4 h-4 text-slate-500 shrink-0 hidden sm:block" }),
                             react_1.default.createElement("select", { value: categoryFilter, onChange: (e) => setCategoryFilter(e.target.value), "aria-label": "Filtrar por categoria", className: "liquid-glass-input min-h-[44px] px-3 py-2 rounded-xl text-base font-semibold text-slate-900 w-full sm:w-auto" },
                                 react_1.default.createElement("option", { value: "todas" }, "Todas as categorias"),
-                                financeEngine_1.EXPENSE_CATEGORIES.map((cat) => (react_1.default.createElement("option", { key: cat.key, value: cat.key }, cat.label))))),
+                                exports.EXPENSE_CATEGORY_GROUPS.map((grp) => (react_1.default.createElement("optgroup", { key: grp.groupLabel, label: grp.groupLabel }, grp.keys.map((k) => {
+                                    const item = financeEngine_1.EXPENSE_CATEGORY_MAP[k];
+                                    if (!item)
+                                        return null;
+                                    return (react_1.default.createElement("option", { key: k, value: k }, item.label));
+                                })))))),
                         react_1.default.createElement("select", { value: statusFilter, onChange: (e) => setStatusFilter(e.target.value), "aria-label": "Filtrar por status", className: "liquid-glass-input min-h-[44px] px-3 py-2 rounded-xl text-base font-semibold text-slate-900 w-full sm:w-auto" },
                             react_1.default.createElement("option", { value: "todos" }, "Todos os status"),
                             react_1.default.createElement("option", { value: "pendente" }, "Pendente"),
@@ -5660,12 +5955,14 @@ const ExpensesSection = ({ expenses, canEdit, onCreateExpense, onUpdateExpense, 
                 react_1.default.createElement("div", { className: "md:hidden divide-y divide-white/55" }, filteredExpenses.map((exp) => {
                     const eff = (0, financeEngine_1.computeExpenseEffectiveStatus)(exp, todayGoiasIso);
                     const statusMeta = financeEngine_1.EXPENSE_STATUS_META[eff];
-                    const catMeta = financeEngine_1.EXPENSE_CATEGORY_MAP[exp.categoria];
+                    const catKey = (0, financeEngine_1.normalizeExpenseCategory)(exp.categoria);
+                    const catMeta = financeEngine_1.EXPENSE_CATEGORY_MAP[catKey];
                     const payMeta = financeEngine_1.EXPENSE_PAYMENT_META[exp.forma_pagamento];
                     return (react_1.default.createElement("div", { key: exp.id, className: "p-4 space-y-2.5 min-w-0" },
                         react_1.default.createElement("div", { className: "flex items-start justify-between gap-2 min-w-0" },
                             react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-1.5 min-w-0" },
-                                react_1.default.createElement("span", { className: `px-2.5 py-1 rounded-full text-[11px] font-bold border ${catMeta?.badgeClass}` }, catMeta?.label || exp.categoria),
+                                react_1.default.createElement("span", { className: `px-2.5 py-1 rounded-full text-[11px] font-bold border ${catMeta?.badgeClass}` }, catMeta?.label || catKey),
+                                exp.origem_tipo && (react_1.default.createElement("span", { className: "inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/15 text-sky-800 border border-sky-300/60", title: `Origem: ${exp.origem_tipo === 'funcionario' ? 'Folha de Pagamento' : 'Prestador de Serviço'}` }, "V\u00EDnculo Folha/Prest.")),
                                 react_1.default.createElement("span", { className: `inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold border ${statusMeta?.badgeClass}` },
                                     react_1.default.createElement("span", { className: `w-1.5 h-1.5 rounded-full ${statusMeta?.dotClass}` }),
                                     statusMeta?.label)),
@@ -5717,7 +6014,8 @@ const ExpensesSection = ({ expenses, canEdit, onCreateExpense, onUpdateExpense, 
                         react_1.default.createElement("tbody", { className: "divide-y divide-white/45 text-xs" }, filteredExpenses.map((exp) => {
                             const eff = (0, financeEngine_1.computeExpenseEffectiveStatus)(exp, todayGoiasIso);
                             const statusMeta = financeEngine_1.EXPENSE_STATUS_META[eff];
-                            const catMeta = financeEngine_1.EXPENSE_CATEGORY_MAP[exp.categoria];
+                            const catKey = (0, financeEngine_1.normalizeExpenseCategory)(exp.categoria);
+                            const catMeta = financeEngine_1.EXPENSE_CATEGORY_MAP[catKey];
                             const payMeta = financeEngine_1.EXPENSE_PAYMENT_META[exp.forma_pagamento];
                             return (react_1.default.createElement("tr", { key: exp.id, className: "hover:bg-white/35 transition-colors" },
                                 react_1.default.createElement("td", { className: "py-3.5 px-3.5 whitespace-nowrap font-mono font-bold text-slate-800" },
@@ -5726,7 +6024,9 @@ const ExpensesSection = ({ expenses, canEdit, onCreateExpense, onUpdateExpense, 
                                         "Venc: ",
                                         (0, financeEngine_1.formatDateBR)(exp.data_vencimento)))),
                                 react_1.default.createElement("td", { className: "py-3.5 px-3.5 whitespace-nowrap" },
-                                    react_1.default.createElement("span", { className: `px-2.5 py-1 rounded-full text-[11px] font-bold border ${catMeta?.badgeClass}` }, catMeta?.label || exp.categoria)),
+                                    react_1.default.createElement("div", { className: "flex items-center gap-1.5 flex-wrap" },
+                                        react_1.default.createElement("span", { className: `px-2.5 py-1 rounded-full text-[11px] font-bold border ${catMeta?.badgeClass}` }, catMeta?.label || catKey),
+                                        exp.origem_tipo && (react_1.default.createElement("span", { className: "inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/15 text-sky-800 border border-sky-300/60", title: `Origem: ${exp.origem_tipo === 'funcionario' ? 'Folha de Pagamento' : 'Prestador de Serviço'}` }, "V\u00EDnculo Folha/Prest.")))),
                                 react_1.default.createElement("td", { className: "py-3.5 px-3.5 max-w-[240px]" },
                                     react_1.default.createElement("span", { title: exp.descricao || '—', className: "font-semibold text-slate-900 block truncate" }, exp.descricao || '—'),
                                     exp.observacao && (react_1.default.createElement("span", { title: exp.observacao, className: "text-[10px] text-slate-500 block truncate" }, exp.observacao))),
@@ -5772,7 +6072,12 @@ const ExpensesSection = ({ expenses, canEdit, onCreateExpense, onUpdateExpense, 
                                             delete copy.descricao;
                                         return copy;
                                     });
-                                }, className: "liquid-glass-input w-full min-h-[44px] px-3 py-2 rounded-xl text-base text-slate-900" }, financeEngine_1.EXPENSE_CATEGORIES.map((cat) => (react_1.default.createElement("option", { key: cat.key, value: cat.key }, cat.label))))),
+                                }, className: "liquid-glass-input w-full min-h-[44px] px-3 py-2 rounded-xl text-base text-slate-900" }, exports.EXPENSE_CATEGORY_GROUPS.map((grp) => (react_1.default.createElement("optgroup", { key: grp.groupLabel, label: grp.groupLabel }, grp.keys.map((k) => {
+                                const item = financeEngine_1.EXPENSE_CATEGORY_MAP[k];
+                                if (!item)
+                                    return null;
+                                return (react_1.default.createElement("option", { key: k, value: k }, item.label));
+                            })))))),
                         react_1.default.createElement("div", null,
                             react_1.default.createElement("label", { className: "text-xs font-extrabold text-slate-800 block mb-1.5" }, "Valor (R$) *"),
                             react_1.default.createElement("div", { className: "relative" },
@@ -5866,7 +6171,7 @@ const ExpensesSection = ({ expenses, canEdit, onCreateExpense, onUpdateExpense, 
                         react_1.default.createElement("p", { className: "text-xs text-slate-700 mt-1" },
                             "Tem certeza que deseja excluir o lan\u00E7amento",
                             ' ',
-                            react_1.default.createElement("strong", null, financeEngine_1.EXPENSE_CATEGORY_MAP[deleteTarget.categoria]?.label),
+                            react_1.default.createElement("strong", null, financeEngine_1.EXPENSE_CATEGORY_MAP[(0, financeEngine_1.normalizeExpenseCategory)(deleteTarget.categoria)]?.label || deleteTarget.categoria),
                             ' ',
                             "no valor de ",
                             react_1.default.createElement("strong", null, (0, financeEngine_1.formatBRL)(deleteTarget.valor)),
@@ -5930,17 +6235,22 @@ const ExpensesSubsection = ({ expenses, onUpsertMonthExpenses, }) => {
     const [draftValues, setDraftValues] = (0, react_1.useState)(() => (0, financeEngine_1.createEmptyExpensesMap)());
     (0, react_1.useEffect)(() => {
         const existing = expenses.find((e) => e.month === selectedMonth);
-        setDraftValues({
-            ...(0, financeEngine_1.createEmptyExpensesMap)(),
-            ...(existing?.values || {}),
-        });
+        const initial = (0, financeEngine_1.createEmptyExpensesMap)();
+        if (existing?.values) {
+            for (const [rawKey, val] of Object.entries(existing.values)) {
+                const normKey = (0, financeEngine_1.normalizeExpenseCategory)(rawKey);
+                initial[normKey] = (initial[normKey] || 0) + Number(val || 0);
+            }
+        }
+        setDraftValues(initial);
     }, [selectedMonth, expenses]);
     const monthTotal = financeEngine_1.EXPENSE_CATEGORIES.reduce((sum, cat) => sum + (draftValues[cat.key] || 0), 0);
     const handleAmountChange = (key, rawInput) => {
+        const safeKey = (0, financeEngine_1.normalizeExpenseCategory)(key);
         const parsed = (0, financeEngine_1.parseCurrencyMask)(rawInput);
         const next = {
             ...draftValues,
-            [key]: parsed,
+            [safeKey]: parsed,
         };
         setDraftValues(next);
         onUpsertMonthExpenses(selectedMonth, next);
@@ -6016,6 +6326,27 @@ exports.CollaboratorsSubsection = void 0;
 const react_1 = __importStar(require("react"));
 const lucide_react_1 = require("lucide-react");
 const financeEngine_1 = require("../utils/financeEngine");
+const MONTH_NAMES = [
+    'Janeiro',
+    'Fevereiro',
+    'Março',
+    'Abril',
+    'Maio',
+    'Junho',
+    'Julho',
+    'Agosto',
+    'Setembro',
+    'Outubro',
+    'Novembro',
+    'Dezembro',
+];
+const WEEKDAY_LABELS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+const PAYROLL_PAYMENT_MODALITIES = [
+    'pix',
+    'dinheiro',
+    'boleto',
+    'cartao',
+];
 const PROVIDER_STATUS_META = {
     pendente: {
         label: 'Pendente',
@@ -6030,7 +6361,25 @@ const PROVIDER_STATUS_META = {
         badgeClass: 'bg-rose-500/15 text-rose-800 border-rose-300/60',
     },
 };
-const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, onUpdateProvider, onDeleteProvider, onAddPayrollEmployee, onUpdatePayrollEmployee, onDeletePayrollEmployee, }) => {
+function clampDay(day) {
+    const num = Math.round(Number(day) || 1);
+    return Math.min(31, Math.max(1, num));
+}
+function getMonthKey(year, monthIndex0) {
+    return `${year}-${String(monthIndex0 + 1).padStart(2, '0')}`;
+}
+const CollaboratorsSubsection = ({ providers, payrollEmployees, despesas = [], onAddProvider, onUpdateProvider, onDeleteProvider, onAddPayrollEmployee, onUpdatePayrollEmployee, onDeletePayrollEmployee, onToggleProviderPayment, onTogglePayrollPayment, }) => {
+    const todayIso = (0, financeEngine_1.getTodayGoiasISO)();
+    const currentMonthKey = todayIso.slice(0, 7);
+    const initialYear = Number(todayIso.slice(0, 4)) || new Date().getFullYear();
+    const initialMonth = Math.max(0, Math.min(11, (Number(todayIso.slice(5, 7)) || 1) - 1));
+    const todayDayNum = clampDay(Number(todayIso.slice(8, 10)) || 5);
+    // Calendar / Schedule state
+    const [selectedYear, setSelectedYear] = (0, react_1.useState)(initialYear);
+    const [selectedMonth, setSelectedMonth] = (0, react_1.useState)(initialMonth);
+    const [selectedDay, setSelectedDay] = (0, react_1.useState)(null);
+    const [togglingKey, setTogglingKey] = (0, react_1.useState)(null);
+    const selectedMonthKey = getMonthKey(selectedYear, selectedMonth);
     const [activeTab, setActiveTab] = (0, react_1.useState)('prestadores');
     // Providers Form State
     const [editProvId, setEditProvId] = (0, react_1.useState)(null);
@@ -6039,6 +6388,7 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
     const [provAmount, setProvAmount] = (0, react_1.useState)(0);
     const [provModality, setProvModality] = (0, react_1.useState)('pix');
     const [provDueDate, setProvDueDate] = (0, react_1.useState)(() => (0, financeEngine_1.toISODate)());
+    const [provPaymentDay, setProvPaymentDay] = (0, react_1.useState)(todayDayNum);
     const [provStatus, setProvStatus] = (0, react_1.useState)('pendente');
     const [isSubmittingProv, setIsSubmittingProv] = (0, react_1.useState)(false);
     // Payroll Employees Form State
@@ -6047,17 +6397,205 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
     const [empRoleTitle, setEmpRoleTitle] = (0, react_1.useState)('');
     const [empSalary, setEmpSalary] = (0, react_1.useState)(0);
     const [empAdmissionDate, setEmpAdmissionDate] = (0, react_1.useState)(() => (0, financeEngine_1.toISODate)());
+    const [empPaymentDay, setEmpPaymentDay] = (0, react_1.useState)(5);
+    const [empModality, setEmpModality] = (0, react_1.useState)('pix');
+    const [empPaymentStatus, setEmpPaymentStatus] = (0, react_1.useState)('pendente');
+    const [empEditPaidAt, setEmpEditPaidAt] = (0, react_1.useState)(undefined);
+    const [empEditPaidComp, setEmpEditPaidComp] = (0, react_1.useState)(undefined);
     const [isSubmittingEmp, setIsSubmittingEmp] = (0, react_1.useState)(false);
     const [deletingKey, setDeletingKey] = (0, react_1.useState)(null);
+    // Index active paid expenses by (origem_tipo:origem_id:competencia) for O(1) lookup
+    const paidExpenseByKey = (0, react_1.useMemo)(() => {
+        const map = new Map();
+        for (const d of despesas) {
+            if (!d.deleted_at &&
+                d.status === 'pago' &&
+                d.origem_id &&
+                d.competencia_referencia) {
+                const comp = d.competencia_referencia.slice(0, 7);
+                if (d.origem_tipo) {
+                    map.set(`${d.origem_tipo}:${d.origem_id}:${comp}`, d);
+                }
+                map.set(`any:${d.origem_id}:${comp}`, d);
+            }
+        }
+        return map;
+    }, [despesas]);
+    const getLinkedPaidExpense = (kind, dbUuid, monthKey) => {
+        if (!dbUuid)
+            return undefined;
+        return (paidExpenseByKey.get(`${kind}:${dbUuid}:${monthKey}`) ||
+            paidExpenseByKey.get(`any:${dbUuid}:${monthKey}`));
+    };
+    const isProviderPaidInMonth = (p, monthKey) => {
+        if (getLinkedPaidExpense('prestador', p.dbUuid, monthKey)) {
+            return true;
+        }
+        return (p.dueDate || '').slice(0, 7) === monthKey && p.status === 'pago';
+    };
+    const isEmployeePaidInMonth = (emp, monthKey) => {
+        if (getLinkedPaidExpense('funcionario', emp.dbUuid, monthKey)) {
+            return true;
+        }
+        return (emp.paymentStatus === 'pago' &&
+            (emp.paidCompetence || '').slice(0, 7) === monthKey);
+    };
+    // Monthly payment schedule items (Employees + Providers)
+    const scheduleItems = (0, react_1.useMemo)(() => {
+        const list = [];
+        for (const emp of payrollEmployees) {
+            if (emp.admissionDate && emp.admissionDate.slice(0, 7) > selectedMonthKey) {
+                continue;
+            }
+            const rawDay = clampDay(emp.paymentDay || 5);
+            const scheduledDate = (0, financeEngine_1.resolveMonthPaymentDate)(selectedMonthKey, rawDay);
+            const dayInMonth = Number(scheduledDate.slice(8, 10)) || rawDay;
+            const linkedExp = getLinkedPaidExpense('funcionario', emp.dbUuid, selectedMonthKey);
+            const isPaid = Boolean(linkedExp) || isEmployeePaidInMonth(emp, selectedMonthKey);
+            const isOverdue = !isPaid && scheduledDate < todayIso;
+            const effectiveAmount = linkedExp
+                ? (0, financeEngine_1.roundCurrencyBRL)(linkedExp.valor)
+                : Number(emp.salary) || 0;
+            list.push({
+                key: `emp:${emp.id}`,
+                kind: 'funcionario',
+                id: emp.id,
+                name: emp.name,
+                subtitle: emp.roleTitle,
+                day: dayInMonth,
+                scheduledDate,
+                amount: effectiveAmount,
+                paymentModality: emp.paymentModality || 'pix',
+                isPaid,
+                isOverdue,
+                employee: emp,
+            });
+        }
+        for (const p of providers) {
+            const rawDay = clampDay(p.paymentDay || Number((p.dueDate || '').slice(8, 10)) || 5);
+            const scheduledDate = (0, financeEngine_1.resolveMonthPaymentDate)(selectedMonthKey, rawDay);
+            const dayInMonth = Number(scheduledDate.slice(8, 10)) || rawDay;
+            const linkedExp = getLinkedPaidExpense('prestador', p.dbUuid, selectedMonthKey);
+            const isPaid = Boolean(linkedExp) || isProviderPaidInMonth(p, selectedMonthKey);
+            const isOverdue = !isPaid && scheduledDate < todayIso;
+            const effectiveAmount = linkedExp
+                ? (0, financeEngine_1.roundCurrencyBRL)(linkedExp.valor)
+                : Number(p.amount) || 0;
+            list.push({
+                key: `prov:${p.id}`,
+                kind: 'prestador',
+                id: p.id,
+                name: p.name,
+                subtitle: p.service,
+                day: dayInMonth,
+                scheduledDate,
+                amount: effectiveAmount,
+                paymentModality: p.paymentModality || 'pix',
+                isPaid,
+                isOverdue,
+                provider: p,
+            });
+        }
+        return list.sort((a, b) => {
+            if (a.day !== b.day)
+                return a.day - b.day;
+            return a.name.localeCompare(b.name, 'pt-BR');
+        });
+    }, [payrollEmployees, providers, paidExpenseByKey, selectedMonthKey, todayIso]);
+    const scheduleSummary = (0, react_1.useMemo)(() => {
+        let previsto = 0;
+        let pago = 0;
+        let pendente = 0;
+        let pagoCount = 0;
+        let pendenteCount = 0;
+        for (const item of scheduleItems) {
+            previsto = (0, financeEngine_1.roundCurrencyBRL)(previsto + item.amount);
+            if (item.isPaid) {
+                pago = (0, financeEngine_1.roundCurrencyBRL)(pago + item.amount);
+                pagoCount += 1;
+            }
+            else {
+                pendente = (0, financeEngine_1.roundCurrencyBRL)(pendente + item.amount);
+                pendenteCount += 1;
+            }
+        }
+        return { previsto, pago, pendente, pagoCount, pendenteCount };
+    }, [scheduleItems]);
+    // Map day -> items for calendar grid
+    const itemsByDay = (0, react_1.useMemo)(() => {
+        const map = new Map();
+        for (const item of scheduleItems) {
+            const arr = map.get(item.day);
+            if (arr)
+                arr.push(item);
+            else
+                map.set(item.day, [item]);
+        }
+        return map;
+    }, [scheduleItems]);
+    const calendarCells = (0, react_1.useMemo)(() => {
+        const firstWeekday = new Date(selectedYear, selectedMonth, 1).getDay();
+        const daysInMonth = new Date(selectedYear, selectedMonth + 1, 0).getDate();
+        const cells = [];
+        for (let i = 0; i < firstWeekday; i += 1) {
+            cells.push(null);
+        }
+        for (let d = 1; d <= daysInMonth; d += 1) {
+            cells.push(d);
+        }
+        return cells;
+    }, [selectedYear, selectedMonth]);
+    const filteredScheduleItems = (0, react_1.useMemo)(() => {
+        if (selectedDay == null)
+            return scheduleItems;
+        return scheduleItems.filter((item) => item.day === selectedDay);
+    }, [scheduleItems, selectedDay]);
     const totalProviders = providers.reduce((sum, p) => sum + (p.amount || 0), 0);
     const totalPayroll = payrollEmployees.reduce((sum, e) => sum + (e.salary || 0), 0);
+    const handleShiftMonth = (delta) => {
+        const dt = new Date(selectedYear, selectedMonth + delta, 1);
+        setSelectedYear(dt.getFullYear());
+        setSelectedMonth(dt.getMonth());
+        setSelectedDay(null);
+    };
+    const handleGoCurrentMonth = () => {
+        setSelectedYear(initialYear);
+        setSelectedMonth(initialMonth);
+        setSelectedDay(null);
+    };
+    const handleToggleProvider = async (provider, targetStatus) => {
+        if (!onToggleProviderPayment || togglingKey)
+            return;
+        const key = `prov:${provider.id}`;
+        setTogglingKey(key);
+        try {
+            await onToggleProviderPayment(provider, targetStatus, selectedMonthKey);
+        }
+        finally {
+            setTogglingKey(null);
+        }
+    };
+    const handleToggleEmployee = async (employee, targetStatus) => {
+        if (!onTogglePayrollPayment || togglingKey)
+            return;
+        const key = `emp:${employee.id}`;
+        setTogglingKey(key);
+        try {
+            await onTogglePayrollPayment(employee, targetStatus, selectedMonthKey);
+        }
+        finally {
+            setTogglingKey(null);
+        }
+    };
     const resetProviderForm = () => {
+        const today = (0, financeEngine_1.toISODate)();
         setEditProvId(null);
         setProvName('');
         setProvService('');
         setProvAmount(0);
         setProvModality('pix');
-        setProvDueDate((0, financeEngine_1.toISODate)());
+        setProvDueDate(today);
+        setProvPaymentDay(clampDay(Number(today.slice(8, 10)) || 5));
         setProvStatus('pendente');
     };
     const resetEmployeeForm = () => {
@@ -6066,17 +6604,53 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
         setEmpRoleTitle('');
         setEmpSalary(0);
         setEmpAdmissionDate((0, financeEngine_1.toISODate)());
+        setEmpPaymentDay(5);
+        setEmpModality('pix');
+        setEmpPaymentStatus('pendente');
+        setEmpEditPaidAt(undefined);
+        setEmpEditPaidComp(undefined);
+    };
+    const handleProviderDueDateChange = (nextDate) => {
+        setProvDueDate(nextDate);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(nextDate)) {
+            const parsed = Number(nextDate.slice(8, 10));
+            if (parsed >= 1 && parsed <= 31) {
+                setProvPaymentDay(parsed);
+            }
+            if (editProvId) {
+                const editingProv = providers.find((item) => item.id === editProvId);
+                if (editingProv) {
+                    setProvStatus(isProviderPaidInMonth(editingProv, nextDate.slice(0, 7))
+                        ? 'pago'
+                        : 'pendente');
+                }
+            }
+        }
+    };
+    const handleProviderPaymentDayChange = (raw) => {
+        const digits = raw.replace(/\D/g, '');
+        if (!digits) {
+            setProvPaymentDay(1);
+            return;
+        }
+        const clamped = clampDay(Number(digits));
+        setProvPaymentDay(clamped);
+        const baseYm = (provDueDate || (0, financeEngine_1.toISODate)()).slice(0, 7);
+        setProvDueDate((0, financeEngine_1.resolveMonthPaymentDate)(baseYm, clamped));
     };
     const handleProviderSubmit = async (e) => {
         e.preventDefault();
         if (isSubmittingProv || !provName.trim() || !provService.trim())
             return;
+        const safeDay = clampDay(provPaymentDay || Number((provDueDate || '').slice(8, 10)) || 5);
+        const safeDueDate = provDueDate || (0, financeEngine_1.resolveMonthPaymentDate)(selectedMonthKey, safeDay);
         const payload = {
             name: provName.trim(),
             service: provService.trim(),
             amount: provAmount,
             paymentModality: provModality,
-            dueDate: provDueDate || (0, financeEngine_1.toISODate)(),
+            dueDate: safeDueDate,
+            paymentDay: safeDay,
             status: provStatus,
         };
         setIsSubmittingProv(true);
@@ -6096,11 +6670,17 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
         e.preventDefault();
         if (isSubmittingEmp || !empName.trim() || !empRoleTitle.trim())
             return;
+        const isPaid = empPaymentStatus === 'pago';
         const payload = {
             name: empName.trim(),
             roleTitle: empRoleTitle.trim(),
             salary: empSalary,
             admissionDate: empAdmissionDate || (0, financeEngine_1.toISODate)(),
+            paymentDay: clampDay(empPaymentDay || 5),
+            paymentModality: empModality,
+            paymentStatus: empPaymentStatus,
+            paidAt: isPaid ? empEditPaidAt || (0, financeEngine_1.toISODate)() : undefined,
+            paidCompetence: empEditPaidComp || selectedMonthKey,
         };
         setIsSubmittingEmp(true);
         try {
@@ -6143,6 +6723,146 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
     };
     const inputClass = 'liquid-glass-pill w-full min-h-[44px] px-3.5 py-2.5 text-base rounded-2xl text-slate-900 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500/50 outline-none transition';
     return (react_1.default.createElement("div", { className: "space-y-5" },
+        react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-5 sm:p-6 space-y-5" },
+            react_1.default.createElement("div", { className: "flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-white/60" },
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("div", { className: "flex items-center gap-2 text-indigo-700 mb-1" },
+                        react_1.default.createElement(lucide_react_1.Calendar, { className: "w-4 h-4 shrink-0" }),
+                        react_1.default.createElement("span", { className: "text-[11px] font-extrabold uppercase tracking-wider" }, "Sincronizado com Despesas e Fluxo de Caixa")),
+                    react_1.default.createElement("h3", { className: "text-base sm:text-lg font-extrabold text-slate-900" }, "Calend\u00E1rio e Cronograma Mensal de Pagamentos"),
+                    react_1.default.createElement("p", { className: "text-xs font-medium text-slate-600 mt-0.5" }, "Acompanhe vencimentos de funcion\u00E1rios e prestadores e d\u00EA baixa com 1 clique.")),
+                react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
+                    react_1.default.createElement("button", { type: "button", onClick: () => handleShiftMonth(-1), "aria-label": "M\u00EAs anterior", className: "btn-compact w-10 h-10 rounded-full liquid-glass-pill text-slate-700 hover:text-indigo-700 flex items-center justify-center cursor-pointer" },
+                        react_1.default.createElement(lucide_react_1.ChevronLeft, { className: "w-4 h-4" })),
+                    react_1.default.createElement("div", { className: "liquid-glass-pill min-h-[40px] px-4 py-2 rounded-full text-xs font-extrabold text-slate-900 flex items-center gap-1.5" },
+                        react_1.default.createElement("span", null, MONTH_NAMES[selectedMonth]),
+                        react_1.default.createElement("span", { className: "text-indigo-700 font-mono" }, selectedYear)),
+                    react_1.default.createElement("button", { type: "button", onClick: () => handleShiftMonth(1), "aria-label": "Pr\u00F3ximo m\u00EAs", className: "btn-compact w-10 h-10 rounded-full liquid-glass-pill text-slate-700 hover:text-indigo-700 flex items-center justify-center cursor-pointer" },
+                        react_1.default.createElement(lucide_react_1.ChevronRight, { className: "w-4 h-4" })),
+                    selectedMonthKey !== currentMonthKey && (react_1.default.createElement("button", { type: "button", onClick: handleGoCurrentMonth, className: "min-h-[40px] px-3.5 py-2 rounded-full liquid-glass-pill text-xs font-bold text-indigo-700 hover:bg-white/75 flex items-center justify-center gap-1.5 cursor-pointer" },
+                        react_1.default.createElement(lucide_react_1.RotateCcw, { className: "w-3.5 h-3.5" }),
+                        react_1.default.createElement("span", null, "M\u00EAs Atual"))))),
+            react_1.default.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-3.5" },
+                react_1.default.createElement("div", { className: "rounded-2xl liquid-glass-subtle p-4" },
+                    react_1.default.createElement("span", { className: "text-[11px] font-bold uppercase tracking-wider text-slate-600 block" }, "Previsto no M\u00EAs"),
+                    react_1.default.createElement("p", { className: "text-xl sm:text-2xl font-black text-slate-900 font-mono mt-1" }, (0, financeEngine_1.formatBRL)(scheduleSummary.previsto)),
+                    react_1.default.createElement("span", { className: "text-[11px] font-semibold text-slate-600" },
+                        scheduleItems.length,
+                        " lan\u00E7amento(s) previsto(s)")),
+                react_1.default.createElement("div", { className: "rounded-2xl bg-emerald-500/10 border border-emerald-300/60 p-4" },
+                    react_1.default.createElement("span", { className: "text-[11px] font-bold uppercase tracking-wider text-emerald-800 block" }, "Total Pago no M\u00EAs"),
+                    react_1.default.createElement("p", { className: "text-xl sm:text-2xl font-black text-emerald-700 font-mono mt-1" }, (0, financeEngine_1.formatBRL)(scheduleSummary.pago)),
+                    react_1.default.createElement("span", { className: "text-[11px] font-semibold text-emerald-800/80" },
+                        scheduleSummary.pagoCount,
+                        " quitado(s)")),
+                react_1.default.createElement("div", { className: "rounded-2xl bg-amber-500/10 border border-amber-300/60 p-4" },
+                    react_1.default.createElement("span", { className: "text-[11px] font-bold uppercase tracking-wider text-amber-900 block" }, "Total Pendente no M\u00EAs"),
+                    react_1.default.createElement("p", { className: "text-xl sm:text-2xl font-black text-amber-800 font-mono mt-1" }, (0, financeEngine_1.formatBRL)(scheduleSummary.pendente)),
+                    react_1.default.createElement("span", { className: "text-[11px] font-semibold text-amber-900/80" },
+                        scheduleSummary.pendenteCount,
+                        " a pagar"))),
+            react_1.default.createElement("div", { className: "grid grid-cols-1 lg:grid-cols-12 gap-5 items-start" },
+                react_1.default.createElement("div", { className: "lg:col-span-5 rounded-2xl liquid-glass-subtle p-4 space-y-3" },
+                    react_1.default.createElement("div", { className: "flex items-center justify-between gap-2" },
+                        react_1.default.createElement("span", { className: "text-xs font-extrabold text-slate-900" }, "Vencimentos por Dia"),
+                        react_1.default.createElement("div", { className: "flex items-center gap-2.5 text-[10px] font-bold text-slate-600" },
+                            react_1.default.createElement("span", { className: "inline-flex items-center gap-1" },
+                                react_1.default.createElement("span", { className: "w-2 h-2 rounded-full bg-emerald-500" }),
+                                "Pago"),
+                            react_1.default.createElement("span", { className: "inline-flex items-center gap-1" },
+                                react_1.default.createElement("span", { className: "w-2 h-2 rounded-full bg-amber-500" }),
+                                "Pendente"),
+                            react_1.default.createElement("span", { className: "inline-flex items-center gap-1" },
+                                react_1.default.createElement("span", { className: "w-2 h-2 rounded-full bg-rose-500" }),
+                                "Atrasado"))),
+                    react_1.default.createElement("div", { className: "grid grid-cols-7 gap-1 text-center" },
+                        WEEKDAY_LABELS.map((wd) => (react_1.default.createElement("div", { key: wd, className: "text-[10px] font-extrabold uppercase tracking-wider text-slate-500 py-1" }, wd))),
+                        calendarCells.map((dayNum, idx) => {
+                            if (dayNum === null) {
+                                return react_1.default.createElement("div", { key: `empty-${idx}`, className: "h-10" });
+                            }
+                            const dayItems = itemsByDay.get(dayNum) || [];
+                            const hasItems = dayItems.length > 0;
+                            const allPaid = hasItems && dayItems.every((it) => it.isPaid);
+                            const hasOverdue = hasItems && dayItems.some((it) => it.isOverdue);
+                            const isSelected = selectedDay === dayNum;
+                            const cellIso = `${selectedMonthKey}-${String(dayNum).padStart(2, '0')}`;
+                            const isToday = cellIso === todayIso;
+                            return (react_1.default.createElement("button", { key: dayNum, type: "button", onClick: () => setSelectedDay((prev) => (prev === dayNum ? null : dayNum)), className: `btn-compact relative h-10 rounded-xl text-xs font-bold flex flex-col items-center justify-center transition cursor-pointer ${isSelected
+                                    ? 'bg-indigo-600 text-white shadow-md ring-2 ring-indigo-300'
+                                    : hasItems
+                                        ? 'bg-white/75 hover:bg-white text-slate-900 border border-white/80'
+                                        : 'bg-white/30 hover:bg-white/55 text-slate-600'} ${isToday && !isSelected ? 'ring-2 ring-indigo-400/70' : ''}`, title: hasItems
+                                    ? `${dayItems.length} pagamento(s) no dia ${String(dayNum).padStart(2, '0')}`
+                                    : `Dia ${String(dayNum).padStart(2, '0')}` },
+                                react_1.default.createElement("span", { className: "font-mono leading-none" }, dayNum),
+                                hasItems && (react_1.default.createElement("span", { className: `w-1.5 h-1.5 rounded-full mt-1 ${isSelected
+                                        ? 'bg-white'
+                                        : allPaid
+                                            ? 'bg-emerald-500'
+                                            : hasOverdue
+                                                ? 'bg-rose-500'
+                                                : 'bg-amber-500'}` }))));
+                        }))),
+                react_1.default.createElement("div", { className: "lg:col-span-7 rounded-2xl liquid-glass-subtle p-4 space-y-3" },
+                    react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-white/60" },
+                        react_1.default.createElement("div", { className: "flex items-center gap-2" },
+                            react_1.default.createElement(lucide_react_1.CalendarClock, { className: "w-4 h-4 text-indigo-700" }),
+                            react_1.default.createElement("span", { className: "text-xs font-extrabold text-slate-900" }, selectedDay != null
+                                ? `Vencimentos do Dia ${String(selectedDay).padStart(2, '0')}/${String(selectedMonth + 1).padStart(2, '0')}`
+                                : `Cronograma Completo (${MONTH_NAMES[selectedMonth]}/${selectedYear})`)),
+                        react_1.default.createElement("button", { type: "button", onClick: () => setSelectedDay(null), className: `btn-compact px-3 py-1 rounded-full text-[11px] font-bold transition cursor-pointer ${selectedDay == null
+                                ? 'bg-indigo-600 text-white shadow-sm'
+                                : 'liquid-glass-pill text-slate-700 hover:text-indigo-700'}` }, "Todos os dias")),
+                    filteredScheduleItems.length === 0 ? (react_1.default.createElement("div", { className: "p-7 rounded-2xl border border-dashed border-white/75 text-center text-xs font-medium text-slate-600" }, selectedDay != null
+                        ? `Nenhum pagamento previsto para o dia ${String(selectedDay).padStart(2, '0')}.`
+                        : 'Nenhum colaborador ou prestador previsto para este mês.')) : (react_1.default.createElement("div", { className: "space-y-2 max-h-[340px] overflow-y-auto pr-1" }, filteredScheduleItems.map((item) => {
+                        const isBusy = togglingKey === item.key;
+                        const mod = financeEngine_1.PAYMENT_MODALITY_META[item.paymentModality];
+                        return (react_1.default.createElement("div", { key: item.key, className: "p-3 rounded-2xl bg-white/55 border border-white/75 flex flex-wrap items-center justify-between gap-3" },
+                            react_1.default.createElement("div", { className: "min-w-0 space-y-1" },
+                                react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-1.5" },
+                                    react_1.default.createElement("span", { className: "px-2 py-0.5 rounded-full text-[10px] font-mono font-extrabold bg-indigo-500/15 text-indigo-800 border border-indigo-300/60" },
+                                        "Dia ",
+                                        String(item.day).padStart(2, '0')),
+                                    react_1.default.createElement("span", { className: `px-2 py-0.5 rounded-full text-[10px] font-bold border ${item.kind === 'funcionario'
+                                            ? 'bg-sky-500/15 text-sky-900 border-sky-300/60'
+                                            : 'bg-violet-500/15 text-violet-900 border-violet-300/60'}` }, item.kind === 'funcionario' ? 'Funcionário' : 'Prestador'),
+                                    react_1.default.createElement("span", { className: "text-xs font-extrabold text-slate-900 truncate" }, item.name)),
+                                react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-1.5 text-[11px] font-medium text-slate-600" },
+                                    react_1.default.createElement("span", { className: "truncate" }, item.subtitle),
+                                    react_1.default.createElement("span", null, "\u2022"),
+                                    react_1.default.createElement("span", { className: "font-semibold" }, mod?.short || item.paymentModality),
+                                    item.isOverdue && (react_1.default.createElement("span", { className: "px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/15 text-rose-700 border border-rose-300/60" }, "Atrasado")))),
+                            react_1.default.createElement("div", { className: "flex items-center gap-2.5 ml-auto" },
+                                react_1.default.createElement("span", { className: "text-xs sm:text-sm font-black font-mono text-slate-900" }, (0, financeEngine_1.formatBRL)(item.amount)),
+                                (item.kind === 'prestador' && onToggleProviderPayment) ||
+                                    (item.kind === 'funcionario' && onTogglePayrollPayment) ? (react_1.default.createElement("button", { type: "button", disabled: Boolean(togglingKey), onClick: () => {
+                                        const nextStatus = item.isPaid ? 'pendente' : 'pago';
+                                        if (item.kind === 'prestador' && item.provider) {
+                                            void handleToggleProvider(item.provider, nextStatus);
+                                        }
+                                        else if (item.kind === 'funcionario' && item.employee) {
+                                            void handleToggleEmployee(item.employee, nextStatus);
+                                        }
+                                    }, title: item.isPaid
+                                        ? 'Clique para estornar para Pendente'
+                                        : 'Clique para marcar como Pago e lançar nas Despesas', className: `btn-compact min-h-[34px] px-3 py-1.5 rounded-full text-[11px] font-extrabold border inline-flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed ${item.isPaid
+                                        ? 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-900 border-emerald-400/70'
+                                        : item.isOverdue
+                                            ? 'bg-rose-500/20 hover:bg-emerald-500/20 text-rose-900 hover:text-emerald-900 border-rose-400/70'
+                                            : 'bg-amber-500/20 hover:bg-emerald-500/20 text-amber-900 hover:text-emerald-900 border-amber-400/70'}` },
+                                    isBusy ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-3.5 h-3.5 animate-spin" })) : item.isPaid ? (react_1.default.createElement(lucide_react_1.CheckCircle2, { className: "w-3.5 h-3.5 text-emerald-700" })) : (react_1.default.createElement(lucide_react_1.Clock, { className: "w-3.5 h-3.5" })),
+                                    react_1.default.createElement("span", null, item.isPaid ? 'Pago' : 'Pendente'))) : (react_1.default.createElement("span", { className: `px-2.5 py-1 rounded-full text-[10px] font-bold border ${item.isPaid
+                                        ? PROVIDER_STATUS_META.pago.badgeClass
+                                        : item.isOverdue
+                                            ? PROVIDER_STATUS_META.atrasado.badgeClass
+                                            : PROVIDER_STATUS_META.pendente.badgeClass}` }, item.isPaid
+                                    ? 'Pago'
+                                    : item.isOverdue
+                                        ? 'Atrasado'
+                                        : 'Pendente')))));
+                    })))))),
         react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-5 flex flex-wrap items-center justify-between gap-4" },
             react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
                 react_1.default.createElement("button", { type: "button", onClick: () => setActiveTab('prestadores'), className: `px-4 py-2 rounded-full text-xs font-bold inline-flex items-center gap-2 transition cursor-pointer ${activeTab === 'prestadores'
@@ -6168,7 +6888,7 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
                     react_1.default.createElement("h3", { className: "text-sm font-extrabold text-slate-900" }, editProvId
                         ? `Editar Prestador ${editProvId}`
                         : 'Cadastrar Prestador de Serviço'),
-                    editProvId && (react_1.default.createElement("button", { type: "button", onClick: resetProviderForm, className: "p-1.5 rounded-full liquid-glass-pill text-slate-600 cursor-pointer" },
+                    editProvId && (react_1.default.createElement("button", { type: "button", onClick: resetProviderForm, className: "btn-compact w-8 h-8 rounded-full liquid-glass-pill text-slate-600 flex items-center justify-center cursor-pointer", "aria-label": "Cancelar edi\u00E7\u00E3o" },
                         react_1.default.createElement(lucide_react_1.X, { className: "w-4 h-4" })))),
                 react_1.default.createElement("div", null,
                     react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Nome"),
@@ -6183,15 +6903,28 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
                             react_1.default.createElement("span", { className: "absolute left-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-600" }, "R$"),
                             react_1.default.createElement("input", { type: "text", inputMode: "numeric", required: true, value: (0, financeEngine_1.formatCurrencyMask)(provAmount), onChange: (e) => setProvAmount((0, financeEngine_1.parseCurrencyMask)(e.target.value)), className: `${inputClass} pl-9 text-right font-mono font-bold` }))),
                     react_1.default.createElement("div", null,
-                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Vencimento"),
-                        react_1.default.createElement("input", { type: "date", required: true, value: provDueDate, onChange: (e) => setProvDueDate(e.target.value), className: `${inputClass} font-mono` }))),
+                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Dia de Recebimento (1\u201331)"),
+                        react_1.default.createElement("input", { type: "number", min: 1, max: 31, step: 1, required: true, value: provPaymentDay, onChange: (e) => handleProviderPaymentDayChange(e.target.value), className: `${inputClass} font-mono text-center font-bold` }))),
                 react_1.default.createElement("div", { className: "grid grid-cols-2 gap-3" },
                     react_1.default.createElement("div", null,
-                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Forma de Pagamento"),
-                        react_1.default.createElement("select", { value: provModality, onChange: (e) => setProvModality(e.target.value), className: inputClass }, Object.keys(financeEngine_1.PAYMENT_MODALITY_META).map((mod) => (react_1.default.createElement("option", { key: mod, value: mod }, financeEngine_1.PAYMENT_MODALITY_META[mod].label))))),
+                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Vencimento"),
+                        react_1.default.createElement("input", { type: "date", required: true, value: provDueDate, onChange: (e) => handleProviderDueDateChange(e.target.value), className: `${inputClass} font-mono` })),
                     react_1.default.createElement("div", null,
-                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Status"),
-                        react_1.default.createElement("select", { value: provStatus, onChange: (e) => setProvStatus(e.target.value), className: inputClass }, Object.entries(PROVIDER_STATUS_META).map(([k, v]) => (react_1.default.createElement("option", { key: k, value: k }, v.label)))))),
+                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Forma de Pagamento"),
+                        react_1.default.createElement("select", { value: provModality, onChange: (e) => setProvModality(e.target.value), className: inputClass }, Object.keys(financeEngine_1.PAYMENT_MODALITY_META).map((mod) => (react_1.default.createElement("option", { key: mod, value: mod }, financeEngine_1.PAYMENT_MODALITY_META[mod].label)))))),
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Status do Pagamento"),
+                    react_1.default.createElement("div", { className: "grid grid-cols-2 gap-2" },
+                        react_1.default.createElement("button", { type: "button", onClick: () => setProvStatus('pendente'), className: `min-h-[42px] px-3 py-2 rounded-2xl text-xs font-extrabold border flex items-center justify-center gap-1.5 transition cursor-pointer ${provStatus !== 'pago'
+                                ? 'bg-amber-500/20 text-amber-900 border-amber-400/80 shadow-sm'
+                                : 'liquid-glass-pill text-slate-600'}` },
+                            react_1.default.createElement(lucide_react_1.Clock, { className: "w-3.5 h-3.5" }),
+                            react_1.default.createElement("span", null, "Pendente")),
+                        react_1.default.createElement("button", { type: "button", onClick: () => setProvStatus('pago'), className: `min-h-[42px] px-3 py-2 rounded-2xl text-xs font-extrabold border flex items-center justify-center gap-1.5 transition cursor-pointer ${provStatus === 'pago'
+                                ? 'bg-emerald-500/20 text-emerald-900 border-emerald-400/80 shadow-sm'
+                                : 'liquid-glass-pill text-slate-600'}` },
+                            react_1.default.createElement(lucide_react_1.CheckCircle2, { className: "w-3.5 h-3.5" }),
+                            react_1.default.createElement("span", null, "Pago")))),
                 react_1.default.createElement("button", { type: "submit", disabled: isSubmittingProv, className: "w-full py-3 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 to-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed text-white border border-white/40 shadow-md flex items-center justify-center gap-2 cursor-pointer" }, isSubmittingProv ? (react_1.default.createElement(react_1.default.Fragment, null,
                     react_1.default.createElement(lucide_react_1.Loader2, { className: "w-4 h-4 animate-spin" }),
                     react_1.default.createElement("span", null, editProvId ? 'Salvando...' : 'Adicionando...'))) : (react_1.default.createElement(react_1.default.Fragment, null,
@@ -6200,28 +6933,51 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
             react_1.default.createElement("div", { className: "lg:col-span-7 liquid-glass rounded-[28px] p-6 space-y-3" },
                 react_1.default.createElement("h3", { className: "text-sm font-extrabold text-slate-900 pb-2 border-b border-white/60" }, "Prestadores Cadastrados"),
                 providers.length === 0 ? (react_1.default.createElement("div", { className: "p-8 rounded-2xl border border-dashed border-white/70 text-center text-xs font-medium text-slate-600" }, "Nenhum prestador de servi\u00E7o cadastrado.")) : (providers.map((p) => {
-                    const st = PROVIDER_STATUS_META[p.status];
+                    const isPaid = isProviderPaidInMonth(p, selectedMonthKey);
+                    const dayNum = clampDay(p.paymentDay || Number((p.dueDate || '').slice(8, 10)) || 5);
+                    const scheduledDate = (0, financeEngine_1.resolveMonthPaymentDate)(selectedMonthKey, dayNum);
+                    const effStatus = isPaid
+                        ? 'pago'
+                        : scheduledDate < todayIso
+                            ? 'atrasado'
+                            : 'pendente';
+                    const st = PROVIDER_STATUS_META[effStatus];
                     const mod = financeEngine_1.PAYMENT_MODALITY_META[p.paymentModality];
+                    const isBusyToggle = togglingKey === `prov:${p.id}`;
                     return (react_1.default.createElement("div", { key: p.id, className: "p-4 rounded-2xl liquid-glass-subtle flex flex-wrap items-center justify-between gap-3" },
                         react_1.default.createElement("div", { className: "space-y-1" },
                             react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
                                 react_1.default.createElement("span", { className: "text-sm font-extrabold text-slate-900" }, p.name),
+                                react_1.default.createElement("span", { className: "px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-indigo-500/15 text-indigo-800 border border-indigo-300/60" },
+                                    "Dia ",
+                                    String(dayNum).padStart(2, '0')),
                                 react_1.default.createElement("span", { className: `px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${st.badgeClass}` }, st.label),
                                 react_1.default.createElement("span", { className: `px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${mod?.badgeClass}` }, mod?.label)),
                             react_1.default.createElement("p", { className: "text-xs font-medium text-slate-700" },
                                 p.service,
                                 " \u2022 Vencimento ",
                                 (0, financeEngine_1.formatDateBR)(p.dueDate))),
-                        react_1.default.createElement("div", { className: "flex items-center gap-2" },
+                        react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
                             react_1.default.createElement("span", { className: "text-sm font-black font-mono text-slate-900 mr-1" }, (0, financeEngine_1.formatBRL)(p.amount)),
+                            onToggleProviderPayment && (react_1.default.createElement("button", { type: "button", disabled: Boolean(togglingKey), onClick: () => void handleToggleProvider(p, isPaid ? 'pendente' : 'pago'), title: isPaid
+                                    ? 'Reabrir como Pendente neste mês'
+                                    : 'Marcar como Pago neste mês', className: `btn-compact min-h-[32px] px-3 py-1 rounded-full text-[11px] font-extrabold border inline-flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-60 ${isPaid
+                                    ? 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-900 border-emerald-400/70'
+                                    : 'bg-amber-500/20 hover:bg-emerald-500/20 text-amber-900 hover:text-emerald-900 border-amber-400/70'}` },
+                                isBusyToggle ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-3.5 h-3.5 animate-spin" })) : isPaid ? (react_1.default.createElement(lucide_react_1.CheckCircle2, { className: "w-3.5 h-3.5 text-emerald-700" })) : (react_1.default.createElement(lucide_react_1.Clock, { className: "w-3.5 h-3.5" })),
+                                react_1.default.createElement("span", null, isPaid ? 'Pago' : 'Pendente'))),
                             react_1.default.createElement("button", { type: "button", onClick: () => {
+                                    const provComp = (p.dueDate || selectedMonthKey).slice(0, 7);
                                     setEditProvId(p.id);
                                     setProvName(p.name);
                                     setProvService(p.service);
                                     setProvAmount(p.amount);
                                     setProvModality(p.paymentModality);
                                     setProvDueDate(p.dueDate);
-                                    setProvStatus(p.status);
+                                    setProvPaymentDay(dayNum);
+                                    setProvStatus(isProviderPaidInMonth(p, provComp)
+                                        ? 'pago'
+                                        : 'pendente');
                                 }, className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-indigo-500/20 text-slate-600 hover:text-indigo-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Editar prestador", "aria-label": "Editar prestador" },
                                 react_1.default.createElement(lucide_react_1.Edit3, { className: "w-3.5 h-3.5" })),
                             react_1.default.createElement("button", { type: "button", disabled: Boolean(deletingKey), onClick: () => void handleDeleteProv(p.id), className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir prestador", "aria-label": "Excluir prestador" }, deletingKey === `prov:${p.id}` ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-3.5 h-3.5 animate-spin text-rose-600" })) : (react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" }))))));
@@ -6231,7 +6987,7 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
                     react_1.default.createElement("h3", { className: "text-sm font-extrabold text-slate-900" }, editEmpId
                         ? `Editar Funcionário ${editEmpId}`
                         : 'Cadastrar Funcionário'),
-                    editEmpId && (react_1.default.createElement("button", { type: "button", onClick: resetEmployeeForm, className: "p-1.5 rounded-full liquid-glass-pill text-slate-600 cursor-pointer" },
+                    editEmpId && (react_1.default.createElement("button", { type: "button", onClick: resetEmployeeForm, className: "btn-compact w-8 h-8 rounded-full liquid-glass-pill text-slate-600 flex items-center justify-center cursor-pointer", "aria-label": "Cancelar edi\u00E7\u00E3o" },
                         react_1.default.createElement(lucide_react_1.X, { className: "w-4 h-4" })))),
                 react_1.default.createElement("div", null,
                     react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Nome"),
@@ -6248,6 +7004,34 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
                     react_1.default.createElement("div", null,
                         react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Data de Admiss\u00E3o"),
                         react_1.default.createElement("input", { type: "date", required: true, value: empAdmissionDate, onChange: (e) => setEmpAdmissionDate(e.target.value), className: `${inputClass} font-mono` }))),
+                react_1.default.createElement("div", { className: "grid grid-cols-2 gap-3" },
+                    react_1.default.createElement("div", null,
+                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Dia de Recebimento (1\u201331)"),
+                        react_1.default.createElement("input", { type: "number", min: 1, max: 31, step: 1, required: true, value: empPaymentDay, onChange: (e) => {
+                                const digits = e.target.value.replace(/\D/g, '');
+                                setEmpPaymentDay(digits ? clampDay(Number(digits)) : 1);
+                            }, className: `${inputClass} font-mono text-center font-bold` })),
+                    react_1.default.createElement("div", null,
+                        react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Forma de Pagamento"),
+                        react_1.default.createElement("select", { value: empModality, onChange: (e) => setEmpModality(e.target.value), className: inputClass }, PAYROLL_PAYMENT_MODALITIES.map((mod) => (react_1.default.createElement("option", { key: mod, value: mod }, financeEngine_1.PAYMENT_MODALITY_META[mod].label)))))),
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" },
+                        "Status do Pagamento (",
+                        MONTH_NAMES[selectedMonth],
+                        "/",
+                        selectedYear,
+                        ")"),
+                    react_1.default.createElement("div", { className: "grid grid-cols-2 gap-2" },
+                        react_1.default.createElement("button", { type: "button", onClick: () => setEmpPaymentStatus('pendente'), className: `min-h-[42px] px-3 py-2 rounded-2xl text-xs font-extrabold border flex items-center justify-center gap-1.5 transition cursor-pointer ${empPaymentStatus === 'pendente'
+                                ? 'bg-amber-500/20 text-amber-900 border-amber-400/80 shadow-sm'
+                                : 'liquid-glass-pill text-slate-600'}` },
+                            react_1.default.createElement(lucide_react_1.Clock, { className: "w-3.5 h-3.5" }),
+                            react_1.default.createElement("span", null, "Pendente")),
+                        react_1.default.createElement("button", { type: "button", onClick: () => setEmpPaymentStatus('pago'), className: `min-h-[42px] px-3 py-2 rounded-2xl text-xs font-extrabold border flex items-center justify-center gap-1.5 transition cursor-pointer ${empPaymentStatus === 'pago'
+                                ? 'bg-emerald-500/20 text-emerald-900 border-emerald-400/80 shadow-sm'
+                                : 'liquid-glass-pill text-slate-600'}` },
+                            react_1.default.createElement(lucide_react_1.CheckCircle2, { className: "w-3.5 h-3.5" }),
+                            react_1.default.createElement("span", null, "Pago")))),
                 react_1.default.createElement("button", { type: "submit", disabled: isSubmittingEmp, className: "w-full py-3 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-600 to-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed text-white border border-white/40 shadow-md flex items-center justify-center gap-2 cursor-pointer" }, isSubmittingEmp ? (react_1.default.createElement(react_1.default.Fragment, null,
                     react_1.default.createElement(lucide_react_1.Loader2, { className: "w-4 h-4 animate-spin" }),
                     react_1.default.createElement("span", null, editEmpId ? 'Salvando...' : 'Adicionando...'))) : (react_1.default.createElement(react_1.default.Fragment, null,
@@ -6255,24 +7039,55 @@ const CollaboratorsSubsection = ({ providers, payrollEmployees, onAddProvider, o
                     react_1.default.createElement("span", null, editEmpId ? 'Salvar Funcionário' : 'Adicionar Funcionário'))))),
             react_1.default.createElement("div", { className: "lg:col-span-7 liquid-glass rounded-[28px] p-6 space-y-3" },
                 react_1.default.createElement("h3", { className: "text-sm font-extrabold text-slate-900 pb-2 border-b border-white/60" }, "Quadro de Funcion\u00E1rios"),
-                payrollEmployees.length === 0 ? (react_1.default.createElement("div", { className: "p-8 rounded-2xl border border-dashed border-white/70 text-center text-xs font-medium text-slate-600" }, "Nenhum funcion\u00E1rio cadastrado.")) : (payrollEmployees.map((emp) => (react_1.default.createElement("div", { key: emp.id, className: "p-4 rounded-2xl liquid-glass-subtle flex flex-wrap items-center justify-between gap-3" },
-                    react_1.default.createElement("div", { className: "space-y-1" },
-                        react_1.default.createElement("span", { className: "text-sm font-extrabold text-slate-900 block" }, emp.name),
-                        react_1.default.createElement("p", { className: "text-xs font-medium text-slate-700" },
-                            emp.roleTitle,
-                            " \u2022 Admiss\u00E3o ",
-                            (0, financeEngine_1.formatDateBR)(emp.admissionDate))),
-                    react_1.default.createElement("div", { className: "flex items-center gap-2" },
-                        react_1.default.createElement("span", { className: "text-sm font-black font-mono text-slate-900 mr-1" }, (0, financeEngine_1.formatBRL)(emp.salary)),
-                        react_1.default.createElement("button", { type: "button", onClick: () => {
-                                setEditEmpId(emp.id);
-                                setEmpName(emp.name);
-                                setEmpRoleTitle(emp.roleTitle);
-                                setEmpSalary(emp.salary);
-                                setEmpAdmissionDate(emp.admissionDate);
-                            }, className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-indigo-500/20 text-slate-600 hover:text-indigo-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Editar funcion\u00E1rio", "aria-label": "Editar funcion\u00E1rio" },
-                            react_1.default.createElement(lucide_react_1.Edit3, { className: "w-3.5 h-3.5" })),
-                        react_1.default.createElement("button", { type: "button", disabled: Boolean(deletingKey), onClick: () => void handleDeleteEmp(emp.id), className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir funcion\u00E1rio", "aria-label": "Excluir funcion\u00E1rio" }, deletingKey === `emp:${emp.id}` ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-3.5 h-3.5 animate-spin text-rose-600" })) : (react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" })))))))))))));
+                payrollEmployees.length === 0 ? (react_1.default.createElement("div", { className: "p-8 rounded-2xl border border-dashed border-white/70 text-center text-xs font-medium text-slate-600" }, "Nenhum funcion\u00E1rio cadastrado.")) : (payrollEmployees.map((emp) => {
+                    const isPaid = isEmployeePaidInMonth(emp, selectedMonthKey);
+                    const dayNum = clampDay(emp.paymentDay || 5);
+                    const scheduledDate = (0, financeEngine_1.resolveMonthPaymentDate)(selectedMonthKey, dayNum);
+                    const effStatus = isPaid
+                        ? 'pago'
+                        : scheduledDate < todayIso
+                            ? 'atrasado'
+                            : 'pendente';
+                    const st = PROVIDER_STATUS_META[effStatus];
+                    const mod = financeEngine_1.PAYMENT_MODALITY_META[emp.paymentModality || 'pix'];
+                    const isBusyToggle = togglingKey === `emp:${emp.id}`;
+                    return (react_1.default.createElement("div", { key: emp.id, className: "p-4 rounded-2xl liquid-glass-subtle flex flex-wrap items-center justify-between gap-3" },
+                        react_1.default.createElement("div", { className: "space-y-1" },
+                            react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
+                                react_1.default.createElement("span", { className: "text-sm font-extrabold text-slate-900" }, emp.name),
+                                react_1.default.createElement("span", { className: "px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-indigo-500/15 text-indigo-800 border border-indigo-300/60" },
+                                    "Dia ",
+                                    String(dayNum).padStart(2, '0')),
+                                react_1.default.createElement("span", { className: `px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${st.badgeClass}` }, st.label),
+                                react_1.default.createElement("span", { className: `px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${mod?.badgeClass}` }, mod?.short || 'Pix')),
+                            react_1.default.createElement("p", { className: "text-xs font-medium text-slate-700" },
+                                emp.roleTitle,
+                                " \u2022 Admiss\u00E3o ",
+                                (0, financeEngine_1.formatDateBR)(emp.admissionDate))),
+                        react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
+                            react_1.default.createElement("span", { className: "text-sm font-black font-mono text-slate-900 mr-1" }, (0, financeEngine_1.formatBRL)(emp.salary)),
+                            onTogglePayrollPayment && (react_1.default.createElement("button", { type: "button", disabled: Boolean(togglingKey), onClick: () => void handleToggleEmployee(emp, isPaid ? 'pendente' : 'pago'), title: isPaid
+                                    ? 'Reabrir salário como Pendente neste mês'
+                                    : 'Marcar salário como Pago neste mês', className: `btn-compact min-h-[32px] px-3 py-1 rounded-full text-[11px] font-extrabold border inline-flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-60 ${isPaid
+                                    ? 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-900 border-emerald-400/70'
+                                    : 'bg-amber-500/20 hover:bg-emerald-500/20 text-amber-900 hover:text-emerald-900 border-amber-400/70'}` },
+                                isBusyToggle ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-3.5 h-3.5 animate-spin" })) : isPaid ? (react_1.default.createElement(lucide_react_1.CheckCircle2, { className: "w-3.5 h-3.5 text-emerald-700" })) : (react_1.default.createElement(lucide_react_1.Clock, { className: "w-3.5 h-3.5" })),
+                                react_1.default.createElement("span", null, isPaid ? 'Pago' : 'Pendente'))),
+                            react_1.default.createElement("button", { type: "button", onClick: () => {
+                                    setEditEmpId(emp.id);
+                                    setEmpName(emp.name);
+                                    setEmpRoleTitle(emp.roleTitle);
+                                    setEmpSalary(emp.salary);
+                                    setEmpAdmissionDate(emp.admissionDate);
+                                    setEmpPaymentDay(dayNum);
+                                    setEmpModality(emp.paymentModality || 'pix');
+                                    setEmpPaymentStatus(isPaid ? 'pago' : 'pendente');
+                                    setEmpEditPaidAt(emp.paidAt);
+                                    setEmpEditPaidComp(selectedMonthKey);
+                                }, className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-indigo-500/20 text-slate-600 hover:text-indigo-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Editar funcion\u00E1rio", "aria-label": "Editar funcion\u00E1rio" },
+                                react_1.default.createElement(lucide_react_1.Edit3, { className: "w-3.5 h-3.5" })),
+                            react_1.default.createElement("button", { type: "button", disabled: Boolean(deletingKey), onClick: () => void handleDeleteEmp(emp.id), className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir funcion\u00E1rio", "aria-label": "Excluir funcion\u00E1rio" }, deletingKey === `emp:${emp.id}` ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-3.5 h-3.5 animate-spin text-rose-600" })) : (react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" }))))));
+                })))))));
 };
 exports.CollaboratorsSubsection = CollaboratorsSubsection;
 
@@ -6594,7 +7409,6 @@ const MonthlyReportSubsection = ({ orders, despesas, serviceProviders, payrollEm
     const [selectedYear, setSelectedYear] = (0, react_1.useState)(initialYear);
     const [selectedMonth, setSelectedMonth] = (0, react_1.useState)(initialMonth);
     const selectedMonthKey = getMonthKey(selectedYear, selectedMonth);
-    const selectedMonthEnd = `${selectedMonthKey}-31`;
     const availableYears = (0, react_1.useMemo)(() => {
         const years = new Set([initialYear - 1, initialYear, initialYear + 1]);
         orders.forEach((o) => {
@@ -6603,7 +7417,10 @@ const MonthlyReportSubsection = ({ orders, despesas, serviceProviders, payrollEm
                 years.add(y);
         });
         despesas.forEach((d) => {
-            const y = Number((d.data_competencia || '').slice(0, 4));
+            const refDate = d.origem_tipo && d.competencia_referencia
+                ? d.competencia_referencia
+                : d.data_competencia || '';
+            const y = Number(refDate.slice(0, 4));
             if (y > 2000)
                 years.add(y);
         });
@@ -6636,7 +7453,9 @@ const MonthlyReportSubsection = ({ orders, despesas, serviceProviders, payrollEm
         for (const d of despesas) {
             if (d.deleted_at || d.status === 'cancelado')
                 continue;
-            const key = (d.data_competencia || '').slice(0, 7);
+            const key = (d.origem_tipo && d.competencia_referencia
+                ? d.competencia_referencia
+                : d.data_competencia || '').slice(0, 7);
             const arr = expensesMap.get(key);
             if (arr)
                 arr.push(d);
@@ -6668,18 +7487,31 @@ const MonthlyReportSubsection = ({ orders, despesas, serviceProviders, payrollEm
         };
     }, [orders, despesas, serviceProviders, investments]);
     const computeMonthTotals = (monthKey) => {
-        const monthEnd = `${monthKey}-31`;
         const paidOrders = groupedByMonth.paidOrdersMap.get(monthKey) || [];
         const unpaidOrdersInMonth = groupedByMonth.unpaidOrdersMap.get(monthKey) || [];
         const totalEntradas = (0, financeEngine_1.roundCurrencyBRL)(paidOrders.reduce((sum, o) => sum + (Number(o.amount) || 0), 0));
         const totalNaoPagoMes = (0, financeEngine_1.roundCurrencyBRL)(unpaidOrdersInMonth.reduce((sum, o) => sum + (Number(o.amount) || 0), 0));
         const monthExpenses = groupedByMonth.expensesMap.get(monthKey) || [];
-        const totalDespesas = (0, financeEngine_1.roundCurrencyBRL)(monthExpenses.reduce((sum, d) => sum + (Number(d.valor) || 0), 0));
+        // Separa despesas operacionais das despesas sincronizadas de colaboradores para evitar dupla contagem
+        const operationalExpenses = monthExpenses.filter((d) => !d.origem_tipo);
+        const allProviderExpenses = monthExpenses.filter((d) => d.origem_tipo === 'prestador');
+        const providerExpenses = allProviderExpenses.filter((d) => d.status === 'pago');
+        const allPayrollExpenses = monthExpenses.filter((d) => d.origem_tipo === 'funcionario');
+        const payrollExpenses = allPayrollExpenses.filter((d) => d.status === 'pago');
+        const totalDespesas = (0, financeEngine_1.roundCurrencyBRL)(operationalExpenses.reduce((sum, d) => sum + (Number(d.valor) || 0), 0));
+        const syncedProviderIds = new Set(allProviderExpenses.map((d) => d.origem_id).filter(Boolean));
         const monthProviders = groupedByMonth.providersMap.get(monthKey) || [];
-        const totalPrestadores = (0, financeEngine_1.roundCurrencyBRL)(monthProviders.reduce((sum, p) => sum + (Number(p.amount) || 0), 0));
-        // Saídas: Folha de funcionários admitidos até o mês selecionado
-        const activePayroll = payrollEmployees.filter((emp) => !emp.admissionDate || emp.admissionDate.slice(0, 10) <= monthEnd);
-        const totalFolha = (0, financeEngine_1.roundCurrencyBRL)(activePayroll.reduce((sum, emp) => sum + (Number(emp.salary) || 0), 0));
+        const legacyPaidProviders = monthProviders.filter((p) => p.status === 'pago' && (!p.dbUuid || !syncedProviderIds.has(p.dbUuid)));
+        const totalPrestadores = (0, financeEngine_1.roundCurrencyBRL)(providerExpenses.reduce((sum, d) => sum + (Number(d.valor) || 0), 0) +
+            legacyPaidProviders.reduce((sum, p) => sum + (Number(p.amount) || 0), 0));
+        const paidProvidersCount = providerExpenses.length + legacyPaidProviders.length;
+        const syncedPayrollIds = new Set(allPayrollExpenses.map((d) => d.origem_id).filter(Boolean));
+        const legacyPaidPayroll = payrollEmployees.filter((emp) => emp.paymentStatus === 'pago' &&
+            (emp.paidCompetence || '').slice(0, 7) === monthKey &&
+            (!emp.dbUuid || !syncedPayrollIds.has(emp.dbUuid)));
+        const totalFolha = (0, financeEngine_1.roundCurrencyBRL)(payrollExpenses.reduce((sum, d) => sum + (Number(d.valor) || 0), 0) +
+            legacyPaidPayroll.reduce((sum, emp) => sum + (Number(emp.salary) || 0), 0));
+        const paidPayrollCount = payrollExpenses.length + legacyPaidPayroll.length;
         // Investimentos lançados no mês (informativo + detalhamento)
         const monthInvestments = groupedByMonth.investmentsMap.get(monthKey) || [];
         const totalInvestimentos = (0, financeEngine_1.roundCurrencyBRL)(monthInvestments.reduce((sum, inv) => sum + (Number(inv.investedAmount) || 0), 0));
@@ -6690,11 +7522,15 @@ const MonthlyReportSubsection = ({ orders, despesas, serviceProviders, payrollEm
             unpaidOrdersInMonth,
             totalEntradas,
             totalNaoPagoMes,
-            monthExpenses,
+            operationalExpenses,
+            providerExpenses,
+            payrollExpenses,
+            legacyPaidProviders,
+            legacyPaidPayroll,
+            paidProvidersCount,
+            paidPayrollCount,
             totalDespesas,
-            monthProviders,
             totalPrestadores,
-            activePayroll,
             totalFolha,
             monthInvestments,
             totalInvestimentos,
@@ -6726,9 +7562,9 @@ const MonthlyReportSubsection = ({ orders, despesas, serviceProviders, payrollEm
     }, [last6Months]);
     const expensesByCategory = (0, react_1.useMemo)(() => {
         const map = new Map();
-        for (const exp of report.monthExpenses) {
-            const meta = financeEngine_1.EXPENSE_CATEGORY_MAP[exp.categoria];
-            const key = exp.categoria;
+        for (const exp of report.operationalExpenses) {
+            const key = (0, financeEngine_1.normalizeExpenseCategory)(exp.categoria);
+            const meta = financeEngine_1.EXPENSE_CATEGORY_MAP[key];
             const cur = map.get(key) || {
                 label: meta?.label || key,
                 colorHex: meta?.colorHex || '#6366f1',
@@ -6740,7 +7576,7 @@ const MonthlyReportSubsection = ({ orders, despesas, serviceProviders, payrollEm
             map.set(key, cur);
         }
         return Array.from(map.values()).sort((a, b) => b.total - a.total);
-    }, [report.monthExpenses]);
+    }, [report.operationalExpenses]);
     const handleShiftMonth = (delta) => {
         const dt = new Date(selectedYear, selectedMonth + delta, 1);
         setSelectedYear(dt.getFullYear());
@@ -6772,16 +7608,57 @@ const MonthlyReportSubsection = ({ orders, despesas, serviceProviders, payrollEm
                 esc((0, financeEngine_1.formatDecimalBR)(o.amount)),
             ].join(';')),
             '',
-            'SAÍDAS — DESPESAS DO MÊS',
+            'SAÍDAS — DESPESAS OPERACIONAIS DO MÊS',
             'Data;Categoria;Descrição;Fornecedor;Status;Valor (R$)',
-            ...report.monthExpenses.map((d) => [
-                esc((0, financeEngine_1.formatDateBR)(d.data_competencia)),
-                esc(financeEngine_1.EXPENSE_CATEGORY_MAP[d.categoria]?.label || d.categoria),
-                esc(d.descricao || ''),
-                esc(d.fornecedor || ''),
-                esc(d.status),
-                esc((0, financeEngine_1.formatDecimalBR)(d.valor)),
-            ].join(';')),
+            ...report.operationalExpenses.map((d) => {
+                const normCat = (0, financeEngine_1.normalizeExpenseCategory)(d.categoria);
+                return [
+                    esc((0, financeEngine_1.formatDateBR)(d.data_competencia)),
+                    esc(financeEngine_1.EXPENSE_CATEGORY_MAP[normCat]?.label || normCat),
+                    esc(d.descricao || ''),
+                    esc(d.fornecedor || ''),
+                    esc(d.status),
+                    esc((0, financeEngine_1.formatDecimalBR)(d.valor)),
+                ].join(';');
+            }),
+            ...(report.paidProvidersCount > 0
+                ? [
+                    '',
+                    'SAÍDAS — PRESTADORES DE SERVIÇO PAGOS',
+                    'Data;Prestador / Descrição;Status;Valor (R$)',
+                    ...report.providerExpenses.map((d) => [
+                        esc((0, financeEngine_1.formatDateBR)(d.data_pagamento || d.data_competencia)),
+                        esc(d.descricao || d.fornecedor || 'Prestador'),
+                        esc(d.status),
+                        esc((0, financeEngine_1.formatDecimalBR)(d.valor)),
+                    ].join(';')),
+                    ...report.legacyPaidProviders.map((p) => [
+                        esc((0, financeEngine_1.formatDateBR)(p.dueDate)),
+                        esc(`Prestador — ${p.name} (${p.service})`),
+                        esc('pago'),
+                        esc((0, financeEngine_1.formatDecimalBR)(p.amount)),
+                    ].join(';')),
+                ]
+                : []),
+            ...(report.paidPayrollCount > 0
+                ? [
+                    '',
+                    'SAÍDAS — FOLHA DE FUNCIONÁRIOS PAGA',
+                    'Data;Funcionário / Descrição;Status;Valor (R$)',
+                    ...report.payrollExpenses.map((d) => [
+                        esc((0, financeEngine_1.formatDateBR)(d.data_pagamento || d.data_competencia)),
+                        esc(d.descricao || d.fornecedor || 'Funcionário'),
+                        esc(d.status),
+                        esc((0, financeEngine_1.formatDecimalBR)(d.valor)),
+                    ].join(';')),
+                    ...report.legacyPaidPayroll.map((emp) => [
+                        esc((0, financeEngine_1.formatDateBR)(emp.paidAt || emp.admissionDate)),
+                        esc(`Folha — ${emp.name} (${emp.roleTitle})`),
+                        esc('pago'),
+                        esc((0, financeEngine_1.formatDecimalBR)(emp.salary)),
+                    ].join(';')),
+                ]
+                : []),
         ];
         const csv = '\uFEFF' + lines.join('\r\n');
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -6950,7 +7827,7 @@ const MonthlyReportSubsection = ({ orders, despesas, serviceProviders, payrollEm
                     report.totalPrestadores > 0 && (react_1.default.createElement("div", { className: "p-3 rounded-2xl liquid-glass-subtle flex items-center justify-between gap-2" },
                         react_1.default.createElement("span", { className: "font-bold text-slate-900" },
                             "Prestadores de Servi\u00E7o (",
-                            report.monthProviders.length,
+                            report.paidProvidersCount,
                             ")"),
                         react_1.default.createElement("span", { className: "font-mono font-extrabold text-rose-700 shrink-0" },
                             "-",
@@ -6958,7 +7835,7 @@ const MonthlyReportSubsection = ({ orders, despesas, serviceProviders, payrollEm
                     report.totalFolha > 0 && (react_1.default.createElement("div", { className: "p-3 rounded-2xl liquid-glass-subtle flex items-center justify-between gap-2" },
                         react_1.default.createElement("span", { className: "font-bold text-slate-900" },
                             "Folha de Funcion\u00E1rios (",
-                            report.activePayroll.length,
+                            report.paidPayrollCount,
                             ")"),
                         react_1.default.createElement("span", { className: "font-mono font-extrabold text-rose-700 shrink-0" },
                             "-",
@@ -7029,12 +7906,21 @@ const CollaboratorsSubsection_1 = require("./CollaboratorsSubsection");
 const ExpensesSection_1 = require("./ExpensesSection");
 const InvestmentsSubsection_1 = require("./InvestmentsSubsection");
 const MonthlyReportSubsection_1 = require("./MonthlyReportSubsection");
-const FinanceAnalyticsSection = ({ orders, financials, despesas, canEditDespesas, serviceProviders, payrollEmployees, investments, onTogglePaid, onEmitBilling30d, onDeleteOrder, onCreateExpense, onUpdateExpense, onDeleteExpense, onAddProvider, onUpdateProvider, onDeleteProvider, onAddPayrollEmployee, onUpdatePayrollEmployee, onDeletePayrollEmployee, onAddInvestment, onUpdateInvestment, onDeleteInvestment, }) => {
+const FinanceAnalyticsSection = ({ orders, financials, despesas, canEditDespesas, serviceProviders, payrollEmployees, investments, onTogglePaid, onEmitBilling30d, onUpdateOrderFinance, onDeleteOrder, onCreateExpense, onUpdateExpense, onDeleteExpense, onAddProvider, onUpdateProvider, onDeleteProvider, onToggleProviderPayment, onAddPayrollEmployee, onUpdatePayrollEmployee, onDeletePayrollEmployee, onTogglePayrollPayment, onAddInvestment, onUpdateInvestment, onDeleteInvestment, }) => {
     const [activeTab, setActiveTab] = (0, react_1.useState)('visao');
     const [statusFilter, setStatusFilter] = (0, react_1.useState)('todos');
     const [copiedId, setCopiedId] = (0, react_1.useState)(null);
     const [hoveredModality, setHoveredModality] = (0, react_1.useState)(null);
     const [busyOrderAction, setBusyOrderAction] = (0, react_1.useState)(null);
+    const [editingFinanceOrder, setEditingFinanceOrder] = (0, react_1.useState)(null);
+    const [finAmount, setFinAmount] = (0, react_1.useState)(0);
+    const [finModality, setFinModality] = (0, react_1.useState)('boleto');
+    const [finStatus, setFinStatus] = (0, react_1.useState)('nao_pago');
+    const [finDueDate, setFinDueDate] = (0, react_1.useState)(() => (0, financeEngine_1.getTodayGoiasISO)());
+    const [finPaidAt, setFinPaidAt] = (0, react_1.useState)('');
+    const [finNotes, setFinNotes] = (0, react_1.useState)('');
+    const [isSavingFinance, setIsSavingFinance] = (0, react_1.useState)(false);
+    const [financeError, setFinanceError] = (0, react_1.useState)(null);
     const copiedTimerRef = (0, react_1.useRef)(null);
     (0, react_1.useEffect)(() => {
         return () => {
@@ -7043,11 +7929,75 @@ const FinanceAnalyticsSection = ({ orders, financials, despesas, canEditDespesas
             }
         };
     }, []);
+    const paidExpensesTotal = (0, react_1.useMemo)(() => despesas.reduce((sum, d) => {
+        if (d.deleted_at || d.status !== 'pago')
+            return sum;
+        return sum + (Number(d.valor) || 0);
+    }, 0), [despesas]);
+    const generalCashBalance = financials.paidTotal - paidExpensesTotal;
+    const openFinanceEditModal = (order) => {
+        const today = (0, financeEngine_1.getTodayGoiasISO)();
+        const initialStatus = order.paymentStatus === 'vencido' ? 'a_receber' : order.paymentStatus;
+        setEditingFinanceOrder(order);
+        setFinAmount(Number(order.amount) || 0);
+        setFinModality(order.paymentModality || 'boleto');
+        setFinStatus(initialStatus);
+        setFinDueDate(order.dueDate ? order.dueDate.slice(0, 10) : today);
+        setFinPaidAt(order.paidAt
+            ? order.paidAt.slice(0, 10)
+            : initialStatus === 'pago'
+                ? today
+                : '');
+        setFinNotes(order.financialNotes || '');
+        setFinanceError(null);
+        setIsSavingFinance(false);
+    };
+    const closeFinanceEditModal = () => {
+        if (isSavingFinance)
+            return;
+        setEditingFinanceOrder(null);
+        setFinanceError(null);
+    };
+    const handleSaveFinance = async (e) => {
+        e.preventDefault();
+        if (isSavingFinance || !editingFinanceOrder)
+            return;
+        const today = (0, financeEngine_1.getTodayGoiasISO)();
+        const payload = {
+            amount: (0, financeEngine_1.roundCurrencyBRL)(finAmount),
+            paymentModality: finModality,
+            paymentStatus: finStatus,
+            dueDate: finDueDate || today,
+            paidAt: finStatus === 'pago' ? finPaidAt || today : null,
+            financialNotes: finNotes.trim() ? finNotes.trim() : null,
+        };
+        setIsSavingFinance(true);
+        setFinanceError(null);
+        try {
+            if (onUpdateOrderFinance) {
+                const result = await onUpdateOrderFinance(editingFinanceOrder.id, payload);
+                if (result === false) {
+                    setFinanceError('Não foi possível salvar os dados financeiros desta OS.');
+                    return;
+                }
+            }
+            setEditingFinanceOrder(null);
+        }
+        catch (err) {
+            setFinanceError(err instanceof Error
+                ? err.message
+                : 'Erro ao atualizar valores financeiros desta OS.');
+        }
+        finally {
+            setIsSavingFinance(false);
+        }
+    };
+    const normalizedOrders = (0, react_1.useMemo)(() => orders.map(financeEngine_1.normalizeOrderPaymentStatus), [orders]);
     const filteredOrders = (0, react_1.useMemo)(() => {
         if (statusFilter === 'todos')
-            return orders;
-        return orders.filter((o) => o.paymentStatus === statusFilter);
-    }, [orders, statusFilter]);
+            return normalizedOrders;
+        return normalizedOrders.filter((o) => o.paymentStatus === statusFilter);
+    }, [normalizedOrders, statusFilter]);
     const handleCopyPix = async (order) => {
         const text = (0, financeEngine_1.buildPixClipboardSnippet)(order);
         try {
@@ -7119,10 +8069,10 @@ const FinanceAnalyticsSection = ({ orders, financials, despesas, canEditDespesas
             }))),
         activeTab === 'relatorio_mensal' && (react_1.default.createElement(MonthlyReportSubsection_1.MonthlyReportSubsection, { orders: orders, despesas: despesas, serviceProviders: serviceProviders, payrollEmployees: payrollEmployees, investments: investments })),
         activeTab === 'despesas' && (react_1.default.createElement(ExpensesSection_1.ExpensesSection, { expenses: despesas, canEdit: canEditDespesas, onCreateExpense: onCreateExpense, onUpdateExpense: onUpdateExpense, onDeleteExpense: onDeleteExpense })),
-        activeTab === 'colaboradores' && (react_1.default.createElement(CollaboratorsSubsection_1.CollaboratorsSubsection, { providers: serviceProviders, payrollEmployees: payrollEmployees, onAddProvider: onAddProvider, onUpdateProvider: onUpdateProvider, onDeleteProvider: onDeleteProvider, onAddPayrollEmployee: onAddPayrollEmployee, onUpdatePayrollEmployee: onUpdatePayrollEmployee, onDeletePayrollEmployee: onDeletePayrollEmployee })),
+        activeTab === 'colaboradores' && (react_1.default.createElement(CollaboratorsSubsection_1.CollaboratorsSubsection, { providers: serviceProviders, payrollEmployees: payrollEmployees, despesas: despesas, onAddProvider: onAddProvider, onUpdateProvider: onUpdateProvider, onDeleteProvider: onDeleteProvider, onToggleProviderPayment: onToggleProviderPayment, onAddPayrollEmployee: onAddPayrollEmployee, onUpdatePayrollEmployee: onUpdatePayrollEmployee, onDeletePayrollEmployee: onDeletePayrollEmployee, onTogglePayrollPayment: onTogglePayrollPayment })),
         activeTab === 'investimentos' && (react_1.default.createElement(InvestmentsSubsection_1.InvestmentsSubsection, { investments: investments, onAddInvestment: onAddInvestment, onUpdateInvestment: onUpdateInvestment, onDeleteInvestment: onDeleteInvestment })),
         activeTab === 'visao' && (react_1.default.createElement(react_1.default.Fragment, null,
-            react_1.default.createElement("div", { className: "grid grid-cols-1 md:grid-cols-3 gap-5" },
+            react_1.default.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5" },
                 react_1.default.createElement("button", { type: "button", onClick: () => setStatusFilter(statusFilter === 'a_receber' ? 'todos' : 'a_receber'), className: `liquid-glass rounded-[28px] p-6 text-left transition cursor-pointer ${statusFilter === 'a_receber' ? 'ring-2 ring-emerald-500/70' : ''}` },
                     react_1.default.createElement("div", { className: "flex items-center justify-between" },
                         react_1.default.createElement("span", { className: "text-xs font-bold text-slate-700" }, "1. Total a Receber"),
@@ -7153,7 +8103,23 @@ const FinanceAnalyticsSection = ({ orders, financials, despesas, canEditDespesas
                     react_1.default.createElement("p", { className: "text-3xl font-black text-indigo-700 tracking-tight mt-3" }, (0, financeEngine_1.formatBRL)(financials.unbilledTotal)),
                     react_1.default.createElement("span", { className: "text-xs font-medium text-slate-600 mt-1 block" },
                         financials.unbilledCount,
-                        " facas entregues sem cobran\u00E7a"))),
+                        " facas entregues sem cobran\u00E7a")),
+                react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-6 text-left flex flex-col justify-between" },
+                    react_1.default.createElement("div", { className: "flex items-center justify-between" },
+                        react_1.default.createElement("span", { className: "text-xs font-bold text-slate-700" }, "4. Saldo Geral em Caixa"),
+                        react_1.default.createElement("span", { className: `p-2 rounded-2xl border ${generalCashBalance >= 0
+                                ? 'bg-emerald-500/15 text-emerald-700 border-emerald-300/60'
+                                : 'bg-rose-500/15 text-rose-700 border-rose-300/60'}` },
+                            react_1.default.createElement(lucide_react_1.Wallet, { className: "w-4 h-4" }))),
+                    react_1.default.createElement("p", { className: `text-3xl font-black tracking-tight mt-3 ${generalCashBalance >= 0 ? 'text-emerald-700' : 'text-rose-700'}` }, (0, financeEngine_1.formatBRL)(generalCashBalance)),
+                    react_1.default.createElement("span", { className: "text-xs font-medium text-slate-600 mt-1 block" },
+                        "Entradas Quitadas",
+                        ' ',
+                        react_1.default.createElement("strong", { className: "text-emerald-700" }, (0, financeEngine_1.formatBRL)(financials.paidTotal)),
+                        ' ',
+                        "\u00D7 Sa\u00EDdas Pagas",
+                        ' ',
+                        react_1.default.createElement("strong", { className: "text-rose-700" }, (0, financeEngine_1.formatBRL)(paidExpensesTotal))))),
             react_1.default.createElement("div", { className: "grid grid-cols-1 lg:grid-cols-12 gap-5 min-w-0" },
                 react_1.default.createElement("div", { className: "lg:col-span-5 liquid-glass rounded-[28px] p-6 flex flex-col justify-between min-w-0" },
                     react_1.default.createElement("div", { className: "flex items-center justify-between" },
@@ -7229,7 +8195,10 @@ const FinanceAnalyticsSection = ({ orders, financials, despesas, canEditDespesas
                             react_1.default.createElement("span", { className: "font-mono text-base font-black text-slate-900 shrink-0" }, (0, financeEngine_1.formatBRL)(order.amount))),
                         react_1.default.createElement("div", null,
                             react_1.default.createElement("span", { className: "text-slate-500 font-semibold block" }, "Ferramenta"),
-                            react_1.default.createElement("span", { className: "text-slate-800 font-semibold break-words" }, order.toolDescription)),
+                            react_1.default.createElement("span", { className: "text-slate-800 font-semibold break-words" }, order.toolDescription),
+                            order.financialNotes?.trim() && (react_1.default.createElement("span", { className: "text-[11px] font-medium text-indigo-700/90 block mt-0.5 break-words" },
+                                "Obs.: ",
+                                order.financialNotes))),
                         react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
                             react_1.default.createElement("span", { className: `px-2.5 py-1 rounded-full text-[11px] font-bold border ${modMeta?.badgeClass}` }, modMeta?.label),
                             order.paymentStatus === 'pago' ? (react_1.default.createElement("span", { className: "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500/15 text-emerald-800 border border-emerald-300/60" },
@@ -7265,6 +8234,8 @@ const FinanceAnalyticsSection = ({ orders, financials, despesas, canEditDespesas
                                 react_1.default.createElement("span", null, "Reabrir"))) : (react_1.default.createElement(react_1.default.Fragment, null,
                                 react_1.default.createElement(lucide_react_1.Check, { className: "w-4 h-4" }),
                                 react_1.default.createElement("span", null, "Marcar como pago")))),
+                            react_1.default.createElement("button", { type: "button", disabled: Boolean(busyOrderAction), onClick: () => openFinanceEditModal(order), title: "Editar valor, status ou observa\u00E7\u00E3o financeira", "aria-label": "Editar valor, status ou observa\u00E7\u00E3o financeira", className: "btn-compact w-9 h-9 rounded-full bg-white/60 hover:bg-indigo-500/20 disabled:opacity-50 text-slate-600 hover:text-indigo-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0" },
+                                react_1.default.createElement(lucide_react_1.Edit3, { className: "w-4 h-4" })),
                             react_1.default.createElement("button", { type: "button", disabled: Boolean(busyOrderAction), onClick: () => void runOrderAction(`del:${order.id}`, () => onDeleteOrder(order.id)), "aria-label": "Excluir esta OS", className: "btn-compact w-9 h-9 rounded-full bg-white/60 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0" }, busyOrderAction === `del:${order.id}` ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-4 h-4 animate-spin text-rose-600" })) : (react_1.default.createElement(lucide_react_1.Trash2, { className: "w-4 h-4" }))))));
                 }))),
                 react_1.default.createElement("div", { className: "hidden md:block overflow-x-auto" },
@@ -7287,7 +8258,10 @@ const FinanceAnalyticsSection = ({ orders, financials, despesas, canEditDespesas
                                     react_1.default.createElement("span", { className: "font-mono font-extrabold text-indigo-700 block" }, order.id),
                                     react_1.default.createElement("span", { className: "font-bold text-slate-900" }, order.companyName)),
                                 react_1.default.createElement("td", { className: "py-4 px-4 max-w-xs" },
-                                    react_1.default.createElement("span", { className: "text-slate-800 font-semibold block truncate" }, order.toolDescription)),
+                                    react_1.default.createElement("span", { className: "text-slate-800 font-semibold block truncate" }, order.toolDescription),
+                                    order.financialNotes?.trim() && (react_1.default.createElement("span", { className: "text-[11px] font-medium text-indigo-700/90 block truncate mt-0.5", title: order.financialNotes },
+                                        "Obs.: ",
+                                        order.financialNotes))),
                                 react_1.default.createElement("td", { className: "py-4 px-4 whitespace-nowrap" },
                                     react_1.default.createElement("span", { className: `px-2.5 py-1 rounded-full text-[11px] font-bold border ${modMeta?.badgeClass}` }, modMeta?.label)),
                                 react_1.default.createElement("td", { className: "py-4 px-4 whitespace-nowrap" }, order.paymentStatus === 'pago' ? (react_1.default.createElement("span", { className: "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500/15 text-emerald-800 border border-emerald-300/60" },
@@ -7329,8 +8303,80 @@ const FinanceAnalyticsSection = ({ orders, financials, despesas, canEditDespesas
                                             react_1.default.createElement("span", null, "Reabrir"))) : (react_1.default.createElement(react_1.default.Fragment, null,
                                             react_1.default.createElement(lucide_react_1.Check, { className: "w-3.5 h-3.5 stroke-[2.5]" }),
                                             react_1.default.createElement("span", null, "Marcar como pago")))),
+                                        react_1.default.createElement("button", { type: "button", disabled: Boolean(busyOrderAction), onClick: () => openFinanceEditModal(order), className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-indigo-500/20 disabled:opacity-50 text-slate-600 hover:text-indigo-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Editar valor, status ou observa\u00E7\u00E3o financeira", "aria-label": "Editar valor, status ou observa\u00E7\u00E3o financeira" },
+                                            react_1.default.createElement(lucide_react_1.Edit3, { className: "w-3.5 h-3.5" })),
                                         react_1.default.createElement("button", { type: "button", disabled: Boolean(busyOrderAction), onClick: () => void runOrderAction(`del:${order.id}`, () => onDeleteOrder(order.id)), className: "btn-compact w-8 h-8 rounded-full bg-white/60 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/75 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir esta OS", "aria-label": "Excluir esta OS" }, busyOrderAction === `del:${order.id}` ? (react_1.default.createElement(lucide_react_1.Loader2, { className: "w-3.5 h-3.5 animate-spin text-rose-600" })) : (react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" })))))));
-                        }))))))))));
+                        })))))))),
+        editingFinanceOrder && (react_1.default.createElement("div", { className: "fixed inset-0 z-[60] flex items-end md:items-center justify-center bg-slate-900/35 backdrop-blur-md p-0 md:p-4" },
+            react_1.default.createElement("div", { role: "dialog", "aria-modal": "true", "aria-label": `Editar financeiro da ${editingFinanceOrder.id}`, className: "w-full md:max-w-lg max-h-[92dvh] rounded-t-[28px] md:rounded-[30px] liquid-glass bg-white/75 shadow-2xl flex flex-col overflow-hidden" },
+                react_1.default.createElement("div", { className: "px-5 pt-5 pb-3 border-b border-white/60 flex items-center justify-between gap-2 shrink-0" },
+                    react_1.default.createElement("div", { className: "flex items-center gap-2.5 min-w-0" },
+                        react_1.default.createElement("div", { className: "w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 via-purple-500 to-sky-400 p-[1.5px] shadow-md flex items-center justify-center shrink-0" },
+                            react_1.default.createElement("div", { className: "w-full h-full bg-white/90 rounded-[10px] flex items-center justify-center" },
+                                react_1.default.createElement(lucide_react_1.Edit3, { className: "w-4 h-4 text-indigo-600" }))),
+                        react_1.default.createElement("div", { className: "min-w-0" },
+                            react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
+                                react_1.default.createElement("h3", { className: "text-base font-extrabold text-slate-900" }, "Editar Financeiro"),
+                                react_1.default.createElement("span", { className: "px-2 py-0.5 rounded-lg bg-indigo-500/15 border border-indigo-300/60 font-mono text-xs font-bold text-indigo-800" }, editingFinanceOrder.id)),
+                            react_1.default.createElement("p", { className: "text-[11px] font-medium text-slate-600 truncate" },
+                                editingFinanceOrder.companyName,
+                                " \u2022 ",
+                                editingFinanceOrder.toolDescription))),
+                    react_1.default.createElement("button", { type: "button", onClick: closeFinanceEditModal, disabled: isSavingFinance, "aria-label": "Fechar modal", className: "min-h-[44px] min-w-[44px] rounded-full liquid-glass-pill text-slate-700 hover:text-slate-950 transition inline-flex items-center justify-center cursor-pointer shrink-0 disabled:opacity-50" },
+                        react_1.default.createElement(lucide_react_1.X, { className: "w-5 h-5" }))),
+                react_1.default.createElement("form", { onSubmit: handleSaveFinance, className: "flex flex-col flex-1 min-h-0" },
+                    react_1.default.createElement("div", { className: "p-5 space-y-3.5 overflow-y-auto flex-1" },
+                        financeError && (react_1.default.createElement("div", { className: "px-3.5 py-2.5 rounded-2xl bg-rose-500/15 border border-rose-300/70 text-xs font-bold text-rose-800" }, financeError)),
+                        react_1.default.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 gap-3" },
+                            react_1.default.createElement("div", null,
+                                react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Valor Final (R$)"),
+                                react_1.default.createElement("div", { className: "relative" },
+                                    react_1.default.createElement("span", { className: "absolute left-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-600" }, "R$"),
+                                    react_1.default.createElement("input", { type: "text", inputMode: "numeric", required: true, value: (0, financeEngine_1.formatCurrencyMask)(finAmount), onChange: (e) => setFinAmount((0, financeEngine_1.parseCurrencyMask)(e.target.value)), className: "liquid-glass-pill w-full min-h-[44px] pl-9 pr-3.5 py-2.5 text-base rounded-2xl text-slate-900 text-right font-mono font-bold focus:ring-2 focus:ring-indigo-500/50 outline-none transition" }))),
+                            react_1.default.createElement("div", null,
+                                react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Status Financeiro"),
+                                react_1.default.createElement("select", { value: finStatus, onChange: (e) => {
+                                        const next = e.target.value;
+                                        setFinStatus(next);
+                                        if (next === 'pago' && !finPaidAt) {
+                                            setFinPaidAt((0, financeEngine_1.getTodayGoiasISO)());
+                                        }
+                                    }, className: "liquid-glass-pill w-full min-h-[44px] px-3.5 py-2.5 text-base rounded-2xl text-slate-900 focus:ring-2 focus:ring-indigo-500/50 outline-none transition" },
+                                    react_1.default.createElement("option", { value: "nao_pago" }, "N\u00E3o Pago"),
+                                    react_1.default.createElement("option", { value: "a_receber" }, "A Receber"),
+                                    react_1.default.createElement("option", { value: "pago" }, "Pago"),
+                                    react_1.default.createElement("option", { value: "sem_nota" }, "Entregue sem Nota")))),
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "Modalidade de Pagamento"),
+                            react_1.default.createElement("div", { className: "grid grid-cols-2 sm:grid-cols-3 gap-2" }, Object.keys(financeEngine_1.PAYMENT_MODALITY_META).map((mod) => {
+                                const meta = financeEngine_1.PAYMENT_MODALITY_META[mod];
+                                const selected = finModality === mod;
+                                return (react_1.default.createElement("button", { type: "button", key: mod, onClick: () => setFinModality(mod), className: `min-h-[44px] py-2 px-3 rounded-2xl text-xs font-bold border text-left flex items-center justify-between transition cursor-pointer ${selected
+                                        ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white border-white/40 shadow-md'
+                                        : 'liquid-glass-pill text-slate-700'}` },
+                                    react_1.default.createElement("span", { className: "truncate" }, meta.short),
+                                    selected && react_1.default.createElement(lucide_react_1.Check, { className: "w-3.5 h-3.5 shrink-0 ml-1" })));
+                            }))),
+                        react_1.default.createElement("div", { className: `grid grid-cols-1 ${finStatus === 'pago' ? 'sm:grid-cols-2' : ''} gap-3` },
+                            react_1.default.createElement("div", null,
+                                react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Data de Vencimento"),
+                                react_1.default.createElement("input", { type: "date", required: true, value: finDueDate, onChange: (e) => setFinDueDate(e.target.value), className: "liquid-glass-pill w-full min-h-[44px] px-3.5 py-2.5 text-base rounded-2xl text-slate-900 font-mono focus:ring-2 focus:ring-indigo-500/50 outline-none transition" })),
+                            finStatus === 'pago' && (react_1.default.createElement("div", null,
+                                react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Data de Pagamento"),
+                                react_1.default.createElement("input", { type: "date", required: true, value: finPaidAt, onChange: (e) => setFinPaidAt(e.target.value), className: "liquid-glass-pill w-full min-h-[44px] px-3.5 py-2.5 text-base rounded-2xl text-slate-900 font-mono focus:ring-2 focus:ring-indigo-500/50 outline-none transition" })))),
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" },
+                                "Observa\u00E7\u00F5es Financeiras",
+                                ' ',
+                                react_1.default.createElement("span", { className: "font-medium text-slate-500" }, "(opcional)")),
+                            react_1.default.createElement("textarea", { rows: 2, value: finNotes, onChange: (e) => setFinNotes(e.target.value), placeholder: "Ex: Desconto comercial, acordo de prazo, ajuste de valor...", className: "liquid-glass-pill w-full px-3.5 py-2.5 text-sm rounded-2xl text-slate-900 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500/50 outline-none transition resize-none" }))),
+                    react_1.default.createElement("div", { className: "px-5 py-4 border-t border-white/60 bg-white/45 shrink-0 flex items-center justify-end gap-2 pb-[calc(1rem+env(safe-area-inset-bottom))]" },
+                        react_1.default.createElement("button", { type: "button", onClick: closeFinanceEditModal, disabled: isSavingFinance, className: "min-h-[44px] px-4 py-2.5 rounded-full text-xs font-bold liquid-glass-pill text-slate-700 hover:text-slate-950 disabled:opacity-50 transition cursor-pointer" }, "Cancelar"),
+                        react_1.default.createElement("button", { type: "submit", disabled: isSavingFinance, className: "flex-1 sm:flex-initial min-h-[44px] px-6 py-2.5 rounded-full text-sm font-bold bg-gradient-to-r from-indigo-600 via-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 disabled:opacity-60 disabled:cursor-not-allowed text-white border border-white/40 shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition cursor-pointer active:scale-95" }, isSavingFinance ? (react_1.default.createElement(react_1.default.Fragment, null,
+                            react_1.default.createElement(lucide_react_1.Loader2, { className: "w-4 h-4 animate-spin" }),
+                            react_1.default.createElement("span", null, "Salvando..."))) : (react_1.default.createElement(react_1.default.Fragment, null,
+                            react_1.default.createElement(lucide_react_1.Check, { className: "w-4 h-4 stroke-[2.5]" }),
+                            react_1.default.createElement("span", null, "Salvar Financeiro")))))))))));
 };
 exports.FinanceAnalyticsSection = FinanceAnalyticsSection;
 
@@ -7827,13 +8873,18 @@ const StockSection = ({ userRole, items, movements, globalSearchQuery, onAddItem
             setUnit(CATEGORY_META[cat].defaultUnit);
         }
     };
+    const handleBlockDecimalKeys = (e) => {
+        if (['.', ',', 'e', 'E', '-', '+'].includes(e.key)) {
+            e.preventDefault();
+        }
+    };
     const handleStartEdit = (item) => {
         setEditingId(item.id);
         setCategory(item.category);
         setName(item.name);
-        setQuantity(String(item.quantity));
+        setQuantity((0, financeEngine_1.formatStockInt)(item.quantity));
         setUnit(item.unit);
-        setMinStock(String(item.minStock));
+        setMinStock((0, financeEngine_1.formatStockInt)(item.minStock));
         setSupplier(item.supplier);
         setUnitCost(String(item.unitCost));
         setEntryDate(item.entryDate);
@@ -7842,12 +8893,16 @@ const StockSection = ({ userRole, items, movements, globalSearchQuery, onAddItem
         e.preventDefault();
         if (!name.trim())
             return;
+        const cleanQty = (0, financeEngine_1.sanitizeStockIntInput)(quantity);
+        const cleanMin = (0, financeEngine_1.sanitizeStockIntInput)(minStock);
+        const parsedQty = Math.max(0, Math.round(Number(cleanQty) || 0));
+        const parsedMin = Math.max(0, Math.round(Number(cleanMin) || 0));
         const payload = {
             category,
             name: name.trim(),
-            quantity: Math.max(0, parseFloat(quantity.replace(',', '.')) || 0),
+            quantity: parsedQty,
             unit: unit.trim() || CATEGORY_META[category].defaultUnit,
-            minStock: Math.max(0, parseFloat(minStock.replace(',', '.')) || 0),
+            minStock: parsedMin,
             supplier: supplier.trim() || 'Não informado',
             unitCost: Math.max(0, parseFloat(unitCost.replace(',', '.')) || 0),
             entryDate: entryDate || (0, financeEngine_1.toISODate)(),
@@ -7887,7 +8942,8 @@ const StockSection = ({ userRole, items, movements, globalSearchQuery, onAddItem
         const targetItem = items.find((i) => i.id === selectedConsumeId) || items[0];
         if (!targetItem)
             return;
-        const qty = Math.max(0.01, parseFloat(customConsumeQty.replace(',', '.')) || 1);
+        const clean = (0, financeEngine_1.sanitizeStockIntInput)(customConsumeQty);
+        const qty = Math.max(1, Math.round(Number(clean) || 1));
         await handleTriggerConsume(targetItem, qty, consumeNote.trim() || undefined);
         setCustomConsumeQty('1');
         setConsumeNote('');
@@ -7985,7 +9041,7 @@ const StockSection = ({ userRole, items, movements, globalSearchQuery, onAddItem
                                 isLow ? (react_1.default.createElement("span", { className: "inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-500/25 text-amber-900 border border-amber-400/70" },
                                     react_1.default.createElement(lucide_react_1.AlertTriangle, { className: "w-3 h-3 text-amber-700" }),
                                     "Estoque Baixo (\u2264 ",
-                                    item.minStock,
+                                    (0, financeEngine_1.formatStockInt)(item.minStock),
                                     " ",
                                     item.unit,
                                     ")")) : (react_1.default.createElement("span", { className: "inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-800 border border-emerald-300/60" }, "OK"))),
@@ -8014,12 +9070,12 @@ const StockSection = ({ userRole, items, movements, globalSearchQuery, onAddItem
                                     react_1.default.createElement(lucide_react_1.Minus, { className: "w-3.5 h-3.5" })),
                                 react_1.default.createElement("div", { className: "px-2 text-center min-w-[68px]" },
                                     react_1.default.createElement("span", { className: `text-sm font-black font-mono block leading-none ${isLow ? 'text-amber-800' : 'text-slate-900'}` },
-                                        item.quantity,
+                                        (0, financeEngine_1.formatStockInt)(item.quantity),
                                         " ",
                                         item.unit),
                                     react_1.default.createElement("span", { className: "text-[10px] font-semibold text-slate-600" },
                                         "M\u00EDn: ",
-                                        item.minStock)),
+                                        (0, financeEngine_1.formatStockInt)(item.minStock))),
                                 react_1.default.createElement("button", { type: "button", disabled: isBusy, onClick: () => handleTriggerReplenish(item, 1), className: "btn-compact w-7 h-7 rounded-full bg-white/85 hover:bg-emerald-600 disabled:opacity-40 text-slate-700 hover:text-white flex items-center justify-center transition cursor-pointer", title: "Adicionar 1 unidade", "aria-label": "Adicionar 1 unidade" },
                                     react_1.default.createElement(lucide_react_1.Plus, { className: "w-3.5 h-3.5" }))),
                             react_1.default.createElement("div", { className: "text-right font-mono px-2" },
@@ -8093,7 +9149,7 @@ const StockSection = ({ userRole, items, movements, globalSearchQuery, onAddItem
                                 "Saldo atual:",
                                 ' ',
                                 react_1.default.createElement("strong", { className: isLow ? 'text-amber-900' : 'text-slate-900' },
-                                    item.quantity,
+                                    (0, financeEngine_1.formatStockInt)(item.quantity),
                                     " ",
                                     item.unit))),
                         react_1.default.createElement("span", { className: "btn-compact w-9 h-9 rounded-xl bg-rose-500/15 group-hover:bg-rose-600 text-rose-700 group-hover:text-white border border-rose-300/60 flex items-center justify-center transition shrink-0" },
@@ -8105,13 +9161,13 @@ const StockSection = ({ userRole, items, movements, globalSearchQuery, onAddItem
                         react_1.default.createElement("select", { value: selectedConsumeId || items[0]?.id || '', onChange: (e) => setSelectedConsumeId(e.target.value), className: inputClass }, items.map((it) => (react_1.default.createElement("option", { key: it.id, value: it.id },
                             it.name,
                             " (Saldo: ",
-                            it.quantity,
+                            (0, financeEngine_1.formatStockInt)(it.quantity),
                             " ",
                             it.unit,
                             ")"))))),
                     react_1.default.createElement("div", { className: "md:col-span-2" },
                         react_1.default.createElement("label", { className: "text-[11px] font-bold text-slate-700 block mb-1" }, "Quantidade"),
-                        react_1.default.createElement("input", { type: "number", step: "0.01", min: "0.01", required: true, value: customConsumeQty, onChange: (e) => setCustomConsumeQty(e.target.value), className: `${inputClass} font-mono font-bold` })),
+                        react_1.default.createElement("input", { type: "number", step: "1", min: "1", inputMode: "numeric", required: true, value: customConsumeQty, onKeyDown: handleBlockDecimalKeys, onChange: (e) => setCustomConsumeQty((0, financeEngine_1.sanitizeStockIntInput)(e.target.value)), className: `${inputClass} font-mono font-bold` })),
                     react_1.default.createElement("div", { className: "md:col-span-3" },
                         react_1.default.createElement("label", { className: "text-[11px] font-bold text-slate-700 block mb-1" }, "Observa\u00E7\u00E3o (opcional)"),
                         react_1.default.createElement("input", { type: "text", value: consumeNote, onChange: (e) => setConsumeNote(e.target.value), placeholder: "Ex.: OS-042 / Bancada", className: inputClass })),
@@ -8141,8 +9197,8 @@ const StockSection = ({ userRole, items, movements, globalSearchQuery, onAddItem
                                                 : 'bg-emerald-500/15 text-emerald-800 border-emerald-300/60'}` }, isEstorno
                                         ? 'Estorno'
                                         : isConsumo
-                                            ? `- ${mov.quantity} ${mov.unit}`
-                                            : `+ ${mov.quantity} ${mov.unit}`),
+                                            ? `- ${(0, financeEngine_1.formatStockInt)(mov.quantity)} ${mov.unit}`
+                                            : `+ ${(0, financeEngine_1.formatStockInt)(mov.quantity)} ${mov.unit}`),
                                     react_1.default.createElement("span", { className: "font-extrabold text-slate-900 truncate" }, mov.itemName),
                                     isReverted && (react_1.default.createElement("span", { className: "px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-slate-200 text-slate-600" }, "Desfeito"))),
                                 react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[10px] font-medium text-slate-600" },
@@ -8154,9 +9210,9 @@ const StockSection = ({ userRole, items, movements, globalSearchQuery, onAddItem
                                         (0, financeEngine_1.formatDateTimeGoiasBR)(mov.createdAt)),
                                     react_1.default.createElement("span", { className: "font-mono" },
                                         "Saldo: ",
-                                        mov.previousBalance,
+                                        (0, financeEngine_1.formatStockInt)(mov.previousBalance),
                                         " \u2192 ",
-                                        react_1.default.createElement("strong", null, mov.newBalance)))),
+                                        react_1.default.createElement("strong", null, (0, financeEngine_1.formatStockInt)(mov.newBalance))))),
                             !isEstorno && !isReverted && (react_1.default.createElement("button", { type: "button", disabled: busyMoveId === mov.id, onClick: () => handleUndo(mov), className: "btn-compact px-2.5 py-1.5 rounded-full text-[11px] font-bold bg-white/80 hover:bg-indigo-600 text-slate-700 hover:text-white border border-white/90 inline-flex items-center justify-center gap-1 transition cursor-pointer shrink-0", title: "Desfazer esta movimenta\u00E7\u00E3o" },
                                 react_1.default.createElement(lucide_react_1.RotateCcw, { className: "w-3 h-3" }),
                                 react_1.default.createElement("span", null, "Desfazer")))));
@@ -8223,13 +9279,13 @@ const StockSection = ({ userRole, items, movements, globalSearchQuery, onAddItem
                     react_1.default.createElement("div", { className: "grid grid-cols-3 gap-2.5" },
                         react_1.default.createElement("div", null,
                             react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "Quantidade *"),
-                            react_1.default.createElement("input", { type: "number", step: "0.01", min: "0", required: true, value: quantity, onChange: (e) => setQuantity(e.target.value), placeholder: "Ex: 12", className: `${inputClass} font-mono font-bold` })),
+                            react_1.default.createElement("input", { type: "number", step: "1", min: "0", inputMode: "numeric", required: true, value: quantity, onKeyDown: handleBlockDecimalKeys, onChange: (e) => setQuantity((0, financeEngine_1.sanitizeStockIntInput)(e.target.value)), placeholder: "Ex: 12", className: `${inputClass} font-mono font-bold` })),
                         react_1.default.createElement("div", null,
                             react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "Unidade *"),
                             react_1.default.createElement("input", { type: "text", required: true, value: unit, onChange: (e) => setUnit(e.target.value), placeholder: "chapa / cx", className: inputClass })),
                         react_1.default.createElement("div", null,
                             react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1.5" }, "M\u00EDnimo *"),
-                            react_1.default.createElement("input", { type: "number", step: "0.01", min: "0", required: true, value: minStock, onChange: (e) => setMinStock(e.target.value), placeholder: "Ex: 5", className: `${inputClass} font-mono font-bold` }))),
+                            react_1.default.createElement("input", { type: "number", step: "1", min: "0", inputMode: "numeric", required: true, value: minStock, onKeyDown: handleBlockDecimalKeys, onChange: (e) => setMinStock((0, financeEngine_1.sanitizeStockIntInput)(e.target.value)), placeholder: "Ex: 5", className: `${inputClass} font-mono font-bold` }))),
                     react_1.default.createElement("div", { className: "flex flex-wrap gap-1.5" }, CATEGORY_META[category].unitPresets.map((preset) => (react_1.default.createElement("button", { type: "button", key: preset, onClick: () => setUnit(preset), className: `btn-compact px-2.5 py-1 rounded-full text-[10px] font-bold transition cursor-pointer ${unit === preset
                             ? 'bg-indigo-600 text-white'
                             : 'liquid-glass-pill text-slate-700'}` }, preset)))),
@@ -10364,27 +11420,70 @@ exports.FastEntryModal = void 0;
 const react_1 = __importStar(require("react"));
 const lucide_react_1 = require("lucide-react");
 const financeEngine_1 = require("../utils/financeEngine");
-const FastEntryModal = ({ isOpen, onClose, companies, nextOrderId, onSaveOrder, }) => {
-    const [selectedCompanyId, setSelectedCompanyId] = (0, react_1.useState)(companies[0]?.id || '');
+const FastEntryModal = ({ isOpen, onClose, companies, nextOrderId, editingOrder = null, onSaveOrder, onUpdateOrder, }) => {
+    const isEditing = Boolean(editingOrder);
+    const [selectedCompanyId, setSelectedCompanyId] = (0, react_1.useState)(companies[0]?.id || 'nova');
     const [customCompanyName, setCustomCompanyName] = (0, react_1.useState)('');
     const [toolDescription, setToolDescription] = (0, react_1.useState)('');
+    const [bladeMeters, setBladeMeters] = (0, react_1.useState)('');
+    const [woodMm, setWoodMm] = (0, react_1.useState)('');
+    const [dueDate, setDueDate] = (0, react_1.useState)('');
     const [amount, setAmount] = (0, react_1.useState)('');
     const [paymentModality, setPaymentModality] = (0, react_1.useState)('boleto');
     const [stage, setStage] = (0, react_1.useState)('arquivo_recebido');
     const [isSubmitting, setIsSubmitting] = (0, react_1.useState)(false);
     const wasOpenRef = (0, react_1.useRef)(false);
+    const prevEditingKeyRef = (0, react_1.useRef)(null);
     (0, react_1.useEffect)(() => {
-        if (isOpen && !wasOpenRef.current) {
-            setSelectedCompanyId(companies[0]?.id || 'nova');
-            setCustomCompanyName('');
-            setToolDescription('');
-            setAmount('');
-            setPaymentModality('boleto');
-            setStage('arquivo_recebido');
+        const editingKey = editingOrder ? `${editingOrder.id}:${editingOrder.updatedAt || ''}` : null;
+        const justOpened = isOpen && !wasOpenRef.current;
+        const editingChanged = isOpen && prevEditingKeyRef.current !== editingKey;
+        if (justOpened || editingChanged) {
+            if (editingOrder) {
+                const matchedCompany = companies.find((c) => (editingOrder.companyUuid && c.dbUuid === editingOrder.companyUuid) ||
+                    (editingOrder.companyId && c.id === editingOrder.companyId) ||
+                    c.corporateName.trim().toLowerCase() ===
+                        (editingOrder.companyName || '').trim().toLowerCase());
+                if (matchedCompany) {
+                    setSelectedCompanyId(matchedCompany.id);
+                    setCustomCompanyName('');
+                }
+                else {
+                    setSelectedCompanyId('nova');
+                    setCustomCompanyName(editingOrder.companyName || '');
+                }
+                setToolDescription(editingOrder.toolDescription || '');
+                setBladeMeters(editingOrder.bladeMeters !== undefined && editingOrder.bladeMeters !== null
+                    ? String(editingOrder.bladeMeters)
+                    : '');
+                setWoodMm(editingOrder.woodMm === 15 ||
+                    editingOrder.woodMm === 18 ||
+                    editingOrder.woodMm === 22
+                    ? editingOrder.woodMm
+                    : '');
+                setDueDate(editingOrder.dueDate ? editingOrder.dueDate.slice(0, 10) : '');
+                setAmount(editingOrder.amount !== undefined && editingOrder.amount !== null
+                    ? String(editingOrder.amount)
+                    : '');
+                setPaymentModality(editingOrder.paymentModality || 'boleto');
+                setStage(editingOrder.stage || 'arquivo_recebido');
+            }
+            else {
+                setSelectedCompanyId(companies[0]?.id || 'nova');
+                setCustomCompanyName('');
+                setToolDescription('');
+                setBladeMeters('');
+                setWoodMm('');
+                setDueDate('');
+                setAmount('');
+                setPaymentModality('boleto');
+                setStage('arquivo_recebido');
+            }
             setIsSubmitting(false);
         }
         wasOpenRef.current = isOpen;
-    }, [isOpen, companies]);
+        prevEditingKeyRef.current = isOpen ? editingKey : null;
+    }, [isOpen, editingOrder, companies]);
     if (!isOpen)
         return null;
     const handleSubmit = async (e) => {
@@ -10392,22 +11491,43 @@ const FastEntryModal = ({ isOpen, onClose, companies, nextOrderId, onSaveOrder, 
         if (isSubmitting || !toolDescription.trim())
             return;
         const existingComp = companies.find((c) => c.id === selectedCompanyId);
+        const sameAdHocName = Boolean(editingOrder) &&
+            customCompanyName.trim().toLowerCase() ===
+                (editingOrder?.companyName || '').trim().toLowerCase();
         const companyName = selectedCompanyId === 'nova'
-            ? customCompanyName.trim() || 'Cliente Avulso'
-            : existingComp?.corporateName || 'Cliente';
-        const companyPhone = existingComp?.phone || '(11) 99999-0000';
+            ? customCompanyName.trim() || editingOrder?.companyName || 'Cliente Avulso'
+            : existingComp?.corporateName || editingOrder?.companyName || 'Cliente';
+        const companyId = existingComp?.id ||
+            (sameAdHocName && editingOrder?.companyId ? editingOrder.companyId : '__new__');
+        const companyPhone = existingComp?.phone ||
+            (sameAdHocName && editingOrder?.companyPhone
+                ? editingOrder.companyPhone
+                : '(11) 99999-0000');
         const numericAmount = parseFloat(amount.replace(',', '.')) || 0;
+        const parsedBladeMeters = bladeMeters.trim()
+            ? parseFloat(bladeMeters.replace(',', '.'))
+            : null;
+        const payload = {
+            companyId,
+            companyName,
+            companyPhone,
+            toolDescription: toolDescription.trim(),
+            bladeMeters: parsedBladeMeters !== null &&
+                Number.isFinite(parsedBladeMeters) &&
+                parsedBladeMeters >= 0
+                ? parsedBladeMeters
+                : null,
+            woodMm: woodMm === 15 || woodMm === 18 || woodMm === 22 ? woodMm : null,
+            dueDate: dueDate.trim() || undefined,
+            amount: numericAmount,
+            paymentModality,
+            stage,
+        };
         setIsSubmitting(true);
         try {
-            const ok = await onSaveOrder({
-                companyId: existingComp?.id || '__new__',
-                companyName,
-                companyPhone,
-                toolDescription: toolDescription.trim(),
-                amount: numericAmount,
-                paymentModality,
-                stage,
-            });
+            const ok = editingOrder && onUpdateOrder
+                ? await onUpdateOrder(editingOrder.id, payload)
+                : await onSaveOrder(payload);
             if (ok !== false) {
                 onClose();
             }
@@ -10417,8 +11537,11 @@ const FastEntryModal = ({ isOpen, onClose, companies, nextOrderId, onSaveOrder, 
         }
     };
     const inputClass = 'liquid-glass-pill w-full min-h-[44px] px-3.5 py-2.5 text-base rounded-2xl text-slate-900 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500/50 outline-none transition';
+    const modalTitle = editingOrder
+        ? `Editar Faca ${editingOrder.id}`
+        : 'Nova Ordem de Serviço';
     return (react_1.default.createElement("div", { className: "fixed inset-0 z-[60] flex items-end md:items-center justify-center bg-slate-900/35 backdrop-blur-md p-0 md:p-4" },
-        react_1.default.createElement("div", { role: "dialog", "aria-modal": "true", "aria-label": "Nova Ordem de Servi\u00E7o", className: "w-full md:max-w-lg max-h-[92dvh] rounded-t-[28px] md:rounded-[30px] liquid-glass bg-white/70 shadow-2xl flex flex-col overflow-hidden" },
+        react_1.default.createElement("div", { role: "dialog", "aria-modal": "true", "aria-label": modalTitle, className: "w-full md:max-w-lg max-h-[92dvh] rounded-t-[28px] md:rounded-[30px] liquid-glass bg-white/70 shadow-2xl flex flex-col overflow-hidden" },
             react_1.default.createElement("div", { className: "px-5 pt-5 pb-3 border-b border-white/60 flex items-center justify-between gap-2 shrink-0" },
                 react_1.default.createElement("div", { className: "flex items-center gap-2.5 min-w-0" },
                     react_1.default.createElement("div", { className: "w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 via-purple-500 to-sky-400 p-[1.5px] shadow-md flex items-center justify-center shrink-0" },
@@ -10426,9 +11549,11 @@ const FastEntryModal = ({ isOpen, onClose, companies, nextOrderId, onSaveOrder, 
                             react_1.default.createElement(lucide_react_1.Layers, { className: "w-4 h-4 text-indigo-600" }))),
                     react_1.default.createElement("div", { className: "min-w-0" },
                         react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
-                            react_1.default.createElement("h2", { className: "text-base font-extrabold text-slate-900" }, "Nova Ordem de Servi\u00E7o"),
-                            react_1.default.createElement("span", { className: "px-2 py-0.5 rounded-lg bg-indigo-500/15 border border-indigo-300/60 font-mono text-xs font-bold text-indigo-800" }, nextOrderId)),
-                        react_1.default.createElement("p", { className: "text-[11px] font-medium text-slate-600 truncate" }, "Lan\u00E7amento r\u00E1pido \u2022 Entra direto na Esteira e no Financeiro"))),
+                            react_1.default.createElement("h2", { className: "text-base font-extrabold text-slate-900" }, modalTitle),
+                            !editingOrder && (react_1.default.createElement("span", { className: "px-2 py-0.5 rounded-lg bg-indigo-500/15 border border-indigo-300/60 font-mono text-xs font-bold text-indigo-800" }, nextOrderId))),
+                        react_1.default.createElement("p", { className: "text-[11px] font-medium text-slate-600 truncate" }, isEditing
+                            ? 'Edição completa • Atualiza Esteira, Especificações e Financeiro'
+                            : 'Lançamento rápido • Entra direto na Esteira e no Financeiro'))),
                 react_1.default.createElement("button", { type: "button", onClick: onClose, "aria-label": "Fechar modal", className: "min-h-[44px] min-w-[44px] rounded-full liquid-glass-pill text-slate-700 hover:text-slate-950 transition inline-flex items-center justify-center cursor-pointer shrink-0" },
                     react_1.default.createElement(lucide_react_1.X, { className: "w-5 h-5" }))),
             react_1.default.createElement("form", { onSubmit: handleSubmit, className: "flex flex-col flex-1 min-h-0" },
@@ -10446,12 +11571,31 @@ const FastEntryModal = ({ isOpen, onClose, companies, nextOrderId, onSaveOrder, 
                     react_1.default.createElement("div", null,
                         react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "2. Descri\u00E7\u00E3o Detalhada da Ferramenta"),
                         react_1.default.createElement("input", { type: "text", required: true, autoFocus: true, value: toolDescription, onChange: (e) => setToolDescription(e.target.value), placeholder: "Ex: Faca Caixa Duplex Tampa e Fundo", className: inputClass })),
+                    react_1.default.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-3" },
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Lam. (m)"),
+                            react_1.default.createElement("input", { type: "number", step: "0.01", min: "0", value: bladeMeters, onChange: (e) => setBladeMeters(e.target.value), placeholder: "Ex: 12.5", className: `${inputClass} font-mono` })),
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Madeira (mm)"),
+                            react_1.default.createElement("select", { value: woodMm, onChange: (e) => {
+                                    const val = e.target.value;
+                                    setWoodMm(val === '15' || val === '18' || val === '22'
+                                        ? Number(val)
+                                        : '');
+                                }, className: inputClass },
+                                react_1.default.createElement("option", { value: "" }, "N\u00E3o informar"),
+                                react_1.default.createElement("option", { value: "15" }, "15 mm"),
+                                react_1.default.createElement("option", { value: "18" }, "18 mm"),
+                                react_1.default.createElement("option", { value: "22" }, "22 mm"))),
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "Prazo / Vencimento"),
+                            react_1.default.createElement("input", { type: "date", value: dueDate, onChange: (e) => setDueDate(e.target.value), className: `${inputClass} font-mono` }))),
                     react_1.default.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 gap-3" },
                         react_1.default.createElement("div", null,
                             react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "3. Valor em R$"),
                             react_1.default.createElement("input", { type: "number", step: "0.01", min: "0", required: true, value: amount, onChange: (e) => setAmount(e.target.value), placeholder: "Ex: 680,00", className: `${inputClass} font-mono font-bold` })),
                         react_1.default.createElement("div", null,
-                            react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "4. Status Inicial na Esteira"),
+                            react_1.default.createElement("label", { className: "text-xs font-bold text-slate-700 block mb-1" }, "4. Status na Esteira"),
                             react_1.default.createElement("select", { value: stage, onChange: (e) => setStage(e.target.value), className: inputClass }, financeEngine_1.PRODUCTION_STAGES.map((st) => (react_1.default.createElement("option", { key: st.id, value: st.id },
                                 st.step,
                                 ". ",
@@ -10467,19 +11611,18 @@ const FastEntryModal = ({ isOpen, onClose, companies, nextOrderId, onSaveOrder, 
                                 react_1.default.createElement("span", { className: "truncate" }, meta.short),
                                 selected && react_1.default.createElement(lucide_react_1.Check, { className: "w-3.5 h-3.5 shrink-0 ml-1" })));
                         })),
-                        react_1.default.createElement("p", { className: "text-[11px] font-medium text-slate-600 mt-1.5" },
+                        !isEditing && (react_1.default.createElement("p", { className: "text-[11px] font-medium text-slate-600 mt-1.5" },
                             "Toda OS entra automaticamente com status ",
                             react_1.default.createElement("strong", null, "N\u00E3o Pago"),
-                            " at\u00E9 confirma\u00E7\u00E3o manual em \"Marcar como pago\"."))),
+                            " at\u00E9 confirma\u00E7\u00E3o manual em \"Marcar como pago\".")))),
                 react_1.default.createElement("div", { className: "px-5 py-4 border-t border-white/60 bg-white/45 shrink-0 pb-[calc(1rem+env(safe-area-inset-bottom))]" },
                     react_1.default.createElement("button", { type: "submit", disabled: isSubmitting, className: "w-full min-h-[48px] py-3 rounded-full text-sm font-bold bg-gradient-to-r from-indigo-600 via-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 disabled:opacity-60 disabled:cursor-not-allowed text-white border border-white/40 shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition cursor-pointer active:scale-95" }, isSubmitting ? (react_1.default.createElement(react_1.default.Fragment, null,
                         react_1.default.createElement(lucide_react_1.Loader2, { className: "w-4 h-4 animate-spin" }),
-                        react_1.default.createElement("span", null, "Registrando na Esteira..."))) : (react_1.default.createElement(react_1.default.Fragment, null,
+                        react_1.default.createElement("span", null, isEditing ? 'Salvando Alterações...' : 'Criando na Esteira...'))) : (react_1.default.createElement(react_1.default.Fragment, null,
                         react_1.default.createElement(lucide_react_1.Check, { className: "w-4 h-4 stroke-[2.5]" }),
-                        react_1.default.createElement("span", null,
-                            "Registrar ",
-                            nextOrderId,
-                            " na Esteira")))))))));
+                        react_1.default.createElement("span", null, isEditing
+                            ? 'Salvar Alterações'
+                            : `Criar ${nextOrderId} na Esteira`)))))))));
 };
 exports.FastEntryModal = FastEntryModal;
 
@@ -10572,6 +11715,16 @@ function createEmptyDb(companyId = '') {
         employees: [],
     };
 }
+function mergeSyncedExpenses(current, syncResult) {
+    const removedSet = new Set(syncResult.removedIds || []);
+    let list = (current || []).filter((d) => !removedSet.has(d.id));
+    if (syncResult.upserted) {
+        const up = syncResult.upserted;
+        const exists = list.some((d) => d.id === up.id);
+        list = exists ? list.map((d) => (d.id === up.id ? up : d)) : [up, ...list];
+    }
+    return list;
+}
 const App = () => {
     const [authChecking, setAuthChecking] = (0, react_1.useState)(true);
     const [session, setSession] = (0, react_1.useState)(null);
@@ -10584,6 +11737,7 @@ const App = () => {
     const [selectedCompanyId, setSelectedCompanyId] = (0, react_1.useState)(null);
     const [prefillDeliveryOrder, setPrefillDeliveryOrder] = (0, react_1.useState)(null);
     const [isNewModalOpen, setIsNewModalOpen] = (0, react_1.useState)(false);
+    const [editingOrder, setEditingOrder] = (0, react_1.useState)(null);
     const [printJob, setPrintJob] = (0, react_1.useState)(null);
     // Settings & Backups (Admin Only)
     const [settingsState, setSettingsState] = (0, react_1.useState)({
@@ -10748,6 +11902,7 @@ const App = () => {
                 }
                 pendingOrderIdsRef.current.clear();
                 setPendingOrderIds([]);
+                setEditingOrder(null);
                 setSession(null);
                 setDb(createEmptyDb());
             }
@@ -10870,6 +12025,7 @@ const App = () => {
         setDb(createEmptyDb());
         setSearchQuery('');
         setIsNewModalOpen(false);
+        setEditingOrder(null);
         setSettingsState({
             settings: {
                 empresa_id: '',
@@ -11026,6 +12182,9 @@ const App = () => {
                 companyName: existingComp.corporateName,
                 companyPhone: existingComp.phone || payload.companyPhone,
                 toolDescription: payload.toolDescription,
+                bladeMeters: payload.bladeMeters ?? null,
+                woodMm: payload.woodMm ?? null,
+                dueDate: payload.dueDate,
                 amount: payload.amount,
                 paymentModality: payload.paymentModality,
                 stage: payload.stage,
@@ -11055,6 +12214,98 @@ const App = () => {
         }
         catch (err) {
             showToast(err?.message || 'Erro ao criar Ordem de Serviço.', 'err');
+            return false;
+        }
+    };
+    const handleUpdateOrderFull = async (orderId, payload) => {
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin') {
+            showToast('Apenas administradores podem editar OS.', 'err');
+            return false;
+        }
+        const targetEmpresaId = active.empresaId || active.company_id;
+        const snap = dbRef.current;
+        const existingOrder = snap.orders.find((o) => o.id === orderId);
+        if (!existingOrder?.dbUuid) {
+            showToast('Ordem de Serviço não localizada para edição.', 'err');
+            return false;
+        }
+        try {
+            const stamp = (0, financeEngine_1.nowTimestampBR)();
+            let existingComp = payload.companyId && payload.companyId !== '__new__'
+                ? snap.companies.find((c) => c.id === payload.companyId)
+                : undefined;
+            let newCompCreated = null;
+            if (!existingComp) {
+                const compCode = (0, storageAdapter_1.getNextCompanyCode)(snap.companies);
+                newCompCreated = await (0, supabaseDataService_1.dbCreateCompany)(targetEmpresaId, compCode, {
+                    corporateName: payload.companyName,
+                    cnpj: 'Não informado',
+                    phone: payload.companyPhone,
+                    contactName: 'PCP / Compras',
+                });
+                existingComp = newCompCreated;
+            }
+            const stageChanged = existingOrder.stage !== payload.stage;
+            const nextHistory = stageChanged
+                ? [
+                    ...(existingOrder.stageHistory || []),
+                    { stage: payload.stage, timestamp: stamp },
+                ]
+                : existingOrder.stageHistory || [];
+            const updatedOrder = await (0, supabaseDataService_1.dbUpdateOrderFull)(targetEmpresaId, existingOrder.dbUuid, {
+                companyId: existingComp.id,
+                companyUuid: existingComp.dbUuid,
+                companyName: existingComp.corporateName,
+                companyPhone: existingComp.phone || payload.companyPhone,
+                toolDescription: payload.toolDescription,
+                bladeMeters: payload.bladeMeters ?? null,
+                woodMm: payload.woodMm ?? null,
+                dueDate: payload.dueDate || existingOrder.dueDate,
+                amount: payload.amount,
+                paymentModality: payload.paymentModality,
+                stage: payload.stage,
+                stageChanged,
+                stageUpdatedAt: stageChanged ? stamp : existingOrder.stageUpdatedAt,
+                stageHistory: nextHistory,
+                currentVersion: existingOrder.version,
+            });
+            setDb((prev) => ({
+                ...prev,
+                companies: newCompCreated
+                    ? [newCompCreated, ...prev.companies]
+                    : prev.companies,
+                orders: prev.orders.map((o) => (o.id === orderId ? updatedOrder : o)),
+                deliveries: prev.deliveries.map((d) => d.orderId === orderId
+                    ? {
+                        ...d,
+                        companyName: updatedOrder.companyName,
+                        toolDescription: updatedOrder.toolDescription,
+                    }
+                    : d),
+                returns: prev.returns.map((r) => r.orderId === orderId
+                    ? {
+                        ...r,
+                        companyName: updatedOrder.companyName,
+                        toolDescription: updatedOrder.toolDescription,
+                    }
+                    : r),
+            }));
+            setPrefillDeliveryOrder((prev) => prev?.id === orderId ? updatedOrder : prev);
+            (0, realtimeEngine_1.publishRealtimeUpdate)({
+                company_id: targetEmpresaId,
+                section: 'esteira',
+                actionLabel: '',
+                actorName: active.ownerName,
+                actorRole: active.role,
+                order: updatedOrder,
+            });
+            scheduleAutoBackup();
+            showToast(`${updatedOrder.id} atualizada com sucesso!`);
+            return true;
+        }
+        catch (err) {
+            showToast(err?.message || 'Erro ao atualizar Ordem de Serviço.', 'err');
             return false;
         }
     };
@@ -11147,23 +12398,23 @@ const App = () => {
         const nextPaidAt = isPaid ? null : today;
         const nextVersion = (Number(order.version) || 1) + 1;
         try {
-            await (0, supabaseDataService_1.dbUpdateOrderPayment)(empresaId, order.dbUuid, {
+            const updatedOrder = await (0, supabaseDataService_1.dbUpdateOrderPayment)(empresaId, order.dbUuid, {
                 status_pagamento: nextStatus,
                 data_pagamento: nextPaidAt,
                 version: nextVersion,
             });
             setDb((prev) => ({
                 ...prev,
-                orders: prev.orders.map((o) => o.id === orderId
-                    ? {
-                        ...o,
-                        paymentStatus: nextStatus,
-                        paidAt: nextPaidAt || undefined,
-                        version: nextVersion,
-                        updatedAt: new Date().toISOString(),
-                    }
-                    : o),
+                orders: prev.orders.map((o) => o.id === orderId ? updatedOrder : o),
             }));
+            (0, realtimeEngine_1.publishRealtimeUpdate)({
+                company_id: empresaId,
+                section: 'financeiro',
+                actionLabel: '',
+                actorName: active.ownerName,
+                actorRole: active.role,
+                order: updatedOrder,
+            });
             scheduleAutoBackup();
             showToast(nextStatus === 'pago'
                 ? `${orderId} marcada como paga!`
@@ -11184,28 +12435,71 @@ const App = () => {
         const nextDue = (0, financeEngine_1.addDays)(today, 30);
         const nextVersion = (Number(order.version) || 1) + 1;
         try {
-            await (0, supabaseDataService_1.dbUpdateOrderPayment)(empresaId, order.dbUuid, {
+            const updatedOrder = await (0, supabaseDataService_1.dbUpdateOrderPayment)(empresaId, order.dbUuid, {
                 status_pagamento: 'a_receber',
                 data_vencimento: nextDue,
                 version: nextVersion,
             });
             setDb((prev) => ({
                 ...prev,
-                orders: prev.orders.map((o) => o.id === orderId
-                    ? {
-                        ...o,
-                        paymentStatus: 'a_receber',
-                        dueDate: nextDue,
-                        version: nextVersion,
-                        updatedAt: new Date().toISOString(),
-                    }
-                    : o),
+                orders: prev.orders.map((o) => o.id === orderId ? updatedOrder : o),
             }));
+            (0, realtimeEngine_1.publishRealtimeUpdate)({
+                company_id: empresaId,
+                section: 'financeiro',
+                actionLabel: '',
+                actorName: active.ownerName,
+                actorRole: active.role,
+                order: updatedOrder,
+            });
             scheduleAutoBackup();
             showToast(`Faturamento 30 dias gerado para ${orderId}!`);
         }
         catch (err) {
             showToast(err?.message || 'Erro ao gerar faturamento.', 'err');
+        }
+    };
+    const handleUpdateOrderFinance = async (orderId, payload) => {
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin')
+            return false;
+        const targetEmpresaId = active.empresaId || active.company_id;
+        const order = dbRef.current.orders.find((o) => o.id === orderId);
+        if (!order?.dbUuid)
+            return false;
+        const nextVersion = (Number(order.version) || 1) + 1;
+        const nextPaidAt = payload.paymentStatus === 'pago'
+            ? (payload.paidAt || (0, financeEngine_1.toISODate)()).slice(0, 10)
+            : null;
+        try {
+            const updatedOrder = await (0, supabaseDataService_1.dbUpdateOrderPayment)(targetEmpresaId, order.dbUuid, {
+                valor: payload.amount,
+                forma_pagamento: payload.paymentModality,
+                status_pagamento: payload.paymentStatus,
+                data_vencimento: payload.dueDate,
+                data_pagamento: nextPaidAt,
+                observacao_financeira: payload.financialNotes ?? null,
+                version: nextVersion,
+            });
+            setDb((prev) => ({
+                ...prev,
+                orders: prev.orders.map((o) => (o.id === orderId ? updatedOrder : o)),
+            }));
+            (0, realtimeEngine_1.publishRealtimeUpdate)({
+                company_id: targetEmpresaId,
+                section: 'financeiro',
+                actionLabel: '',
+                actorName: active.ownerName,
+                actorRole: active.role,
+                order: updatedOrder,
+            });
+            scheduleAutoBackup();
+            showToast(`Dados financeiros da ${orderId} atualizados!`);
+            return true;
+        }
+        catch (err) {
+            showToast(err?.message || 'Erro ao atualizar dados financeiros da OS.', 'err');
+            return false;
         }
     };
     const handleDeleteOrder = (0, react_1.useCallback)(async (orderId) => {
@@ -11542,6 +12836,103 @@ const App = () => {
             showToast(err?.message || 'Erro ao repor estoque.', 'err');
         }
     };
+    const syncCollaboratorFromExpenseChange = async (targetEmpresaId, expense, isUnpaidOrRemoved) => {
+        if (!expense.origem_tipo || !expense.origem_id)
+            return;
+        const expComp = (expense.competencia_referencia ||
+            expense.data_competencia ||
+            '').slice(0, 7);
+        const currentComp = (0, financeEngine_1.toISODate)().slice(0, 7);
+        if (expense.origem_tipo === 'prestador') {
+            const prov = (dbRef.current.serviceProviders || []).find((p) => p.dbUuid === expense.origem_id);
+            if (!prov?.dbUuid)
+                return;
+            const provComp = (prov.dueDate || '').slice(0, 7);
+            const matchesActive = provComp === expComp || expComp === currentComp;
+            if (!matchesActive)
+                return;
+            if (isUnpaidOrRemoved && prov.status === 'pago') {
+                const updatedProv = await (0, supabaseDataService_1.dbUpdateProvider)(targetEmpresaId, prov.dbUuid, {
+                    name: prov.name,
+                    service: prov.service,
+                    amount: prov.amount,
+                    paymentModality: prov.paymentModality,
+                    dueDate: prov.dueDate,
+                    paymentDay: prov.paymentDay,
+                    status: 'pendente',
+                });
+                setDb((prev) => ({
+                    ...prev,
+                    serviceProviders: (prev.serviceProviders || []).map((p) => p.id === prov.id ? updatedProv : p),
+                }));
+            }
+            else if (!isUnpaidOrRemoved &&
+                (prov.status !== 'pago' ||
+                    (0, financeEngine_1.roundCurrencyBRL)(prov.amount) !== (0, financeEngine_1.roundCurrencyBRL)(expense.valor))) {
+                const syncedAmount = (0, financeEngine_1.roundCurrencyBRL)(expense.valor);
+                const updatedProv = await (0, supabaseDataService_1.dbUpdateProvider)(targetEmpresaId, prov.dbUuid, {
+                    name: prov.name,
+                    service: prov.service,
+                    amount: syncedAmount > 0 ? syncedAmount : prov.amount,
+                    paymentModality: prov.paymentModality,
+                    dueDate: prov.dueDate,
+                    paymentDay: prov.paymentDay,
+                    status: 'pago',
+                });
+                setDb((prev) => ({
+                    ...prev,
+                    serviceProviders: (prev.serviceProviders || []).map((p) => p.id === prov.id ? updatedProv : p),
+                }));
+            }
+            return;
+        }
+        if (expense.origem_tipo === 'funcionario') {
+            const emp = (dbRef.current.payrollEmployees || []).find((e) => e.dbUuid === expense.origem_id);
+            if (!emp?.dbUuid)
+                return;
+            if (isUnpaidOrRemoved &&
+                emp.paymentStatus === 'pago' &&
+                (!emp.paidCompetence ||
+                    emp.paidCompetence.slice(0, 7) === expComp ||
+                    expComp === currentComp)) {
+                const updatedEmp = await (0, supabaseDataService_1.dbUpdatePayrollEmployee)(targetEmpresaId, emp.dbUuid, {
+                    name: emp.name,
+                    roleTitle: emp.roleTitle,
+                    salary: emp.salary,
+                    admissionDate: emp.admissionDate,
+                    paymentDay: emp.paymentDay,
+                    paymentModality: emp.paymentModality,
+                    paymentStatus: 'pendente',
+                    paidAt: undefined,
+                    paidCompetence: undefined,
+                });
+                setDb((prev) => ({
+                    ...prev,
+                    payrollEmployees: (prev.payrollEmployees || []).map((e) => e.id === emp.id ? updatedEmp : e),
+                }));
+            }
+            else if (!isUnpaidOrRemoved &&
+                expComp === currentComp &&
+                (emp.paymentStatus !== 'pago' ||
+                    (emp.paidCompetence || '').slice(0, 7) !== expComp)) {
+                const updatedEmp = await (0, supabaseDataService_1.dbUpdatePayrollEmployee)(targetEmpresaId, emp.dbUuid, {
+                    name: emp.name,
+                    roleTitle: emp.roleTitle,
+                    salary: emp.salary,
+                    admissionDate: emp.admissionDate,
+                    paymentDay: emp.paymentDay,
+                    paymentModality: emp.paymentModality,
+                    paymentStatus: 'pago',
+                    paidAt: expense.data_pagamento || (0, financeEngine_1.toISODate)(),
+                    paidCompetence: expComp,
+                });
+                setDb((prev) => ({
+                    ...prev,
+                    payrollEmployees: (prev.payrollEmployees || []).map((e) => e.id === emp.id ? updatedEmp : e),
+                }));
+            }
+        }
+    };
     // Finanças -> Despesas (Seção 3 - CRUD completo com Soft Delete + RBAC Admin)
     const handleCreateExpense = async (payload) => {
         const active = sessionRef.current;
@@ -11562,11 +12953,15 @@ const App = () => {
         if (!active || active.role !== 'admin') {
             throw new Error('Apenas administradores podem editar despesas.');
         }
-        const updated = await (0, supabaseDataService_1.dbUpdateExpense)(empresaId, id, payload);
+        const targetEmpresaId = active.empresaId || active.company_id;
+        const updated = await (0, supabaseDataService_1.dbUpdateExpense)(targetEmpresaId, id, payload);
         setDb((prev) => ({
             ...prev,
             despesas: (prev.despesas || []).map((d) => (d.id === id ? updated : d)),
         }));
+        if (updated.origem_tipo && updated.origem_id) {
+            await syncCollaboratorFromExpenseChange(targetEmpresaId, updated, updated.status !== 'pago');
+        }
         scheduleAutoBackup();
         showToast('Despesa atualizada!');
         return updated;
@@ -11576,29 +12971,58 @@ const App = () => {
         if (!active || active.role !== 'admin') {
             throw new Error('Apenas administradores podem excluir despesas.');
         }
-        await (0, supabaseDataService_1.dbSoftDeleteExpense)(empresaId, id);
+        const targetEmpresaId = active.empresaId || active.company_id;
+        const existingExpense = (dbRef.current.despesas || []).find((d) => d.id === id);
+        await (0, supabaseDataService_1.dbSoftDeleteExpense)(targetEmpresaId, id);
         setDb((prev) => ({
             ...prev,
             despesas: (prev.despesas || []).filter((d) => d.id !== id),
         }));
+        if (existingExpense?.origem_tipo && existingExpense?.origem_id) {
+            await syncCollaboratorFromExpenseChange(targetEmpresaId, existingExpense, true);
+        }
         scheduleAutoBackup();
         showToast('Despesa removida!');
     };
-    // Finanças -> Prestadores, Folha, Investimentos
+    // Finanças -> Prestadores, Folha, Investimentos (com sincronização bidirecional em Despesas)
     const handleAddProvider = async (payload) => {
         const active = sessionRef.current;
         if (!active || active.role !== 'admin')
             return false;
+        if (payload.status === 'pago' && (Number(payload.amount) || 0) <= 0) {
+            showToast('Informe um valor maior que R$ 0,00 antes de marcar o prestador como Pago.', 'err');
+            return false;
+        }
         const targetEmpresaId = active.empresaId || active.company_id;
         try {
             const code = (0, storageAdapter_1.getNextProviderId)(dbRef.current);
             const created = await (0, supabaseDataService_1.dbCreateProvider)(targetEmpresaId, code, payload);
+            const competence = (created.dueDate || (0, financeEngine_1.toISODate)()).slice(0, 7);
+            const day = created.paymentDay || Number((created.dueDate || '').slice(8, 10)) || 5;
+            const dataVencimento = (0, financeEngine_1.resolveMonthPaymentDate)(competence, day);
+            const syncRes = created.dbUuid
+                ? await (0, supabaseDataService_1.dbSyncCollaboratorExpense)(targetEmpresaId, {
+                    origemTipo: 'prestador',
+                    origemId: created.dbUuid,
+                    competencia: competence,
+                    isPaid: created.status === 'pago',
+                    nome: created.name,
+                    subtitulo: created.service,
+                    valor: created.amount,
+                    formaPagamento: created.paymentModality || 'pix',
+                    dataVencimento,
+                    dataPagamento: created.status === 'pago' ? (0, financeEngine_1.toISODate)() : undefined,
+                })
+                : { removedIds: [] };
             setDb((prev) => ({
                 ...prev,
                 serviceProviders: [created, ...(prev.serviceProviders || [])],
+                despesas: mergeSyncedExpenses(prev.despesas, syncRes),
             }));
             scheduleAutoBackup();
-            showToast(`Prestador "${created.name}" cadastrado!`);
+            showToast(created.status === 'pago'
+                ? `Prestador "${created.name}" cadastrado e lançado nas Despesas!`
+                : `Prestador "${created.name}" cadastrado!`);
             return true;
         }
         catch (err) {
@@ -11610,15 +13034,35 @@ const App = () => {
         const active = sessionRef.current;
         if (!active || active.role !== 'admin')
             return false;
+        if (payload.status === 'pago' && (Number(payload.amount) || 0) <= 0) {
+            showToast('Informe um valor maior que R$ 0,00 antes de marcar o prestador como Pago.', 'err');
+            return false;
+        }
         const targetEmpresaId = active.empresaId || active.company_id;
         const target = (dbRef.current.serviceProviders || []).find((p) => p.id === id);
         if (!target?.dbUuid)
             return false;
         try {
             const updated = await (0, supabaseDataService_1.dbUpdateProvider)(targetEmpresaId, target.dbUuid, payload);
+            const competence = (updated.dueDate || (0, financeEngine_1.toISODate)()).slice(0, 7);
+            const day = updated.paymentDay || Number((updated.dueDate || '').slice(8, 10)) || 5;
+            const dataVencimento = (0, financeEngine_1.resolveMonthPaymentDate)(competence, day);
+            const syncRes = await (0, supabaseDataService_1.dbSyncCollaboratorExpense)(targetEmpresaId, {
+                origemTipo: 'prestador',
+                origemId: target.dbUuid,
+                competencia: competence,
+                isPaid: updated.status === 'pago',
+                nome: updated.name,
+                subtitulo: updated.service,
+                valor: updated.amount,
+                formaPagamento: updated.paymentModality || 'pix',
+                dataVencimento,
+                dataPagamento: updated.status === 'pago' ? (0, financeEngine_1.toISODate)() : undefined,
+            });
             setDb((prev) => ({
                 ...prev,
                 serviceProviders: (prev.serviceProviders || []).map((p) => p.id === id ? updated : p),
+                despesas: mergeSyncedExpenses(prev.despesas, syncRes),
             }));
             scheduleAutoBackup();
             showToast('Prestador atualizado!');
@@ -11638,10 +13082,14 @@ const App = () => {
         if (!target?.dbUuid)
             return;
         try {
+            const removedExpenseIds = await (0, supabaseDataService_1.dbSoftDeleteCollaboratorLinkedExpenses)(targetEmpresaId, 'prestador', target.dbUuid);
             await (0, supabaseDataService_1.dbSoftDeleteProvider)(targetEmpresaId, target.dbUuid);
             setDb((prev) => ({
                 ...prev,
                 serviceProviders: (prev.serviceProviders || []).filter((p) => p.id !== id),
+                despesas: mergeSyncedExpenses(prev.despesas, {
+                    removedIds: removedExpenseIds,
+                }),
             }));
             scheduleAutoBackup();
             showToast('Prestador removido!');
@@ -11654,16 +13102,41 @@ const App = () => {
         const active = sessionRef.current;
         if (!active || active.role !== 'admin')
             return false;
+        if (payload.paymentStatus === 'pago' && (Number(payload.salary) || 0) <= 0) {
+            showToast('Informe um salário maior que R$ 0,00 antes de marcar como Pago.', 'err');
+            return false;
+        }
         const targetEmpresaId = active.empresaId || active.company_id;
         try {
             const code = (0, storageAdapter_1.getNextPayrollEmployeeId)(dbRef.current);
             const created = await (0, supabaseDataService_1.dbCreatePayrollEmployee)(targetEmpresaId, code, payload);
+            const competence = (created.paidCompetence ||
+                payload.paidCompetence ||
+                (0, financeEngine_1.toISODate)().slice(0, 7)).slice(0, 7);
+            const dataVencimento = (0, financeEngine_1.resolveMonthPaymentDate)(competence, created.paymentDay || 5);
+            const syncRes = created.dbUuid
+                ? await (0, supabaseDataService_1.dbSyncCollaboratorExpense)(targetEmpresaId, {
+                    origemTipo: 'funcionario',
+                    origemId: created.dbUuid,
+                    competencia: competence,
+                    isPaid: created.paymentStatus === 'pago',
+                    nome: created.name,
+                    subtitulo: created.roleTitle,
+                    valor: created.salary,
+                    formaPagamento: created.paymentModality || 'pix',
+                    dataVencimento,
+                    dataPagamento: created.paidAt || (0, financeEngine_1.toISODate)(),
+                })
+                : { removedIds: [] };
             setDb((prev) => ({
                 ...prev,
                 payrollEmployees: [created, ...(prev.payrollEmployees || [])],
+                despesas: mergeSyncedExpenses(prev.despesas, syncRes),
             }));
             scheduleAutoBackup();
-            showToast(`Funcionário "${created.name}" cadastrado!`);
+            showToast(created.paymentStatus === 'pago'
+                ? `Funcionário "${created.name}" cadastrado e salário lançado nas Despesas!`
+                : `Funcionário "${created.name}" cadastrado!`);
             return true;
         }
         catch (err) {
@@ -11675,15 +13148,37 @@ const App = () => {
         const active = sessionRef.current;
         if (!active || active.role !== 'admin')
             return false;
+        if (payload.paymentStatus === 'pago' && (Number(payload.salary) || 0) <= 0) {
+            showToast('Informe um salário maior que R$ 0,00 antes de marcar como Pago.', 'err');
+            return false;
+        }
         const targetEmpresaId = active.empresaId || active.company_id;
         const target = (dbRef.current.payrollEmployees || []).find((e) => e.id === id);
         if (!target?.dbUuid)
             return false;
         try {
             const updated = await (0, supabaseDataService_1.dbUpdatePayrollEmployee)(targetEmpresaId, target.dbUuid, payload);
+            const competence = (payload.paidCompetence ||
+                updated.paidCompetence ||
+                target.paidCompetence ||
+                (0, financeEngine_1.toISODate)().slice(0, 7)).slice(0, 7);
+            const dataVencimento = (0, financeEngine_1.resolveMonthPaymentDate)(competence, updated.paymentDay || 5);
+            const syncRes = await (0, supabaseDataService_1.dbSyncCollaboratorExpense)(targetEmpresaId, {
+                origemTipo: 'funcionario',
+                origemId: target.dbUuid,
+                competencia: competence,
+                isPaid: updated.paymentStatus === 'pago',
+                nome: updated.name,
+                subtitulo: updated.roleTitle,
+                valor: updated.salary,
+                formaPagamento: updated.paymentModality || 'pix',
+                dataVencimento,
+                dataPagamento: updated.paidAt || (0, financeEngine_1.toISODate)(),
+            });
             setDb((prev) => ({
                 ...prev,
                 payrollEmployees: (prev.payrollEmployees || []).map((e) => e.id === id ? updated : e),
+                despesas: mergeSyncedExpenses(prev.despesas, syncRes),
             }));
             scheduleAutoBackup();
             showToast('Funcionário atualizado!');
@@ -11703,16 +13198,122 @@ const App = () => {
         if (!target?.dbUuid)
             return;
         try {
+            const removedExpenseIds = await (0, supabaseDataService_1.dbSoftDeleteCollaboratorLinkedExpenses)(targetEmpresaId, 'funcionario', target.dbUuid);
             await (0, supabaseDataService_1.dbSoftDeletePayrollEmployee)(targetEmpresaId, target.dbUuid);
             setDb((prev) => ({
                 ...prev,
                 payrollEmployees: (prev.payrollEmployees || []).filter((e) => e.id !== id),
+                despesas: mergeSyncedExpenses(prev.despesas, {
+                    removedIds: removedExpenseIds,
+                }),
             }));
             scheduleAutoBackup();
             showToast('Funcionário removido!');
         }
         catch (err) {
             showToast(err?.message || 'Erro ao remover funcionário.', 'err');
+        }
+    };
+    const handleToggleProviderPayment = async (provider, targetStatus, competenceMonth) => {
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin' || !provider.dbUuid)
+            return;
+        const isPaid = targetStatus === 'pago';
+        if (isPaid && (Number(provider.amount) || 0) <= 0) {
+            showToast('Informe um valor maior que R$ 0,00 antes de marcar como Pago.', 'err');
+            return;
+        }
+        const targetEmpresaId = active.empresaId || active.company_id;
+        const cleanComp = (competenceMonth || (0, financeEngine_1.toISODate)().slice(0, 7)).slice(0, 7);
+        const day = provider.paymentDay || Number((provider.dueDate || '').slice(8, 10)) || 5;
+        const dataVencimento = (0, financeEngine_1.resolveMonthPaymentDate)(cleanComp, day);
+        const today = (0, financeEngine_1.toISODate)();
+        try {
+            const syncRes = await (0, supabaseDataService_1.dbSyncCollaboratorExpense)(targetEmpresaId, {
+                origemTipo: 'prestador',
+                origemId: provider.dbUuid,
+                competencia: cleanComp,
+                isPaid,
+                nome: provider.name,
+                subtitulo: provider.service,
+                valor: provider.amount,
+                formaPagamento: provider.paymentModality || 'pix',
+                dataVencimento,
+                dataPagamento: isPaid ? today : undefined,
+            });
+            const updated = await (0, supabaseDataService_1.dbUpdateProvider)(targetEmpresaId, provider.dbUuid, {
+                name: provider.name,
+                service: provider.service,
+                amount: provider.amount,
+                paymentModality: provider.paymentModality || 'pix',
+                dueDate: dataVencimento,
+                paymentDay: day,
+                status: targetStatus,
+            });
+            setDb((prev) => ({
+                ...prev,
+                serviceProviders: (prev.serviceProviders || []).map((p) => p.id === provider.id ? updated : p),
+                despesas: mergeSyncedExpenses(prev.despesas, syncRes),
+            }));
+            scheduleAutoBackup();
+            showToast(isPaid
+                ? `Pagamento de "${provider.name}" (${cleanComp}) lançado nas Despesas!`
+                : `Pagamento de "${provider.name}" (${cleanComp}) estornado para Pendente.`);
+        }
+        catch (err) {
+            showToast(err?.message || 'Erro ao atualizar status de pagamento do prestador.', 'err');
+        }
+    };
+    const handleTogglePayrollPayment = async (employee, targetStatus, competenceMonth) => {
+        const active = sessionRef.current;
+        if (!active || active.role !== 'admin' || !employee.dbUuid)
+            return;
+        const isPaid = targetStatus === 'pago';
+        if (isPaid && (Number(employee.salary) || 0) <= 0) {
+            showToast('Informe um salário maior que R$ 0,00 antes de marcar como Pago.', 'err');
+            return;
+        }
+        const targetEmpresaId = active.empresaId || active.company_id;
+        const cleanComp = (competenceMonth || (0, financeEngine_1.toISODate)().slice(0, 7)).slice(0, 7);
+        const day = employee.paymentDay || 5;
+        const dataVencimento = (0, financeEngine_1.resolveMonthPaymentDate)(cleanComp, day);
+        const today = (0, financeEngine_1.toISODate)();
+        try {
+            const syncRes = await (0, supabaseDataService_1.dbSyncCollaboratorExpense)(targetEmpresaId, {
+                origemTipo: 'funcionario',
+                origemId: employee.dbUuid,
+                competencia: cleanComp,
+                isPaid,
+                nome: employee.name,
+                subtitulo: employee.roleTitle,
+                valor: employee.salary,
+                formaPagamento: employee.paymentModality || 'pix',
+                dataVencimento,
+                dataPagamento: isPaid ? today : undefined,
+            });
+            const updated = await (0, supabaseDataService_1.dbUpdatePayrollEmployee)(targetEmpresaId, employee.dbUuid, {
+                name: employee.name,
+                roleTitle: employee.roleTitle,
+                salary: employee.salary,
+                admissionDate: employee.admissionDate,
+                paymentDay: day,
+                paymentModality: employee.paymentModality || 'pix',
+                paymentStatus: targetStatus,
+                paidAt: isPaid ? today : undefined,
+                paidCompetence: isPaid ? cleanComp : undefined,
+            });
+            setDb((prev) => ({
+                ...prev,
+                payrollEmployees: (prev.payrollEmployees || []).map((e) => e.id === employee.id ? updated : e),
+                despesas: mergeSyncedExpenses(prev.despesas, syncRes),
+            }));
+            scheduleAutoBackup();
+            showToast(isPaid
+                ? `Salário de "${employee.name}" (${cleanComp}) lançado nas Despesas!`
+                : `Salário de "${employee.name}" (${cleanComp}) estornado para Pendente.`);
+        }
+        catch (err) {
+            showToast(err?.message || 'Erro ao atualizar status de pagamento do funcionário.', 'err');
         }
     };
     const handleAddInvestment = async (payload) => {
@@ -11982,7 +13583,10 @@ const App = () => {
             react_1.default.createElement("div", { className: "max-w-[1720px] mx-auto flex gap-5 relative p-3 sm:p-5 lg:p-7 min-w-0" },
                 react_1.default.createElement(HeaderBar_1.LiquidSidebar, { activeSection: effectiveSection, onSelectSection: handleSelectSection, tenantName: session.companyName, userRole: session.role, isSuperAdmin: Boolean(session.isSuperAdmin), userName: session.ownerName, onLogout: handleLogout, counts: counts }),
                 react_1.default.createElement("div", { className: "flex-1 flex flex-col gap-5 min-w-0" },
-                    react_1.default.createElement(HeaderBar_1.HeaderBar, { activeSection: effectiveSection, onSelectSection: handleSelectSection, searchQuery: searchQuery, onSearchChange: setSearchQuery, onOpenNewOrder: () => setIsNewModalOpen(true), tenantName: session.companyName, userRole: session.role, isSuperAdmin: Boolean(session.isSuperAdmin), userName: session.ownerName, realtimeStatus: realtimeStatus, onLogout: handleLogout, counts: counts }),
+                    react_1.default.createElement(HeaderBar_1.HeaderBar, { activeSection: effectiveSection, onSelectSection: handleSelectSection, searchQuery: searchQuery, onSearchChange: setSearchQuery, onOpenNewOrder: () => {
+                            setEditingOrder(null);
+                            setIsNewModalOpen(true);
+                        }, tenantName: session.companyName, userRole: session.role, isSuperAdmin: Boolean(session.isSuperAdmin), userName: session.ownerName, realtimeStatus: realtimeStatus, onLogout: handleLogout, counts: counts }),
                     react_1.default.createElement("main", { className: "flex-1 flex flex-col gap-5 min-w-0" },
                         session.isSuperAdmin &&
                             unDismissedAlerts.length > 0 &&
@@ -12003,7 +13607,10 @@ const App = () => {
                         dbLoading && db.orders.length === 0 && db.companies.length === 0 ? (react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-10 flex flex-col items-center gap-3 text-xs font-bold text-slate-700" },
                             react_1.default.createElement(lucide_react_1.Loader2, { className: "w-6 h-6 animate-spin text-indigo-600" }),
                             react_1.default.createElement("span", null, "Carregando dados da empresa no Supabase..."))) : null,
-                        session.role === 'admin' && effectiveSection === 'bento_home' && (react_1.default.createElement(BentoOverviewSection_1.BentoOverviewSection, { companies: db.companies, orders: db.orders, deliveries: db.deliveries, returns: db.returns, stock: db.stock || [], financials: financials, onNavigate: handleSelectSection, onOpenNewOrder: () => setIsNewModalOpen(true), onSelectCompany: (id) => setSelectedCompanyId(id) })),
+                        session.role === 'admin' && effectiveSection === 'bento_home' && (react_1.default.createElement(BentoOverviewSection_1.BentoOverviewSection, { companies: db.companies, orders: db.orders, deliveries: db.deliveries, returns: db.returns, stock: db.stock || [], financials: financials, onNavigate: handleSelectSection, onOpenNewOrder: () => {
+                                setEditingOrder(null);
+                                setIsNewModalOpen(true);
+                            }, onSelectCompany: (id) => setSelectedCompanyId(id) })),
                         session.role === 'admin' && effectiveSection === 'empresas' && (react_1.default.createElement(CompaniesCrmSection_1.CompaniesCrmSection, { companies: filteredCompanies, orders: db.orders, selectedCompanyId: selectedCompanyId, onSelectCompany: setSelectedCompanyId, onAddCompany: handleAddCompany, onDeleteCompany: handleDeleteCompany, onDeleteOrder: handleDeleteOrder, onAddDieForCompany: (comp, desc, val, mod) => handleCreateOrderFull({
                                 companyId: comp.id,
                                 companyName: comp.corporateName,
@@ -12013,8 +13620,11 @@ const App = () => {
                                 paymentModality: mod,
                                 stage: 'arquivo_recebido',
                             }) })),
-                        effectiveSection === 'esteira' && (react_1.default.createElement(ProductionKanban_1.ProductionKanban, { orders: filteredOrders, userRole: session.role, pendingOrderIds: pendingOrderIds, moveError: moveError, onMoveStage: handleMoveStage, onDeleteOrder: handleDeleteOrder, onQuickRegisterDelivery: handleQuickRegisterDelivery })),
-                        session.role === 'admin' && effectiveSection === 'financeiro' && (react_1.default.createElement(FinanceAnalyticsSection_1.FinanceAnalyticsSection, { orders: filteredOrders, financials: financials, despesas: db.despesas || [], canEditDespesas: session.role === 'admin', serviceProviders: db.serviceProviders || [], payrollEmployees: db.payrollEmployees || [], investments: db.investments || [], onTogglePaid: handleTogglePaid, onEmitBilling30d: handleEmitBilling30d, onDeleteOrder: handleDeleteOrder, onCreateExpense: handleCreateExpense, onUpdateExpense: handleUpdateExpense, onDeleteExpense: handleDeleteExpense, onAddProvider: handleAddProvider, onUpdateProvider: handleUpdateProvider, onDeleteProvider: handleDeleteProvider, onAddPayrollEmployee: handleAddPayrollEmployee, onUpdatePayrollEmployee: handleUpdatePayrollEmployee, onDeletePayrollEmployee: handleDeletePayrollEmployee, onAddInvestment: handleAddInvestment, onUpdateInvestment: handleUpdateInvestment, onDeleteInvestment: handleDeleteInvestment })),
+                        effectiveSection === 'esteira' && (react_1.default.createElement(ProductionKanban_1.ProductionKanban, { orders: filteredOrders, userRole: session.role, pendingOrderIds: pendingOrderIds, moveError: moveError, onMoveStage: handleMoveStage, onEditOrder: (order) => {
+                                setEditingOrder(order);
+                                setIsNewModalOpen(true);
+                            }, onDeleteOrder: handleDeleteOrder, onQuickRegisterDelivery: handleQuickRegisterDelivery })),
+                        session.role === 'admin' && effectiveSection === 'financeiro' && (react_1.default.createElement(FinanceAnalyticsSection_1.FinanceAnalyticsSection, { orders: filteredOrders, financials: financials, despesas: db.despesas || [], canEditDespesas: session.role === 'admin', serviceProviders: db.serviceProviders || [], payrollEmployees: db.payrollEmployees || [], investments: db.investments || [], onTogglePaid: handleTogglePaid, onEmitBilling30d: handleEmitBilling30d, onUpdateOrderFinance: handleUpdateOrderFinance, onDeleteOrder: handleDeleteOrder, onCreateExpense: handleCreateExpense, onUpdateExpense: handleUpdateExpense, onDeleteExpense: handleDeleteExpense, onAddProvider: handleAddProvider, onUpdateProvider: handleUpdateProvider, onDeleteProvider: handleDeleteProvider, onAddPayrollEmployee: handleAddPayrollEmployee, onUpdatePayrollEmployee: handleUpdatePayrollEmployee, onDeletePayrollEmployee: handleDeletePayrollEmployee, onToggleProviderPayment: handleToggleProviderPayment, onTogglePayrollPayment: handleTogglePayrollPayment, onAddInvestment: handleAddInvestment, onUpdateInvestment: handleUpdateInvestment, onDeleteInvestment: handleDeleteInvestment })),
                         effectiveSection === 'entregas' && (react_1.default.createElement(DeliveriesLogisticsSection_1.DeliveriesLogisticsSection, { orders: db.orders, deliveries: db.deliveries, prefillOrder: prefillDeliveryOrder, onAddDelivery: handleAddDelivery, onDeleteDelivery: handleDeleteDelivery })),
                         effectiveSection === 'retornos' && (react_1.default.createElement(WarrantyReturnsSection_1.WarrantyReturnsSection, { orders: db.orders, returns: db.returns, onAddReturn: handleAddReturn, onUpdateReturnStatus: handleUpdateReturnStatus, onDeleteReturn: handleDeleteReturn })),
                         effectiveSection === 'estoque' && (react_1.default.createElement(StockSection_1.StockSection, { userRole: session.role, items: db.stock || [], movements: db.stockMovements || [], globalSearchQuery: searchQuery, onAddItem: handleAddStockItem, onUpdateItem: handleUpdateStockItem, onDeleteItem: handleDeleteStockItem, onQuickConsume: handleQuickConsumeStock, onQuickReplenish: handleQuickReplenishStock, onRevertMovement: handleRevertStockMovement })),
@@ -12042,9 +13652,15 @@ const App = () => {
                 toast.variant === 'err' ? (react_1.default.createElement(lucide_react_1.AlertTriangle, { className: "w-4 h-4 text-rose-600 shrink-0" })) : (react_1.default.createElement(lucide_react_1.CheckCircle2, { className: "w-4 h-4 text-emerald-600 shrink-0" })),
                 react_1.default.createElement("span", { className: "break-words" }, toast.message),
                 toast.actionLabel && toast.onAction && (react_1.default.createElement("button", { type: "button", onClick: toast.onAction, className: "btn-compact ml-1 px-3 py-1 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-extrabold shadow-sm transition cursor-pointer shrink-0" }, toast.actionLabel)))),
-            session.role === 'admin' && (react_1.default.createElement("button", { type: "button", onClick: () => setIsNewModalOpen(true), className: "md:hidden fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] right-4 z-20 min-h-[48px] inline-flex items-center gap-2 px-5 py-3 rounded-full font-bold text-sm bg-gradient-to-r from-indigo-600 via-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 active:scale-95 text-white border border-white/40 shadow-2xl shadow-indigo-600/40 transition-all cursor-pointer" },
+            session.role === 'admin' && (react_1.default.createElement("button", { type: "button", onClick: () => {
+                    setEditingOrder(null);
+                    setIsNewModalOpen(true);
+                }, className: "md:hidden fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] right-4 z-20 min-h-[48px] inline-flex items-center gap-2 px-5 py-3 rounded-full font-bold text-sm bg-gradient-to-r from-indigo-600 via-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 active:scale-95 text-white border border-white/40 shadow-2xl shadow-indigo-600/40 transition-all cursor-pointer" },
                 react_1.default.createElement("span", null, "Nova OS"))),
-            session.role === 'admin' && (react_1.default.createElement(FastEntryModal_1.FastEntryModal, { isOpen: isNewModalOpen, onClose: () => setIsNewModalOpen(false), companies: db.companies, nextOrderId: nextOrderId, onSaveOrder: handleCreateOrderFull }))),
+            session.role === 'admin' && (react_1.default.createElement(FastEntryModal_1.FastEntryModal, { isOpen: isNewModalOpen, onClose: () => {
+                    setIsNewModalOpen(false);
+                    setEditingOrder(null);
+                }, companies: db.companies, nextOrderId: nextOrderId, editingOrder: editingOrder, onSaveOrder: handleCreateOrderFull, onUpdateOrder: handleUpdateOrderFull }))),
         printJob && (react_1.default.createElement("div", { className: "print-only-container" }, printPages.map((chunk, idx) => (react_1.default.createElement(NotesSection_1.PedidoA5Sheet, { key: `print-${printJob.note.id}-${idx}`, note: printJob.note, itemsChunk: chunk, pageIndex: idx, totalPages: printPages.length, emitter: printJob.emitter, isPrintMode: true })))))));
 };
 exports.App = App;

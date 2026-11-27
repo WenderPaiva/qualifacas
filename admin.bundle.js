@@ -56,6 +56,7 @@ __moduleFactories["./utils/financeEngine"] = Object.assign(
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.RETURN_STATUS_META = exports.DELIVERY_METHOD_META = exports.INVESTMENT_TYPE_META = exports.EXPENSE_STATUS_META = exports.EXPENSE_PAYMENT_META = exports.EXPENSE_CATEGORY_MAP = exports.EXPENSE_CATEGORIES = exports.PAYMENT_MODALITY_META = exports.PRODUCTION_STAGES = void 0;
+exports.normalizeExpenseCategory = normalizeExpenseCategory;
 exports.normalizeInvestmentType = normalizeInvestmentType;
 exports.createEmptyExpensesMap = createEmptyExpensesMap;
 exports.formatCurrencyMask = formatCurrencyMask;
@@ -89,6 +90,9 @@ exports.formatCpfCnpjMask = formatCpfCnpjMask;
 exports.isValidCPF = isValidCPF;
 exports.isValidCpfOrCnpj = isValidCpfOrCnpj;
 exports.formatQuantityBR = formatQuantityBR;
+exports.formatStockInt = formatStockInt;
+exports.sanitizeStockIntInput = sanitizeStockIntInput;
+exports.resolveMonthPaymentDate = resolveMonthPaymentDate;
 exports.PRODUCTION_STAGES = [
     {
         id: 'arquivo_recebido',
@@ -188,8 +192,9 @@ exports.EXPENSE_CATEGORIES = [
     { key: 'energia', label: 'Energia', colorHex: '#eab308', badgeClass: 'bg-yellow-500/15 text-yellow-800 border-yellow-300/60' },
     { key: 'internet', label: 'Internet', colorHex: '#06b6d4', badgeClass: 'bg-cyan-500/15 text-cyan-800 border-cyan-300/60' },
     { key: 'alimentacao', label: 'Alimentação', colorHex: '#f97316', badgeClass: 'bg-orange-500/15 text-orange-800 border-orange-300/60' },
-    { key: 'combustivel', label: 'Combustível', colorHex: '#ef4444', badgeClass: 'bg-red-500/15 text-red-800 border-red-300/60' },
+    { key: 'transportes', label: 'Transportes', colorHex: '#d97706', badgeClass: 'bg-amber-500/15 text-amber-800 border-amber-300/60' },
     { key: 'manutencao', label: 'Manutenção', colorHex: '#8b5cf6', badgeClass: 'bg-violet-500/15 text-violet-800 border-violet-300/60' },
+    { key: 'custo_depreciacao', label: 'Custo de Depreciação', colorHex: '#7c3aed', badgeClass: 'bg-purple-500/15 text-purple-800 border-purple-300/60' },
     { key: 'contador', label: 'Contador', colorHex: '#6366f1', badgeClass: 'bg-indigo-500/15 text-indigo-800 border-indigo-300/60' },
     { key: 'marketing', label: 'Marketing', colorHex: '#ec4899', badgeClass: 'bg-pink-500/15 text-pink-800 border-pink-300/60' },
     { key: 'financiamento', label: 'Financiamento', colorHex: '#64748b', badgeClass: 'bg-slate-500/15 text-slate-800 border-slate-300/60' },
@@ -199,9 +204,22 @@ exports.EXPENSE_CATEGORIES = [
     { key: 'impostos', label: 'Impostos', colorHex: '#dc2626', badgeClass: 'bg-rose-500/15 text-rose-800 border-rose-300/60' },
     { key: 'flow_dashboard', label: 'Flow Dashboard', colorHex: '#4338ca', badgeClass: 'bg-indigo-500/15 text-indigo-900 border-indigo-400/60' },
     { key: 'taxas_bancarias', label: 'Taxas Bancárias', colorHex: '#0f766e', badgeClass: 'bg-teal-500/15 text-teal-900 border-teal-400/60' },
+    { key: 'folha_colaboradores', label: 'Folha / Colaboradores', colorHex: '#0284c7', badgeClass: 'bg-sky-500/15 text-sky-900 border-sky-400/60' },
+    { key: 'prestadores_servico', label: 'Prestação de Serviços', colorHex: '#0ea5e9', badgeClass: 'bg-cyan-500/15 text-cyan-900 border-cyan-400/60' },
     { key: 'outros', label: 'Outros', colorHex: '#71717a', badgeClass: 'bg-zinc-500/15 text-zinc-800 border-zinc-300/60' },
 ];
 exports.EXPENSE_CATEGORY_MAP = Object.fromEntries(exports.EXPENSE_CATEGORIES.map((c) => [c.key, c]));
+function normalizeExpenseCategory(raw) {
+    const clean = String(raw || '').trim();
+    if (!clean)
+        return 'outros';
+    const lower = clean.toLowerCase();
+    if (lower === 'combustivel' || lower === 'combustível')
+        return 'transportes';
+    if (lower in exports.EXPENSE_CATEGORY_MAP)
+        return lower;
+    return 'outros';
+}
 exports.EXPENSE_PAYMENT_META = {
     pix: { label: 'Pix', short: 'Pix' },
     boleto_15: { label: 'Boleto 15 dias', short: 'Boleto 15d' },
@@ -260,8 +278,9 @@ function createEmptyExpensesMap() {
         energia: 0,
         internet: 0,
         alimentacao: 0,
-        combustivel: 0,
+        transportes: 0,
         manutencao: 0,
+        custo_depreciacao: 0,
         contador: 0,
         marketing: 0,
         financiamento: 0,
@@ -271,6 +290,8 @@ function createEmptyExpensesMap() {
         impostos: 0,
         flow_dashboard: 0,
         taxas_bancarias: 0,
+        folha_colaboradores: 0,
+        prestadores_servico: 0,
         outros: 0,
     };
 }
@@ -463,8 +484,9 @@ function computeExpensesSummary(expenses, todayGoiasIso = getTodayGoiasISO()) {
         else {
             totalPendente = roundCurrencyBRL(totalPendente + val);
         }
-        const cur = catTotals.get(exp.categoria) || { amount: 0, count: 0 };
-        catTotals.set(exp.categoria, {
+        const curCat = normalizeExpenseCategory(exp.categoria);
+        const cur = catTotals.get(curCat) || { amount: 0, count: 0 };
+        catTotals.set(curCat, {
             amount: roundCurrencyBRL(cur.amount + val),
             count: cur.count + 1,
         });
@@ -520,7 +542,8 @@ function buildExpensesCsvContent(expenses, todayGoiasIso = getTodayGoiasISO()) {
     ].join(';');
     const rows = expenses.map((exp) => {
         const eff = computeExpenseEffectiveStatus(exp, todayGoiasIso);
-        const catLabel = exports.EXPENSE_CATEGORY_MAP[exp.categoria]?.label || exp.categoria;
+        const normCat = normalizeExpenseCategory(exp.categoria);
+        const catLabel = exports.EXPENSE_CATEGORY_MAP[normCat]?.label || exp.categoria;
         const payLabel = exports.EXPENSE_PAYMENT_META[exp.forma_pagamento]?.label || exp.forma_pagamento;
         const statusLabel = exports.EXPENSE_STATUS_META[eff]?.label || eff;
         return [
@@ -843,6 +866,26 @@ function formatQuantityBR(value) {
         minimumFractionDigits: 0,
         maximumFractionDigits: 2,
     });
+}
+function formatStockInt(val) {
+    const num = Number(val);
+    if (!Number.isFinite(num))
+        return '0';
+    return String(Math.max(0, Math.round(num)));
+}
+function sanitizeStockIntInput(raw) {
+    return String(raw ?? '').replace(/\D/g, '');
+}
+function resolveMonthPaymentDate(yearMonth, day) {
+    const cleanYm = /^\d{4}-\d{2}$/.test(String(yearMonth || '').trim())
+        ? String(yearMonth).trim()
+        : getTodayGoiasISO().slice(0, 7);
+    const [yrStr, moStr] = cleanYm.split('-');
+    const yr = Number(yrStr) || new Date().getFullYear();
+    const mo = Math.min(12, Math.max(1, Number(moStr) || 1));
+    const maxDay = new Date(yr, mo, 0).getDate();
+    const safeDay = Math.min(maxDay, Math.max(1, Math.round(Number(day) || 1)));
+    return `${yr}-${String(mo).padStart(2, '0')}-${String(safeDay).padStart(2, '0')}`;
 }
 
   },
