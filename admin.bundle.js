@@ -55,7 +55,7 @@ __moduleFactories["./utils/financeEngine"] = Object.assign(
   function(module, exports, require) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.RETURN_STATUS_META = exports.DELIVERY_METHOD_META = exports.INVESTMENT_TYPE_META = exports.EXPENSE_STATUS_META = exports.EXPENSE_PAYMENT_META = exports.EXPENSE_CATEGORY_MAP = exports.EXPENSE_CATEGORIES = exports.PAYMENT_MODALITY_META = exports.PRODUCTION_STAGES = void 0;
+exports.MAX_RECENT_FINISHED_ORDERS = exports.RETURN_STATUS_META = exports.DELIVERY_METHOD_META = exports.INVESTMENT_TYPE_META = exports.EXPENSE_STATUS_META = exports.EXPENSE_PAYMENT_META = exports.EXPENSE_CATEGORY_MAP = exports.EXPENSE_CATEGORIES = exports.PAYMENT_MODALITY_META = exports.PRODUCTION_STAGES = void 0;
 exports.normalizeExpenseCategory = normalizeExpenseCategory;
 exports.normalizeInvestmentType = normalizeInvestmentType;
 exports.createEmptyExpensesMap = createEmptyExpensesMap;
@@ -93,6 +93,8 @@ exports.formatQuantityBR = formatQuantityBR;
 exports.formatStockInt = formatStockInt;
 exports.sanitizeStockIntInput = sanitizeStockIntInput;
 exports.resolveMonthPaymentDate = resolveMonthPaymentDate;
+exports.getOrderCompletionTimestampMs = getOrderCompletionTimestampMs;
+exports.partitionFinishedOrders = partitionFinishedOrders;
 exports.PRODUCTION_STAGES = [
     {
         id: 'arquivo_recebido',
@@ -886,6 +888,106 @@ function resolveMonthPaymentDate(yearMonth, day) {
     const maxDay = new Date(yr, mo, 0).getDate();
     const safeDay = Math.min(maxDay, Math.max(1, Math.round(Number(day) || 1)));
     return `${yr}-${String(mo).padStart(2, '0')}-${String(safeDay).padStart(2, '0')}`;
+}
+exports.MAX_RECENT_FINISHED_ORDERS = 15;
+const STAGE_STAMP_BR_REGEX = /^(\d{2})\/(\d{2})\s+às\s+(\d{2}):(\d{2})$/;
+function extractYearMonth(raw) {
+    if (!raw)
+        return null;
+    const trimmed = String(raw).trim();
+    const isoMatch = /^(\d{4})-(\d{2})/.exec(trimmed);
+    if (isoMatch) {
+        const year = Number(isoMatch[1]);
+        const month = Number(isoMatch[2]);
+        if (Number.isFinite(year) && year > 1970 && month >= 1 && month <= 12) {
+            return { year, month };
+        }
+    }
+    const parsed = Date.parse(trimmed);
+    if (Number.isFinite(parsed) && parsed > 0) {
+        const dt = new Date(parsed);
+        return { year: dt.getUTCFullYear(), month: dt.getUTCMonth() + 1 };
+    }
+    return null;
+}
+function getOrderCompletionTimestampMs(order) {
+    if (order.completedAt) {
+        const parsedCompleted = Date.parse(order.completedAt);
+        if (Number.isFinite(parsedCompleted) && parsedCompleted > 0) {
+            return parsedCompleted;
+        }
+    }
+    const stampCandidates = [];
+    if (Array.isArray(order.stageHistory)) {
+        for (let i = order.stageHistory.length - 1; i >= 0; i -= 1) {
+            const entry = order.stageHistory[i];
+            if (entry?.stage === 'faca_pronta' && entry.timestamp) {
+                stampCandidates.push(String(entry.timestamp).trim());
+                break;
+            }
+        }
+    }
+    if (order.stageUpdatedAt) {
+        stampCandidates.push(String(order.stageUpdatedAt).trim());
+    }
+    for (const candidate of stampCandidates) {
+        const match = STAGE_STAMP_BR_REGEX.exec(candidate);
+        if (match) {
+            const day = Number(match[1]);
+            const month = Number(match[2]);
+            const hour = Number(match[3]);
+            const minute = Number(match[4]);
+            const createdYm = extractYearMonth(order.createdAt);
+            const updatedYm = extractYearMonth(order.updatedAt);
+            let year = createdYm?.year ?? updatedYm?.year ?? new Date().getUTCFullYear();
+            if (createdYm && month < createdYm.month) {
+                year += 1;
+            }
+            const utcMs = Date.UTC(year, month - 1, day, hour + 3, minute);
+            if (Number.isFinite(utcMs) && utcMs > 0) {
+                return utcMs;
+            }
+        }
+        else if (/^\d{4}-\d{2}-\d{2}/.test(candidate)) {
+            const isoCand = Date.parse(candidate);
+            if (Number.isFinite(isoCand) && isoCand > 0) {
+                return isoCand;
+            }
+        }
+    }
+    const updatedParsed = order.updatedAt ? Date.parse(order.updatedAt) : NaN;
+    if (Number.isFinite(updatedParsed) && updatedParsed > 0) {
+        return updatedParsed;
+    }
+    const createdParsed = order.createdAt ? Date.parse(order.createdAt) : NaN;
+    if (Number.isFinite(createdParsed) && createdParsed > 0) {
+        return createdParsed;
+    }
+    return 0;
+}
+function partitionFinishedOrders(orders, limit = exports.MAX_RECENT_FINISHED_ORDERS) {
+    const safeLimit = Math.max(0, Math.floor(Number.isFinite(limit) ? limit : exports.MAX_RECENT_FINISHED_ORDERS));
+    const finished = orders.filter((o) => o.stage === 'faca_pronta');
+    const completionTsMap = new Map();
+    for (const order of finished) {
+        completionTsMap.set(order, getOrderCompletionTimestampMs(order));
+    }
+    const sorted = [...finished].sort((a, b) => {
+        const completionDiff = (completionTsMap.get(b) ?? 0) - (completionTsMap.get(a) ?? 0);
+        if (completionDiff !== 0)
+            return completionDiff;
+        const createdDiff = (Date.parse(b.createdAt || '') || 0) - (Date.parse(a.createdAt || '') || 0);
+        if (createdDiff !== 0)
+            return createdDiff;
+        const numB = parseInt(String(b.id).replace(/\D/g, ''), 10) || 0;
+        const numA = parseInt(String(a.id).replace(/\D/g, ''), 10) || 0;
+        return numB - numA;
+    });
+    return {
+        allFinished: sorted,
+        recentFinished: sorted.slice(0, safeLimit),
+        storedFinished: sorted.slice(safeLimit),
+    };
 }
 
   },
@@ -2120,6 +2222,7 @@ function subscribeToCompanyRealtime(company_id, onRemoteUpdate, onConnectionStat
                     return;
                 }
                 if (row && row.id && row.etapa && !row.deleted_at) {
+                    const woodNum = row.wood_mm != null ? Number(row.wood_mm) : undefined;
                     handleIncoming({
                         eventId: `pg_order_${row.id}_v${row.version || row.updated_at || Date.now()}`,
                         company_id,
@@ -2138,7 +2241,9 @@ function subscribeToCompanyRealtime(company_id, onRemoteUpdate, onConnectionStat
                             companyPhone: row.cliente_telefone || '',
                             toolDescription: row.descricao_ferramenta || '',
                             bladeMeters: row.blade_meters != null ? Number(row.blade_meters) : undefined,
-                            woodMm: row.wood_mm || undefined,
+                            woodMm: woodNum === 15 || woodNum === 18 || woodNum === 22
+                                ? woodNum
+                                : undefined,
                             amount: Number(row.valor) || 0,
                             paymentModality: row.forma_pagamento,
                             paymentStatus: row.status_pagamento,
@@ -2150,6 +2255,8 @@ function subscribeToCompanyRealtime(company_id, onRemoteUpdate, onConnectionStat
                             createdAt: String(row.created_at || '').slice(0, 10),
                             dueDate: String(row.data_vencimento || '').slice(0, 10),
                             paidAt: row.data_pagamento ? String(row.data_pagamento).slice(0, 10) : undefined,
+                            completedAt: row.concluida_em ? String(row.concluida_em) : undefined,
+                            financialNotes: row.observacao_financeira || undefined,
                         },
                     });
                 }

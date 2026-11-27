@@ -59,7 +59,7 @@ __moduleFactories["./utils/financeEngine"] = Object.assign(
   function(module, exports, require) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.RETURN_STATUS_META = exports.DELIVERY_METHOD_META = exports.INVESTMENT_TYPE_META = exports.EXPENSE_STATUS_META = exports.EXPENSE_PAYMENT_META = exports.EXPENSE_CATEGORY_MAP = exports.EXPENSE_CATEGORIES = exports.PAYMENT_MODALITY_META = exports.PRODUCTION_STAGES = void 0;
+exports.MAX_RECENT_FINISHED_ORDERS = exports.RETURN_STATUS_META = exports.DELIVERY_METHOD_META = exports.INVESTMENT_TYPE_META = exports.EXPENSE_STATUS_META = exports.EXPENSE_PAYMENT_META = exports.EXPENSE_CATEGORY_MAP = exports.EXPENSE_CATEGORIES = exports.PAYMENT_MODALITY_META = exports.PRODUCTION_STAGES = void 0;
 exports.normalizeExpenseCategory = normalizeExpenseCategory;
 exports.normalizeInvestmentType = normalizeInvestmentType;
 exports.createEmptyExpensesMap = createEmptyExpensesMap;
@@ -97,6 +97,8 @@ exports.formatQuantityBR = formatQuantityBR;
 exports.formatStockInt = formatStockInt;
 exports.sanitizeStockIntInput = sanitizeStockIntInput;
 exports.resolveMonthPaymentDate = resolveMonthPaymentDate;
+exports.getOrderCompletionTimestampMs = getOrderCompletionTimestampMs;
+exports.partitionFinishedOrders = partitionFinishedOrders;
 exports.PRODUCTION_STAGES = [
     {
         id: 'arquivo_recebido',
@@ -891,6 +893,106 @@ function resolveMonthPaymentDate(yearMonth, day) {
     const safeDay = Math.min(maxDay, Math.max(1, Math.round(Number(day) || 1)));
     return `${yr}-${String(mo).padStart(2, '0')}-${String(safeDay).padStart(2, '0')}`;
 }
+exports.MAX_RECENT_FINISHED_ORDERS = 15;
+const STAGE_STAMP_BR_REGEX = /^(\d{2})\/(\d{2})\s+às\s+(\d{2}):(\d{2})$/;
+function extractYearMonth(raw) {
+    if (!raw)
+        return null;
+    const trimmed = String(raw).trim();
+    const isoMatch = /^(\d{4})-(\d{2})/.exec(trimmed);
+    if (isoMatch) {
+        const year = Number(isoMatch[1]);
+        const month = Number(isoMatch[2]);
+        if (Number.isFinite(year) && year > 1970 && month >= 1 && month <= 12) {
+            return { year, month };
+        }
+    }
+    const parsed = Date.parse(trimmed);
+    if (Number.isFinite(parsed) && parsed > 0) {
+        const dt = new Date(parsed);
+        return { year: dt.getUTCFullYear(), month: dt.getUTCMonth() + 1 };
+    }
+    return null;
+}
+function getOrderCompletionTimestampMs(order) {
+    if (order.completedAt) {
+        const parsedCompleted = Date.parse(order.completedAt);
+        if (Number.isFinite(parsedCompleted) && parsedCompleted > 0) {
+            return parsedCompleted;
+        }
+    }
+    const stampCandidates = [];
+    if (Array.isArray(order.stageHistory)) {
+        for (let i = order.stageHistory.length - 1; i >= 0; i -= 1) {
+            const entry = order.stageHistory[i];
+            if (entry?.stage === 'faca_pronta' && entry.timestamp) {
+                stampCandidates.push(String(entry.timestamp).trim());
+                break;
+            }
+        }
+    }
+    if (order.stageUpdatedAt) {
+        stampCandidates.push(String(order.stageUpdatedAt).trim());
+    }
+    for (const candidate of stampCandidates) {
+        const match = STAGE_STAMP_BR_REGEX.exec(candidate);
+        if (match) {
+            const day = Number(match[1]);
+            const month = Number(match[2]);
+            const hour = Number(match[3]);
+            const minute = Number(match[4]);
+            const createdYm = extractYearMonth(order.createdAt);
+            const updatedYm = extractYearMonth(order.updatedAt);
+            let year = createdYm?.year ?? updatedYm?.year ?? new Date().getUTCFullYear();
+            if (createdYm && month < createdYm.month) {
+                year += 1;
+            }
+            const utcMs = Date.UTC(year, month - 1, day, hour + 3, minute);
+            if (Number.isFinite(utcMs) && utcMs > 0) {
+                return utcMs;
+            }
+        }
+        else if (/^\d{4}-\d{2}-\d{2}/.test(candidate)) {
+            const isoCand = Date.parse(candidate);
+            if (Number.isFinite(isoCand) && isoCand > 0) {
+                return isoCand;
+            }
+        }
+    }
+    const updatedParsed = order.updatedAt ? Date.parse(order.updatedAt) : NaN;
+    if (Number.isFinite(updatedParsed) && updatedParsed > 0) {
+        return updatedParsed;
+    }
+    const createdParsed = order.createdAt ? Date.parse(order.createdAt) : NaN;
+    if (Number.isFinite(createdParsed) && createdParsed > 0) {
+        return createdParsed;
+    }
+    return 0;
+}
+function partitionFinishedOrders(orders, limit = exports.MAX_RECENT_FINISHED_ORDERS) {
+    const safeLimit = Math.max(0, Math.floor(Number.isFinite(limit) ? limit : exports.MAX_RECENT_FINISHED_ORDERS));
+    const finished = orders.filter((o) => o.stage === 'faca_pronta');
+    const completionTsMap = new Map();
+    for (const order of finished) {
+        completionTsMap.set(order, getOrderCompletionTimestampMs(order));
+    }
+    const sorted = [...finished].sort((a, b) => {
+        const completionDiff = (completionTsMap.get(b) ?? 0) - (completionTsMap.get(a) ?? 0);
+        if (completionDiff !== 0)
+            return completionDiff;
+        const createdDiff = (Date.parse(b.createdAt || '') || 0) - (Date.parse(a.createdAt || '') || 0);
+        if (createdDiff !== 0)
+            return createdDiff;
+        const numB = parseInt(String(b.id).replace(/\D/g, ''), 10) || 0;
+        const numA = parseInt(String(a.id).replace(/\D/g, ''), 10) || 0;
+        return numB - numA;
+    });
+    return {
+        allFinished: sorted,
+        recentFinished: sorted.slice(0, safeLimit),
+        storedFinished: sorted.slice(safeLimit),
+    };
+}
 
   },
   { dir: "./utils" }
@@ -1122,6 +1224,7 @@ function mapOrderRow(o) {
         createdAt: createdDate,
         dueDate: String(o.data_vencimento || createdDate).slice(0, 10),
         paidAt: o.data_pagamento ? String(o.data_pagamento).slice(0, 10) : undefined,
+        completedAt: o.concluida_em ? String(o.concluida_em) : undefined,
         financialNotes: o.observacao_financeira || undefined,
     };
 }
@@ -1747,6 +1850,9 @@ async function dbCreateOrder(empresaId, numeroOs, payload) {
         version: 1,
         data_vencimento: dueDate,
         data_pagamento: paidAt,
+        ...(payload.stage === 'faca_pronta'
+            ? { concluida_em: new Date().toISOString() }
+            : {}),
         observacao_financeira: payload.financialNotes?.trim() || null,
     })
         .select('*')
@@ -1779,6 +1885,8 @@ async function dbUpdateOrderFull(empresaId, orderUuid, payload) {
     if (payload.stageChanged) {
         updateBody.etapa_atualizada_em = payload.stageUpdatedAt;
         updateBody.historico_etapas = payload.stageHistory;
+        updateBody.concluida_em =
+            payload.stage === 'faca_pronta' ? new Date().toISOString() : null;
     }
     const { data, error } = await sb
         .from('ordens_servico')
@@ -1804,6 +1912,7 @@ async function dbMoveOrderStage(ordemUuid, targetStage, stamp) {
     return {
         version: Number(data?.version) || 1,
         updatedAt: data?.updated_at || new Date().toISOString(),
+        completedAt: data?.concluida_em ? String(data.concluida_em) : null,
     };
 }
 async function dbUpdateOrderPayment(empresaId, ordemUuid, updates) {
@@ -3952,6 +4061,7 @@ function subscribeToCompanyRealtime(company_id, onRemoteUpdate, onConnectionStat
                     return;
                 }
                 if (row && row.id && row.etapa && !row.deleted_at) {
+                    const woodNum = row.wood_mm != null ? Number(row.wood_mm) : undefined;
                     handleIncoming({
                         eventId: `pg_order_${row.id}_v${row.version || row.updated_at || Date.now()}`,
                         company_id,
@@ -3970,7 +4080,9 @@ function subscribeToCompanyRealtime(company_id, onRemoteUpdate, onConnectionStat
                             companyPhone: row.cliente_telefone || '',
                             toolDescription: row.descricao_ferramenta || '',
                             bladeMeters: row.blade_meters != null ? Number(row.blade_meters) : undefined,
-                            woodMm: row.wood_mm || undefined,
+                            woodMm: woodNum === 15 || woodNum === 18 || woodNum === 22
+                                ? woodNum
+                                : undefined,
                             amount: Number(row.valor) || 0,
                             paymentModality: row.forma_pagamento,
                             paymentStatus: row.status_pagamento,
@@ -3982,6 +4094,8 @@ function subscribeToCompanyRealtime(company_id, onRemoteUpdate, onConnectionStat
                             createdAt: String(row.created_at || '').slice(0, 10),
                             dueDate: String(row.data_vencimento || '').slice(0, 10),
                             paidAt: row.data_pagamento ? String(row.data_pagamento).slice(0, 10) : undefined,
+                            completedAt: row.concluida_em ? String(row.concluida_em) : undefined,
+                            financialNotes: row.observacao_financeira || undefined,
                         },
                     });
                 }
@@ -5228,7 +5342,118 @@ const OrderKanbanCard = react_1.default.memo(({ order, userRole, isPending, isEx
                 react_1.default.createElement(lucide_react_1.Truck, { className: "w-3 h-3 shrink-0" }),
                 react_1.default.createElement("span", { className: "truncate" }, "Despachar"))))));
 });
-const ProductionKanban = ({ orders, userRole, pendingOrderIds = [], moveError, onMoveStage, onQuickRegisterDelivery, onEditOrder, onDeleteOrder, }) => {
+const StoredOrderMiniCard = react_1.default.memo(({ order, isPending, isExpanded, canEditOrder, canDeleteOrder, onToggleExpand, onMoveStage, onQuickRegisterDelivery, onEditOrder, onDeleteOrder, }) => {
+    const modMeta = financeEngine_1.PAYMENT_MODALITY_META[order.paymentModality];
+    const hasBlade = order.bladeMeters !== undefined && order.bladeMeters !== null;
+    const hasWood = Boolean(order.woodMm);
+    return (react_1.default.createElement("div", { className: `rounded-xl p-2.5 liquid-glass-subtle hover:bg-white/50 transition-colors flex flex-col justify-between gap-2 min-w-0 ${isPending ? 'opacity-75 ring-1 ring-emerald-400/70' : ''}` },
+        react_1.default.createElement("div", { className: "space-y-1.5 min-w-0" },
+            react_1.default.createElement("div", { className: "flex items-start justify-between gap-1.5 min-w-0" },
+                react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-1 min-w-0" },
+                    react_1.default.createElement("span", { className: "px-1.5 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-300/60 font-mono text-[10px] font-bold text-emerald-800 shrink-0" }, order.id),
+                    react_1.default.createElement("span", { className: `px-1.5 py-0.5 rounded-full text-[9px] font-bold border ${modMeta?.badgeClass}`, title: modMeta?.label }, modMeta?.short),
+                    react_1.default.createElement("span", { className: `px-1.5 py-0.5 rounded-full text-[9px] font-bold border ${order.paymentStatus === 'pago'
+                            ? 'bg-emerald-500/15 text-emerald-800 border-emerald-300/60'
+                            : 'bg-white/70 text-slate-700 border-white/80'}` }, order.paymentStatus === 'pago' ? 'Pago' : 'Não Pago')),
+                react_1.default.createElement("div", { className: "flex items-center gap-1 shrink-0" },
+                    react_1.default.createElement("button", { type: "button", onClick: () => onToggleExpand(order.id), className: "btn-compact w-6 h-6 rounded-lg bg-white/65 hover:bg-white/95 text-slate-600 hover:text-indigo-700 border border-white/80 flex items-center justify-center transition-colors cursor-pointer shrink-0", title: isExpanded ? 'Recolher detalhes' : 'Visualizar detalhes', "aria-label": isExpanded ? 'Recolher detalhes' : 'Visualizar detalhes' }, isExpanded ? (react_1.default.createElement(lucide_react_1.ChevronUp, { className: "w-3 h-3" })) : (react_1.default.createElement(lucide_react_1.ChevronDown, { className: "w-3 h-3" }))),
+                    canEditOrder && (react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onEditOrder?.(order), className: "btn-compact w-6 h-6 rounded-lg bg-white/65 hover:bg-indigo-500/20 disabled:opacity-50 text-slate-500 hover:text-indigo-700 border border-white/80 flex items-center justify-center transition-colors cursor-pointer shrink-0", title: "Editar esta OS", "aria-label": "Editar esta OS" },
+                        react_1.default.createElement(lucide_react_1.Edit3, { className: "w-3 h-3" }))),
+                    canDeleteOrder && (react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onDeleteOrder(order.id), className: "btn-compact w-6 h-6 rounded-lg bg-white/65 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/80 flex items-center justify-center transition-colors cursor-pointer shrink-0", title: "Excluir esta OS", "aria-label": "Excluir esta OS" },
+                        react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3 h-3" }))))),
+            react_1.default.createElement("div", { className: "min-w-0 space-y-1" },
+                react_1.default.createElement("span", { className: "text-[11px] font-bold text-slate-600 block break-words leading-tight" }, order.companyName),
+                react_1.default.createElement("h4", { className: "text-xs font-extrabold text-slate-900 leading-tight break-words" }, order.toolDescription),
+                (hasBlade || hasWood) && (react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-1 pt-0.5" },
+                    hasBlade && (react_1.default.createElement("span", { className: "px-1.5 py-0.5 rounded-md bg-white/65 border border-white/80 text-[9px] font-bold text-slate-700" },
+                        order.bladeMeters,
+                        " m")),
+                    hasWood && (react_1.default.createElement("span", { className: "px-1.5 py-0.5 rounded-md bg-amber-500/10 border border-amber-300/60 text-[9px] font-bold text-amber-900" },
+                        order.woodMm,
+                        " mm"))))),
+            isExpanded && (react_1.default.createElement("div", { className: "p-2 rounded-lg bg-white/65 border border-white/80 text-[10px] space-y-0.5 text-slate-700 leading-tight" },
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("strong", null, "Cadastro:"),
+                    " ",
+                    (0, financeEngine_1.formatDateBR)(order.createdAt)),
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("strong", null, "Conclu\u00EDda em:"),
+                    ' ',
+                    order.completedAt
+                        ? (0, financeEngine_1.formatDateTimeGoiasBR)(order.completedAt)
+                        : order.stageUpdatedAt || '—'),
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("strong", null, "Vencimento:"),
+                    " ",
+                    (0, financeEngine_1.formatDateBR)(order.dueDate)),
+                react_1.default.createElement("div", { className: "break-words" },
+                    react_1.default.createElement("strong", null, "Telefone:"),
+                    " ",
+                    order.companyPhone || 'Não informado'),
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("strong", null, "L\u00E2mina:"),
+                    " ",
+                    hasBlade ? `${order.bladeMeters} m` : 'Não informada'),
+                react_1.default.createElement("div", null,
+                    react_1.default.createElement("strong", null, "Madeira:"),
+                    " ",
+                    hasWood ? `${order.woodMm} mm` : 'Não informada'),
+                order.financialNotes?.trim() && (react_1.default.createElement("div", { className: "break-words" },
+                    react_1.default.createElement("strong", null, "Obs. Financeira:"),
+                    " ",
+                    order.financialNotes)))),
+            react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-1 text-[10px] text-slate-700 bg-white/55 px-2 py-1 rounded-lg border border-white/70 min-w-0" },
+                react_1.default.createElement("span", { className: "flex items-center gap-1 font-semibold min-w-0" },
+                    react_1.default.createElement(lucide_react_1.Clock, { className: "w-3 h-3 text-emerald-600 shrink-0" }),
+                    react_1.default.createElement("span", { className: "break-words leading-tight" }, isPending
+                        ? 'Salvando...'
+                        : order.stageUpdatedAt ||
+                            (order.completedAt
+                                ? (0, financeEngine_1.formatDateTimeGoiasBR)(order.completedAt)
+                                : (0, financeEngine_1.formatDateBR)(order.createdAt)))),
+                react_1.default.createElement("span", { className: "font-mono font-extrabold text-emerald-700 shrink-0" }, (0, financeEngine_1.formatBRL)(order.amount)))),
+        react_1.default.createElement("div", { className: "flex items-center gap-1.5 pt-0.5 min-w-0" },
+            react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onMoveStage(order.id, 'faca_ajustada'), className: "btn-compact px-2 py-1.5 rounded-lg text-[10px] font-bold bg-white/70 hover:bg-white disabled:opacity-50 text-slate-700 border border-white/80 flex items-center justify-center gap-1 transition-colors cursor-pointer shrink-0", title: "Retornar para Faca Ajustada" },
+                react_1.default.createElement(lucide_react_1.RotateCcw, { className: "w-3 h-3 shrink-0" }),
+                react_1.default.createElement("span", null, "Reabrir")),
+            react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onQuickRegisterDelivery(order), className: "btn-compact flex-1 min-w-0 py-1.5 px-2 rounded-lg text-[10px] font-bold bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white border border-white/40 shadow-sm flex items-center justify-center gap-1 transition-colors cursor-pointer", title: "Registrar sa\u00EDda e despacho log\u00EDstico" },
+                react_1.default.createElement(lucide_react_1.Truck, { className: "w-3 h-3 shrink-0" }),
+                react_1.default.createElement("span", null, "Despachar")))));
+});
+const StoredOrdersSubsection = ({ storedOrders, storedTotalVolume, recentCount, pendingSet, expandedOrderIds, canEditOrder, canDeleteOrder, onToggleExpand, onMoveStage, onQuickRegisterDelivery, onEditOrder, onDeleteOrder, onBackToFinished, }) => (react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-5 sm:p-6 space-y-4 min-w-0" },
+    react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-white/60" },
+        react_1.default.createElement("div", { className: "flex items-center gap-2.5" },
+            react_1.default.createElement("div", { className: "w-10 h-10 rounded-2xl bg-slate-700/10 border border-slate-400/40 flex items-center justify-center text-slate-700 shrink-0" },
+                react_1.default.createElement(lucide_react_1.Archive, { className: "w-5 h-5" })),
+            react_1.default.createElement("div", null,
+                react_1.default.createElement("h3", { className: "text-base font-extrabold text-slate-900" },
+                    "Facas Armazenadas (",
+                    storedOrders.length,
+                    ")"),
+                react_1.default.createElement("p", { className: "text-xs font-medium text-slate-600" },
+                    "Hist\u00F3rico autom\u00E1tico das facas finalizadas excedentes al\u00E9m das ",
+                    financeEngine_1.MAX_RECENT_FINISHED_ORDERS,
+                    " mais recentes, organizado em grade compacta."))),
+        react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
+            onBackToFinished && (react_1.default.createElement("button", { type: "button", onClick: onBackToFinished, className: "liquid-glass-pill px-3.5 py-2 rounded-full text-xs font-bold text-emerald-800 hover:bg-white/80 inline-flex items-center gap-1.5 transition cursor-pointer" },
+                react_1.default.createElement(lucide_react_1.ArrowLeft, { className: "w-3.5 h-3.5" }),
+                react_1.default.createElement("span", null,
+                    "Facas Finalizadas (",
+                    recentCount,
+                    ")"))),
+            react_1.default.createElement("div", { className: "liquid-glass-pill px-4 py-2 rounded-full text-xs font-bold text-slate-800" },
+                "Volume Armazenado:",
+                ' ',
+                react_1.default.createElement("strong", { className: "font-mono text-emerald-700" }, (0, financeEngine_1.formatBRL)(storedTotalVolume))))),
+    storedOrders.length === 0 ? (react_1.default.createElement("div", { className: "p-8 rounded-2xl border border-dashed border-white/75 bg-white/20 text-center space-y-1" },
+        react_1.default.createElement("p", { className: "text-sm font-bold text-slate-700" }, "Nenhuma faca armazenada ainda."),
+        react_1.default.createElement("p", { className: "text-xs text-slate-600" },
+            "As ",
+            financeEngine_1.MAX_RECENT_FINISHED_ORDERS,
+            " facas finalizadas mais recentes permanecem em destaque acima; a partir da ",
+            financeEngine_1.MAX_RECENT_FINISHED_ORDERS + 1,
+            "\u00AA, as mais antigas aparecem automaticamente aqui."))) : (react_1.default.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-2.5 items-start" }, storedOrders.map((order) => (react_1.default.createElement(StoredOrderMiniCard, { key: order.id, order: order, isPending: pendingSet.has(order.id), isExpanded: expandedOrderIds.has(order.id), canEditOrder: canEditOrder, canDeleteOrder: canDeleteOrder, onToggleExpand: onToggleExpand, onMoveStage: onMoveStage, onQuickRegisterDelivery: onQuickRegisterDelivery, onEditOrder: onEditOrder, onDeleteOrder: onDeleteOrder })))))));
+const ProductionKanban = ({ orders, allOrders, userRole, pendingOrderIds = [], moveError, onMoveStage, onQuickRegisterDelivery, onEditOrder, onDeleteOrder, }) => {
     const [activeView, setActiveView] = (0, react_1.useState)('producao');
     const [draggedId, setDraggedId] = (0, react_1.useState)(null);
     const [dragOverStage, setDragOverStage] = (0, react_1.useState)(null);
@@ -5237,8 +5462,21 @@ const ProductionKanban = ({ orders, userRole, pendingOrderIds = [], moveError, o
     const canDeleteOrder = userRole !== 'operador' && userRole !== 'cliente';
     const canEditOrder = userRole !== 'operador' && userRole !== 'cliente' && Boolean(onEditOrder);
     const activeOrders = (0, react_1.useMemo)(() => orders.filter((o) => o.stage !== 'faca_pronta'), [orders]);
-    const readyOrders = (0, react_1.useMemo)(() => orders.filter((o) => o.stage === 'faca_pronta'), [orders]);
-    const readyTotalVolume = (0, react_1.useMemo)(() => readyOrders.reduce((acc, o) => acc + (o.amount || 0), 0), [readyOrders]);
+    const { allFinished, recentFinished, storedFinished } = (0, react_1.useMemo)(() => {
+        const queueSource = allOrders ?? orders;
+        const partitioned = (0, financeEngine_1.partitionFinishedOrders)(queueSource, financeEngine_1.MAX_RECENT_FINISHED_ORDERS);
+        if (!allOrders || allOrders === orders) {
+            return partitioned;
+        }
+        const visibleIds = new Set(orders.map((o) => o.id));
+        return {
+            allFinished: partitioned.allFinished.filter((o) => visibleIds.has(o.id)),
+            recentFinished: partitioned.recentFinished.filter((o) => visibleIds.has(o.id)),
+            storedFinished: partitioned.storedFinished.filter((o) => visibleIds.has(o.id)),
+        };
+    }, [allOrders, orders]);
+    const recentTotalVolume = (0, react_1.useMemo)(() => recentFinished.reduce((acc, o) => acc + (o.amount || 0), 0), [recentFinished]);
+    const storedTotalVolume = (0, react_1.useMemo)(() => storedFinished.reduce((acc, o) => acc + (o.amount || 0), 0), [storedFinished]);
     const handleToggleExpand = (0, react_1.useCallback)((orderId) => {
         setExpandedOrderIds((prev) => {
             const next = new Set(prev);
@@ -5257,7 +5495,10 @@ const ProductionKanban = ({ orders, userRole, pendingOrderIds = [], moveError, o
         react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-3" },
             react_1.default.createElement("div", null,
                 react_1.default.createElement("h2", { className: "text-lg font-extrabold text-slate-900 tracking-tight frosted-text-depth" }, "Esteira de Produ\u00E7\u00E3o"),
-                react_1.default.createElement("p", { className: "text-xs font-medium text-slate-700" }, "Arraste os cart\u00F5es ou avance etapas. Facas finalizadas v\u00E3o automaticamente para a aba Facas Prontas.")),
+                react_1.default.createElement("p", { className: "text-xs font-medium text-slate-700" },
+                    "Arraste os cart\u00F5es ou avance etapas. As ",
+                    financeEngine_1.MAX_RECENT_FINISHED_ORDERS,
+                    " facas mais recentes ficam em Facas Finalizadas e as anteriores seguem para Facas Armazenadas.")),
             react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-2" },
                 react_1.default.createElement("button", { type: "button", onClick: () => setActiveView('producao'), className: `min-h-[40px] px-4 py-2 rounded-full text-xs font-bold inline-flex items-center gap-2 transition cursor-pointer ${activeView === 'producao'
                         ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md border border-white/40'
@@ -5288,10 +5529,18 @@ const ProductionKanban = ({ orders, userRole, pendingOrderIds = [], moveError, o
                             ? 'bg-emerald-500/25 text-emerald-900 ring-2 ring-emerald-500 border border-emerald-400'
                             : 'liquid-glass-pill text-slate-700'}`, title: "Clique para abrir ou arraste uma faca aqui para concluir" },
                     react_1.default.createElement(lucide_react_1.CheckCircle2, { className: "w-3.5 h-3.5" }),
-                    react_1.default.createElement("span", null, "Facas Prontas"),
+                    react_1.default.createElement("span", null, "Facas Finalizadas"),
                     react_1.default.createElement("span", { className: `px-2 py-0.5 rounded-full text-[10px] font-extrabold ${activeView === 'prontas'
                             ? 'bg-white/25 text-white'
-                            : 'bg-emerald-500/15 text-emerald-800 border border-emerald-300/60'}` }, readyOrders.length)))),
+                            : 'bg-emerald-500/15 text-emerald-800 border border-emerald-300/60'}` }, recentFinished.length)),
+                react_1.default.createElement("button", { type: "button", onClick: () => setActiveView('armazenadas'), className: `min-h-[40px] px-4 py-2 rounded-full text-xs font-bold inline-flex items-center gap-2 transition cursor-pointer ${activeView === 'armazenadas'
+                        ? 'bg-gradient-to-r from-slate-700 to-slate-800 text-white shadow-md border border-white/40'
+                        : 'liquid-glass-pill text-slate-700'}`, title: `Visualizar todas as ${storedFinished.length} facas armazenadas (${allFinished.length} finalizadas no total)` },
+                    react_1.default.createElement(lucide_react_1.Archive, { className: "w-3.5 h-3.5" }),
+                    react_1.default.createElement("span", null, "Facas Armazenadas"),
+                    react_1.default.createElement("span", { className: `px-2 py-0.5 rounded-full text-[10px] font-extrabold ${activeView === 'armazenadas'
+                            ? 'bg-white/25 text-white'
+                            : 'bg-white/65 text-slate-800 border border-white/80'}` }, storedFinished.length)))),
         moveError && (react_1.default.createElement("div", { className: "px-4 py-2.5 rounded-2xl bg-rose-500/15 border border-rose-300/70 text-xs font-bold text-rose-800" }, moveError)),
         activeView === 'producao' ? (
         /* 5-Column Active Production Kanban (keeps active flow clean) */
@@ -5331,89 +5580,100 @@ const ProductionKanban = ({ orders, userRole, pendingOrderIds = [], moveError, o
                 react_1.default.createElement("div", { className: "space-y-2.5 flex-1 min-w-0" }, colOrders.length === 0 ? (react_1.default.createElement("div", { className: "h-32 rounded-2xl border border-dashed border-white/75 bg-white/20 flex items-center justify-center text-xs font-medium text-slate-600 text-center px-2" },
                     "Sem facas em ",
                     stage.label)) : (colOrders.map((order) => (react_1.default.createElement(OrderKanbanCard, { key: order.id, order: order, userRole: userRole, isPending: pendingSet.has(order.id), isExpanded: expandedOrderIds.has(order.id), onToggleExpand: handleToggleExpand, onDragStart: setDraggedId, onDragEnd: handleDragEnd, onMoveStage: onMoveStage, onQuickRegisterDelivery: onQuickRegisterDelivery, onEditOrder: onEditOrder, onDeleteOrder: onDeleteOrder })))))));
-        }))) : (
-        /* Subseção Dedicada: Facas Prontas / Concluídas */
-        react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-5 sm:p-6 space-y-4 min-w-0" },
-            react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-white/60" },
-                react_1.default.createElement("div", { className: "flex items-center gap-2.5" },
-                    react_1.default.createElement("div", { className: "w-10 h-10 rounded-2xl bg-emerald-500/15 border border-emerald-300/60 flex items-center justify-center text-emerald-700 shrink-0" },
-                        react_1.default.createElement(lucide_react_1.CheckCircle2, { className: "w-5 h-5" })),
-                    react_1.default.createElement("div", null,
-                        react_1.default.createElement("h3", { className: "text-base font-extrabold text-slate-900" },
-                            "Facas Prontas / Conclu\u00EDdas (",
-                            readyOrders.length,
-                            ")"),
-                        react_1.default.createElement("p", { className: "text-xs font-medium text-slate-600" }, "Ferramentas finalizadas e liberadas para retirada ou despacho log\u00EDstico."))),
-                react_1.default.createElement("div", { className: "liquid-glass-pill px-4 py-2 rounded-full text-xs font-bold text-slate-800" },
-                    "Volume Conclu\u00EDdo:",
-                    ' ',
-                    react_1.default.createElement("strong", { className: "font-mono text-emerald-700" }, (0, financeEngine_1.formatBRL)(readyTotalVolume)))),
-            readyOrders.length === 0 ? (react_1.default.createElement("div", { className: "p-10 rounded-2xl border border-dashed border-white/75 bg-white/20 text-center space-y-1" },
-                react_1.default.createElement("p", { className: "text-sm font-bold text-slate-700" }, "Nenhuma faca conclu\u00EDda ainda."),
-                react_1.default.createElement("p", { className: "text-xs text-slate-600" }, "Ao clicar em \"Concluir Faca\" na etapa Faca Ajustada, o pedido aparecer\u00E1 automaticamente aqui."))) : (react_1.default.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4" }, readyOrders.map((order) => {
-                const modMeta = financeEngine_1.PAYMENT_MODALITY_META[order.paymentModality];
-                const isPending = pendingSet.has(order.id);
-                const isExpanded = expandedOrderIds.has(order.id);
-                return (react_1.default.createElement("div", { key: order.id, className: `rounded-2xl p-4 liquid-glass-subtle hover:bg-white/45 transition flex flex-col justify-between gap-3 overflow-hidden min-w-0 ${isPending ? 'opacity-75 ring-1 ring-emerald-400/70' : ''}` },
-                    react_1.default.createElement("div", { className: "space-y-2.5 min-w-0" },
-                        react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-1.5 min-w-0" },
-                            react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-1.5 min-w-0" },
-                                react_1.default.createElement("span", { className: "px-2 py-0.5 rounded-lg bg-emerald-500/15 border border-emerald-300/60 font-mono text-[11px] font-bold text-emerald-800 shrink-0" }, order.id),
-                                react_1.default.createElement("span", { className: `px-2 py-0.5 rounded-full text-[10px] font-bold border ${modMeta?.badgeClass}` }, modMeta?.short),
-                                react_1.default.createElement("span", { className: `px-2 py-0.5 rounded-full text-[10px] font-bold border ${order.paymentStatus === 'pago'
-                                        ? 'bg-emerald-500/15 text-emerald-800 border-emerald-300/60'
-                                        : 'bg-white/70 text-slate-700 border-white/80'}` }, order.paymentStatus === 'pago' ? 'Pago' : 'Não Pago')),
-                            react_1.default.createElement("div", { className: "flex items-center gap-1 shrink-0" },
-                                react_1.default.createElement("button", { type: "button", onClick: () => handleToggleExpand(order.id), className: "btn-compact w-7 h-7 rounded-lg bg-white/65 hover:bg-white/95 text-slate-600 hover:text-indigo-700 border border-white/80 flex items-center justify-center transition cursor-pointer shrink-0", title: isExpanded ? 'Recolher detalhes' : 'Exibir mais detalhes', "aria-label": isExpanded ? 'Recolher detalhes' : 'Exibir mais detalhes' }, isExpanded ? (react_1.default.createElement(lucide_react_1.ChevronUp, { className: "w-3.5 h-3.5" })) : (react_1.default.createElement(lucide_react_1.ChevronDown, { className: "w-3.5 h-3.5" }))),
-                                canEditOrder && (react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onEditOrder?.(order), className: "btn-compact w-7 h-7 rounded-lg bg-white/65 hover:bg-indigo-500/20 disabled:opacity-50 text-slate-500 hover:text-indigo-700 border border-white/80 flex items-center justify-center transition cursor-pointer shrink-0", title: "Editar esta OS", "aria-label": "Editar esta OS" },
-                                    react_1.default.createElement(lucide_react_1.Edit3, { className: "w-3.5 h-3.5" }))),
-                                canDeleteOrder && (react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onDeleteOrder(order.id), className: "btn-compact w-7 h-7 rounded-lg bg-white/65 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/80 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir esta OS", "aria-label": "Excluir esta OS" },
-                                    react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" }))))),
-                        react_1.default.createElement("div", { className: "min-w-0" },
-                            react_1.default.createElement("span", { className: "text-xs font-bold text-slate-600 block truncate" }, order.companyName),
-                            react_1.default.createElement("h4", { className: "text-sm font-extrabold text-slate-900 leading-snug mt-0.5 break-words" }, order.toolDescription)),
-                        isExpanded && (react_1.default.createElement("div", { className: "p-2.5 rounded-xl bg-white/60 border border-white/80 text-[11px] space-y-1 text-slate-700" },
-                            react_1.default.createElement("div", null,
-                                react_1.default.createElement("strong", null, "Cadastro:"),
-                                " ",
-                                (0, financeEngine_1.formatDateBR)(order.createdAt)),
-                            react_1.default.createElement("div", null,
-                                react_1.default.createElement("strong", null, "Vencimento:"),
-                                " ",
-                                (0, financeEngine_1.formatDateBR)(order.dueDate)),
-                            react_1.default.createElement("div", null,
-                                react_1.default.createElement("strong", null, "Telefone:"),
-                                " ",
-                                order.companyPhone || 'Não informado'),
-                            order.bladeMeters !== undefined && order.bladeMeters !== null && (react_1.default.createElement("div", null,
-                                react_1.default.createElement("strong", null, "L\u00E2mina:"),
-                                " ",
-                                order.bladeMeters,
-                                " m")),
-                            order.woodMm && (react_1.default.createElement("div", null,
-                                react_1.default.createElement("strong", null, "Madeira:"),
-                                " ",
-                                order.woodMm,
-                                " mm")),
-                            order.financialNotes?.trim() && (react_1.default.createElement("div", { className: "break-words" },
-                                react_1.default.createElement("strong", null, "Obs. Financeira:"),
-                                " ",
-                                order.financialNotes)))),
-                        react_1.default.createElement("div", { className: "flex items-center justify-between text-[11px] text-slate-700 bg-white/55 px-2.5 py-1.5 rounded-xl border border-white/70" },
-                            react_1.default.createElement("span", { className: "flex items-center gap-1 font-semibold truncate" },
-                                react_1.default.createElement(lucide_react_1.Clock, { className: "w-3.5 h-3.5 text-emerald-600 shrink-0" }),
-                                react_1.default.createElement("span", { className: "truncate" },
-                                    "Conclu\u00EDda: ",
-                                    order.stageUpdatedAt)),
-                            react_1.default.createElement("span", { className: "font-mono font-extrabold text-emerald-700 shrink-0" }, (0, financeEngine_1.formatBRL)(order.amount)))),
-                    react_1.default.createElement("div", { className: "flex items-center gap-2 pt-1" },
-                        react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onMoveStage(order.id, 'faca_ajustada'), className: "btn-compact px-3 py-2 rounded-xl text-[11px] font-bold bg-white/70 hover:bg-white text-slate-700 border border-white/80 inline-flex items-center justify-center gap-1 transition cursor-pointer shrink-0", title: "Retornar para Faca Ajustada" },
-                            react_1.default.createElement(lucide_react_1.RotateCcw, { className: "w-3.5 h-3.5" }),
-                            react_1.default.createElement("span", null, "Reabrir")),
-                        react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onQuickRegisterDelivery(order), className: "btn-compact flex-1 py-2 px-3 rounded-xl text-[11px] font-bold bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white border border-white/40 shadow-sm inline-flex items-center justify-center gap-1.5 transition cursor-pointer" },
-                            react_1.default.createElement(lucide_react_1.Truck, { className: "w-3.5 h-3.5 shrink-0" }),
-                            react_1.default.createElement("span", null, "Despachar / Sa\u00EDda")))));
-            })))))));
+        }))) : activeView === 'prontas' ? (react_1.default.createElement("div", { className: "space-y-5 min-w-0" },
+            react_1.default.createElement("div", { className: "liquid-glass rounded-[28px] p-5 sm:p-6 space-y-4 min-w-0" },
+                react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-white/60" },
+                    react_1.default.createElement("div", { className: "flex items-center gap-2.5" },
+                        react_1.default.createElement("div", { className: "w-10 h-10 rounded-2xl bg-emerald-500/15 border border-emerald-300/60 flex items-center justify-center text-emerald-700 shrink-0" },
+                            react_1.default.createElement(lucide_react_1.CheckCircle2, { className: "w-5 h-5" })),
+                        react_1.default.createElement("div", null,
+                            react_1.default.createElement("h3", { className: "text-base font-extrabold text-slate-900" },
+                                "Facas Finalizadas (",
+                                recentFinished.length,
+                                "/",
+                                financeEngine_1.MAX_RECENT_FINISHED_ORDERS,
+                                ")"),
+                            react_1.default.createElement("p", { className: "text-xs font-medium text-slate-600" },
+                                "Fila autom\u00E1tica das ",
+                                financeEngine_1.MAX_RECENT_FINISHED_ORDERS,
+                                " facas finalizadas mais recentes. Ao concluir a 16\u00AA, a mais antiga desta fila move automaticamente para Facas Armazenadas abaixo."))),
+                    react_1.default.createElement("div", { className: "liquid-glass-pill px-4 py-2 rounded-full text-xs font-bold text-slate-800" },
+                        "Volume Recentes:",
+                        ' ',
+                        react_1.default.createElement("strong", { className: "font-mono text-emerald-700" }, (0, financeEngine_1.formatBRL)(recentTotalVolume)))),
+                recentFinished.length === 0 ? (react_1.default.createElement("div", { className: "p-10 rounded-2xl border border-dashed border-white/75 bg-white/20 text-center space-y-1" },
+                    react_1.default.createElement("p", { className: "text-sm font-bold text-slate-700" }, "Nenhuma faca finalizada ainda."),
+                    react_1.default.createElement("p", { className: "text-xs text-slate-600" }, "Ao clicar em \"Concluir Faca\" na etapa Faca Ajustada, o pedido aparecer\u00E1 automaticamente aqui."))) : (react_1.default.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4" }, recentFinished.map((order) => {
+                    const modMeta = financeEngine_1.PAYMENT_MODALITY_META[order.paymentModality];
+                    const isPending = pendingSet.has(order.id);
+                    const isExpanded = expandedOrderIds.has(order.id);
+                    return (react_1.default.createElement("div", { key: order.id, className: `rounded-2xl p-4 liquid-glass-subtle hover:bg-white/45 transition flex flex-col justify-between gap-3 overflow-hidden min-w-0 ${isPending ? 'opacity-75 ring-1 ring-emerald-400/70' : ''}` },
+                        react_1.default.createElement("div", { className: "space-y-2.5 min-w-0" },
+                            react_1.default.createElement("div", { className: "flex flex-wrap items-center justify-between gap-1.5 min-w-0" },
+                                react_1.default.createElement("div", { className: "flex flex-wrap items-center gap-1.5 min-w-0" },
+                                    react_1.default.createElement("span", { className: "px-2 py-0.5 rounded-lg bg-emerald-500/15 border border-emerald-300/60 font-mono text-[11px] font-bold text-emerald-800 shrink-0" }, order.id),
+                                    react_1.default.createElement("span", { className: `px-2 py-0.5 rounded-full text-[10px] font-bold border ${modMeta?.badgeClass}` }, modMeta?.short),
+                                    react_1.default.createElement("span", { className: `px-2 py-0.5 rounded-full text-[10px] font-bold border ${order.paymentStatus === 'pago'
+                                            ? 'bg-emerald-500/15 text-emerald-800 border-emerald-300/60'
+                                            : 'bg-white/70 text-slate-700 border-white/80'}` }, order.paymentStatus === 'pago' ? 'Pago' : 'Não Pago')),
+                                react_1.default.createElement("div", { className: "flex items-center gap-1 shrink-0" },
+                                    react_1.default.createElement("button", { type: "button", onClick: () => handleToggleExpand(order.id), className: "btn-compact w-7 h-7 rounded-lg bg-white/65 hover:bg-white/95 text-slate-600 hover:text-indigo-700 border border-white/80 flex items-center justify-center transition cursor-pointer shrink-0", title: isExpanded ? 'Recolher detalhes' : 'Exibir mais detalhes', "aria-label": isExpanded ? 'Recolher detalhes' : 'Exibir mais detalhes' }, isExpanded ? (react_1.default.createElement(lucide_react_1.ChevronUp, { className: "w-3.5 h-3.5" })) : (react_1.default.createElement(lucide_react_1.ChevronDown, { className: "w-3.5 h-3.5" }))),
+                                    canEditOrder && (react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onEditOrder?.(order), className: "btn-compact w-7 h-7 rounded-lg bg-white/65 hover:bg-indigo-500/20 disabled:opacity-50 text-slate-500 hover:text-indigo-700 border border-white/80 flex items-center justify-center transition cursor-pointer shrink-0", title: "Editar esta OS", "aria-label": "Editar esta OS" },
+                                        react_1.default.createElement(lucide_react_1.Edit3, { className: "w-3.5 h-3.5" }))),
+                                    canDeleteOrder && (react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onDeleteOrder(order.id), className: "btn-compact w-7 h-7 rounded-lg bg-white/65 hover:bg-rose-500/20 disabled:opacity-50 text-slate-500 hover:text-rose-700 border border-white/80 flex items-center justify-center transition cursor-pointer shrink-0", title: "Excluir esta OS", "aria-label": "Excluir esta OS" },
+                                        react_1.default.createElement(lucide_react_1.Trash2, { className: "w-3.5 h-3.5" }))))),
+                            react_1.default.createElement("div", { className: "min-w-0" },
+                                react_1.default.createElement("span", { className: "text-xs font-bold text-slate-600 block truncate" }, order.companyName),
+                                react_1.default.createElement("h4", { className: "text-sm font-extrabold text-slate-900 leading-snug mt-0.5 break-words" }, order.toolDescription)),
+                            isExpanded && (react_1.default.createElement("div", { className: "p-2.5 rounded-xl bg-white/60 border border-white/80 text-[11px] space-y-1 text-slate-700" },
+                                react_1.default.createElement("div", null,
+                                    react_1.default.createElement("strong", null, "Cadastro:"),
+                                    " ",
+                                    (0, financeEngine_1.formatDateBR)(order.createdAt)),
+                                react_1.default.createElement("div", null,
+                                    react_1.default.createElement("strong", null, "Vencimento:"),
+                                    " ",
+                                    (0, financeEngine_1.formatDateBR)(order.dueDate)),
+                                react_1.default.createElement("div", null,
+                                    react_1.default.createElement("strong", null, "Telefone:"),
+                                    " ",
+                                    order.companyPhone || 'Não informado'),
+                                order.bladeMeters !== undefined && order.bladeMeters !== null && (react_1.default.createElement("div", null,
+                                    react_1.default.createElement("strong", null, "L\u00E2mina:"),
+                                    " ",
+                                    order.bladeMeters,
+                                    " m")),
+                                order.woodMm && (react_1.default.createElement("div", null,
+                                    react_1.default.createElement("strong", null, "Madeira:"),
+                                    " ",
+                                    order.woodMm,
+                                    " mm")),
+                                order.financialNotes?.trim() && (react_1.default.createElement("div", { className: "break-words" },
+                                    react_1.default.createElement("strong", null, "Obs. Financeira:"),
+                                    " ",
+                                    order.financialNotes)))),
+                            react_1.default.createElement("div", { className: "flex items-center justify-between text-[11px] text-slate-700 bg-white/55 px-2.5 py-1.5 rounded-xl border border-white/70" },
+                                react_1.default.createElement("span", { className: "flex items-center gap-1 font-semibold truncate" },
+                                    react_1.default.createElement(lucide_react_1.Clock, { className: "w-3.5 h-3.5 text-emerald-600 shrink-0" }),
+                                    react_1.default.createElement("span", { className: "truncate" },
+                                        "Conclu\u00EDda:",
+                                        ' ',
+                                        order.stageUpdatedAt ||
+                                            (order.completedAt
+                                                ? (0, financeEngine_1.formatDateTimeGoiasBR)(order.completedAt)
+                                                : '—'))),
+                                react_1.default.createElement("span", { className: "font-mono font-extrabold text-emerald-700 shrink-0" }, (0, financeEngine_1.formatBRL)(order.amount)))),
+                        react_1.default.createElement("div", { className: "flex items-center gap-2 pt-1" },
+                            react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onMoveStage(order.id, 'faca_ajustada'), className: "btn-compact px-3 py-2 rounded-xl text-[11px] font-bold bg-white/70 hover:bg-white disabled:opacity-50 text-slate-700 border border-white/80 flex items-center justify-center gap-1 transition cursor-pointer shrink-0", title: "Retornar para Faca Ajustada" },
+                                react_1.default.createElement(lucide_react_1.RotateCcw, { className: "w-3.5 h-3.5" }),
+                                react_1.default.createElement("span", null, "Reabrir")),
+                            react_1.default.createElement("button", { type: "button", disabled: isPending, onClick: () => onQuickRegisterDelivery(order), className: "btn-compact flex-1 py-2 px-3 rounded-xl text-[11px] font-bold bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white border border-white/40 shadow-sm flex items-center justify-center gap-1.5 transition cursor-pointer" },
+                                react_1.default.createElement(lucide_react_1.Truck, { className: "w-3.5 h-3.5 shrink-0" }),
+                                react_1.default.createElement("span", null, "Despachar / Sa\u00EDda")))));
+                })))),
+            react_1.default.createElement(StoredOrdersSubsection, { storedOrders: storedFinished, storedTotalVolume: storedTotalVolume, recentCount: recentFinished.length, pendingSet: pendingSet, expandedOrderIds: expandedOrderIds, canEditOrder: canEditOrder, canDeleteOrder: canDeleteOrder, onToggleExpand: handleToggleExpand, onMoveStage: onMoveStage, onQuickRegisterDelivery: onQuickRegisterDelivery, onEditOrder: onEditOrder, onDeleteOrder: onDeleteOrder }))) : (
+        /* Aba Direta: Facas Armazenadas */
+        react_1.default.createElement(StoredOrdersSubsection, { storedOrders: storedFinished, storedTotalVolume: storedTotalVolume, recentCount: recentFinished.length, pendingSet: pendingSet, expandedOrderIds: expandedOrderIds, canEditOrder: canEditOrder, canDeleteOrder: canDeleteOrder, onToggleExpand: handleToggleExpand, onMoveStage: onMoveStage, onQuickRegisterDelivery: onQuickRegisterDelivery, onEditOrder: onEditOrder, onDeleteOrder: onDeleteOrder, onBackToFinished: () => setActiveView('prontas') }))));
 };
 exports.ProductionKanban = ProductionKanban;
 
@@ -12329,6 +12589,7 @@ const App = () => {
             stageHistory: currentOrder.stageHistory,
             version: currentOrder.version,
             updatedAt: currentOrder.updatedAt,
+            completedAt: currentOrder.completedAt,
         };
         const optimisticOrder = {
             ...currentOrder,
@@ -12340,6 +12601,7 @@ const App = () => {
             ],
             version: (Number(currentOrder.version) || 1) + 1,
             updatedAt: nowIso,
+            completedAt: targetStage === 'faca_pronta' ? nowIso : undefined,
         };
         pendingOrderIdsRef.current.add(orderId);
         setPendingOrderIds(Array.from(pendingOrderIdsRef.current));
@@ -12354,6 +12616,9 @@ const App = () => {
                 ...optimisticOrder,
                 version: rpcRes.version ?? optimisticOrder.version,
                 updatedAt: rpcRes.updatedAt ?? optimisticOrder.updatedAt,
+                completedAt: targetStage === 'faca_pronta'
+                    ? rpcRes.completedAt || optimisticOrder.completedAt
+                    : undefined,
             };
             pendingOrderIdsRef.current.delete(orderId);
             setPendingOrderIds(Array.from(pendingOrderIdsRef.current));
@@ -12587,6 +12852,7 @@ const App = () => {
                         ],
                         version: rpcRes.version ?? (Number(ord.version) || 1) + 1,
                         updatedAt: rpcRes.updatedAt ?? new Date().toISOString(),
+                        completedAt: rpcRes.completedAt || new Date().toISOString(),
                     };
                     setDb((prev) => ({
                         ...prev,
@@ -13620,7 +13886,7 @@ const App = () => {
                                 paymentModality: mod,
                                 stage: 'arquivo_recebido',
                             }) })),
-                        effectiveSection === 'esteira' && (react_1.default.createElement(ProductionKanban_1.ProductionKanban, { orders: filteredOrders, userRole: session.role, pendingOrderIds: pendingOrderIds, moveError: moveError, onMoveStage: handleMoveStage, onEditOrder: (order) => {
+                        effectiveSection === 'esteira' && (react_1.default.createElement(ProductionKanban_1.ProductionKanban, { orders: filteredOrders, allOrders: db.orders, userRole: session.role, pendingOrderIds: pendingOrderIds, moveError: moveError, onMoveStage: handleMoveStage, onEditOrder: (order) => {
                                 setEditingOrder(order);
                                 setIsNewModalOpen(true);
                             }, onDeleteOrder: handleDeleteOrder, onQuickRegisterDelivery: handleQuickRegisterDelivery })),
